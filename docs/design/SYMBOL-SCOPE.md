@@ -953,7 +953,15 @@ reaches, to a fixed point:
     declares the port, it crosses to every occurrence whose capture of the port's export the
     recording bound to the same exchange leg (correlation, attempt and half:
     `RuntimeRegionPlanner#bindObservedCommunicationCaptures`) -- the other side of that one
-    message -- and demands there the cells the export hands on (`WIRE_PRODUCER_V1`). A consumer the
+    message -- and demands there the cells the export hands on (`WIRE_PRODUCER_V1`), and the
+    operands of the guards of the port's static export sites, as a write site's guards are: an
+    `EXPORT_SITE` states, as a `WRITE_SITE` does, the guards of the calls into its method up to
+    three calls out (`StaticScopeMap#rows`, `SiteControlDependence#callsInto`), so the reads that
+    decided whether the producer sent at all are demanded and their recorded writers planned
+    (zk-bugs-observer-master: the observer master's `syncFollower` decides by
+    `lastProcessedZxid` which committed proposals its sync resends, three calls above the header
+    copy's setters; that read's writer, the follower's own apply in its `CommitProcessor.run`, was
+    otherwise in no planned occurrence, its version `UNATTRIBUTED_STORE`). A consumer the
     recording paired with no export (no exchange bound: a ZooKeeper read, a DataTransfer op on a
     tree without the op's envelope, IDENTITY.md §7.1) is a DIAGNOSTIC `ADMISSION_GAP` naming its
     cell and ports, and its value stays the one attached.

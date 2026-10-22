@@ -97,6 +97,7 @@ workflow_config_keys=(
   "causynth_system_doors CAUSYNTH_SYSTEM_DOORS krp -"
   "causynth_client_fault_transports CAUSYNTH_CLIENT_FAULT_TRANSPORTS krp -"
   "causynth_doors_only_roots CAUSYNTH_DOORS_ONLY_ROOTS krp -"
+  "causynth_export_guard_writers CAUSYNTH_EXPORT_GUARD_WRITERS krp false"
   "causynth_system_view CAUSYNTH_SYSTEM_VIEW krp -"
   "causynth_scope_growth_budget CAUSYNTH_SCOPE_GROWTH_BUDGET krp 24"
   "reproduce_runs CAUSYNTH_REPRODUCE_RUNS krp 10"
@@ -595,6 +596,7 @@ run_java_main() {
     "-Dcausynth.loop.default.bound=${causynth_loop_default_bound}" \
     "-Dcausynth.system.doors=${causynth_system_doors}" \
     "-Dcausynth.doors.only.roots=${causynth_doors_only_roots}" \
+    "-Dcausynth.export.guard.writers=${causynth_export_guard_writers:-false}" \
     -cp "${runtime_classpath}" "${main_class}" "$@"
 }
 

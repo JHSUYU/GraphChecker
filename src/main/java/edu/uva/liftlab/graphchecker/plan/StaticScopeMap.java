@@ -765,7 +765,9 @@ public final class StaticScopeMap {
                     : guards.of(site.siteId);
             List<Guard> all = new ArrayList<Guard>(found == null
                     ? Collections.<Guard>emptyList() : found);
-            if (WRITE_SITE.equals(site.role) && guards != null) {
+            boolean called = WRITE_SITE.equals(site.role)
+                    || EXPORT_SITE.equals(site.role);
+            if (called && guards != null) {
                 String method = SiteId.methodOf(site.siteId);
                 Set<String> named = new LinkedHashSet<String>();
                 for (Guard guard : all) named.add(guard.siteId());
@@ -785,7 +787,7 @@ public final class StaticScopeMap {
                 if (gained) caught++;
             }
             Site guarded = site.withGuards(all);
-            if (WRITE_SITE.equals(site.role) && guards != null) {
+            if (called && guards != null) {
                 guarded = guarded.withCallers(
                         guards.callersOf(SiteId.methodOf(site.siteId)));
             }

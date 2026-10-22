@@ -29,6 +29,22 @@ public class RuntimeSelectedRegionFinalizerTest {
         }
     }
 
+    @Test
+    public void onlyACaseThatDeclaresItCrossesAnExportGuardToAnotherTarget() {
+        Object[][] table = {
+            {"an export guard's demand, declared", true, false, true, true},
+            {"the same, the writer's address shared", true, true, true, false},
+            {"an export guard's demand, undeclared", true, false, false, false},
+            {"any other demand, declared", false, false, true, false},
+        };
+        for (Object[] row : table) {
+            assertEquals((String) row[0], row[4],
+                    RuntimeSelectedRegionFinalizer.exportGuardWriter(
+                            (Boolean) row[1], (Boolean) row[2],
+                            (Boolean) row[3]));
+        }
+    }
+
     private static final String MASTER = "auto0/master0#epoch0/region/";
     private static final String TURN = "/ctx:Anchor:m@HBASE_RPC/test/idx:";
     private static final String CLIENT = "auto0/client0#epoch0/region/"

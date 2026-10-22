@@ -101,6 +101,8 @@ public final class RuntimeSelectedRegionFinalizer {
     public static final String SKELETON_KIND = "REGION_SKELETON";
     public static final String SHARED_ADDRESS_ROOT_CALLS =
             "sharedAddressRootCallIds";
+    public static final String EXPORT_GUARD_WRITERS =
+            "causynth.export.guard.writers";
     public static final String FOLDED_REGION_IDS = "foldedRegionIds";
     public static final String FOLDED_ENTRY_CALLERS = "foldedEntryCallers";
     public static final String FAILURE_TARGET_OCCURRENCE =
@@ -1463,6 +1465,11 @@ public final class RuntimeSelectedRegionFinalizer {
         }
     }
 
+    static boolean exportGuardWriter(boolean exportGuard, boolean shared,
+                                     boolean declared) {
+        return exportGuard && declared && !shared;
+    }
+
     public static boolean pairs(String readerNode, String writerNode,
                          boolean readerClient, boolean writerClient) {
         return readerClient || writerClient || readerNode.equals(writerNode);
@@ -1663,7 +1670,8 @@ public final class RuntimeSelectedRegionFinalizer {
                 if (writers == null || writers.isEmpty()) {
                     for (String from
                             : demands.incomingCells(occurrenceId, cell)) {
-                        queue.accept(new Demand(occurrenceId, from));
+                        queue.accept(new Demand(occurrenceId, from,
+                                demand.exportGuard));
                     }
                     continue;
                 }
@@ -1678,8 +1686,13 @@ public final class RuntimeSelectedRegionFinalizer {
                     SiteWriters held = siteWriters.computeIfAbsent(site,
                             SiteWriters::new);
                     for (String writerOccurrence : held.candidates) {
+                        boolean beyond = exportGuardWriter(demand.exportGuard,
+                                instances.get(writerOccurrence).containsKey(
+                                        SHARED_ADDRESS_ROOT_CALLS),
+                                Boolean.getBoolean(EXPORT_GUARD_WRITERS));
                         if (writerOccurrence.equals(occurrenceId)
                                 || excluded.contains(writerOccurrence)
+                                && !beyond
                                 || !pairs(node, nodes.get(writerOccurrence),
                                         client(occurrenceId),
                                         client(writerOccurrence))
@@ -1687,7 +1700,8 @@ public final class RuntimeSelectedRegionFinalizer {
                                         occurrenceId, cell, site)) {
                             continue;
                         }
-                        if ((stored || zk.zkCarried(writerOccurrence))
+                        if (!beyond && (stored
+                                || zk.zkCarried(writerOccurrence))
                                 && !chain.holds(writerOccurrence)) {
                             offChain.add(writerOccurrence);
                             continue;
@@ -1711,7 +1725,8 @@ public final class RuntimeSelectedRegionFinalizer {
                     }
                 }
                 for (String guard : demands.guardCells(occurrenceId, cell)) {
-                    queue.accept(new Demand(occurrenceId, guard));
+                    queue.accept(new Demand(occurrenceId, guard,
+                            demand.exportGuard));
                 }
             }
         }
@@ -1939,6 +1954,14 @@ public final class RuntimeSelectedRegionFinalizer {
                         Collections.<String>emptySet())) {
                     work.accept(new Demand(producer, handed));
                 }
+                for (StaticScopeMap.Site export
+                        : scopeMap.exportsOf(attach.port)) {
+                    for (String guard : export.guards) {
+                        for (String operand : demands.operandsOf(guard)) {
+                            work.accept(new Demand(producer, operand, true));
+                        }
+                    }
+                }
             }
             return paired;
         }
@@ -2132,12 +2155,19 @@ public final class RuntimeSelectedRegionFinalizer {
     private static final class Demand {
         private final String occurrence;
         private final String cell;
+        private final boolean exportGuard;
         private final int hash;
 
         private Demand(String occurrence, String cell) {
+            this(occurrence, cell, false);
+        }
+
+        private Demand(String occurrence, String cell, boolean exportGuard) {
             this.occurrence = occurrence;
             this.cell = cell;
-            this.hash = 31 * occurrence.hashCode() + cell.hashCode();
+            this.exportGuard = exportGuard;
+            this.hash = 31 * (31 * occurrence.hashCode() + cell.hashCode())
+                    + (exportGuard ? 1 : 0);
         }
 
         @Override
@@ -2145,7 +2175,8 @@ public final class RuntimeSelectedRegionFinalizer {
             if (!(other instanceof Demand)) return false;
             Demand that = (Demand) other;
             return hash == that.hash && occurrence.equals(that.occurrence)
-                    && cell.equals(that.cell);
+                    && cell.equals(that.cell)
+                    && exportGuard == that.exportGuard;
         }
 
         @Override

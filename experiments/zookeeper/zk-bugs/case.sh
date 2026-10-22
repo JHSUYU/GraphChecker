@@ -111,6 +111,10 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
     test_method=aProposalPendingAtTheObserverMastersStart
     # the observer's second life's CommitProcessor.run (its applies, the follow-up INFORM's), SEED ZB4-om
     target_occurrence="auto0/peer4#epoch1/region/REGION.140fb26c-dd61-31ad-a4df-3417de43228b#1"
+    # PLAN admits the writers of the reads deciding the observer master's resend (syncFollower's lastProcessedZxid: F's
+    # own apply, another CommitProcessor.run activation, its DataTree a decoded snapshot) as dependencies (lead 2026-10-21,
+    # owner: 5088 may be ad hoc; STATUS "case: zk-bugs-observer-master's export-guard writers")
+    export_guard_writers=true
     scope=(
       server=:org/apache/zookeeper/server/ZKDatabase
       server=:org/apache/zookeeper/server/DataTree

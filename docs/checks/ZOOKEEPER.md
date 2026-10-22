@@ -267,6 +267,11 @@ SEEDs on the automatic quorum cluster of tree `gc/zk-quorum`):
   chain is 01's, at the expirer turn between `submitRequestNow`'s touch and Prep's `trackSession`/`setOwner`.
   `poll` decides on the turn's own reading, so no clock cell is reached only by the arm (ZC12-03: `poll`'s second
   reading was unplanned and read the host's clock).
+- zk-bugs-observer-master: EXPLORE finds and replays 5088 (ZD18-om, ZD19-om): syncFollower#u50 -> false (F's sync reads
+  `lastProcessedZxid` before its own concurrent apply of Z2: the stale read, eligible since 0724050a4/62be176df; its writer
+  planned by `export_guard_writers=true`, STATUS "case: zk-bugs-observer-master's export-guard writers") -> empty DIFF -> O
+  throws at ZKDatabase:341 on INFORM(Z3). Open: O's CommitProcessor.run reaches no terminal after the critical-thread
+  exception, so the replay states no target row (STATUS "ZooKeeper checks").
 - zk-adhoc-07: UNSAT_CLOSED at the fixed point, substantive (ZD11-07, integration 9): the guard compares the epoch of
   LEADERINFO's envelope zxid (no door carries it, a constant at the learner) with a re-pairable `acceptedEpoch` (36 of 48
   paths offered another writer), and no explored writer exceeds the leader's proposed epoch. Class C, accepted. Target
