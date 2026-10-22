@@ -966,6 +966,12 @@ The reply -> synchronous caller edge (TODO HBase 15's F4) needs the engine's hap
 zk-bugs-retry-seq-quota, and zk-adhoc-01/03 on the ClientBase stand-in. Read each target occurrence off a SEED (D9;
 `zk-bugs/case.sh` marks the placeholders), then run each case to its verdict as HBase's cases were. The bug checks
 must be SAT, confirmed in the VM and reproduced natively.
+- Open (engine, general): EXPLORE cannot re-pair a container read. `FlipQuery#movableReads` skips every MAP location
+  (8ac0e2576: a container read bound as a writer's value gave ill-sorted Ref/AssocState queries), so a flip resting on
+  a node-map lookup is NOT_FLIPPABLE (ZA15-cont: `PrepRequestProcessor#getRecordForPath#u13#2` on the client's delete).
+  The general route re-pairs the read the way COMPOSE's moved query does (election-offer), about 3 h (E's estimate);
+  zk-bugs-container-reuse runs on a widened-window workload instead (STATUS "tree: zk-bugs-container-reuse's widened
+  window").
 
 **3. The quorum adapter** (Z2.md §3; each item names its closest HBase/HDFS/Solr piece):
 - D3: the automatic quorum cluster. QuorumPeerTestBase.MainThread, QuorumUtil and QuorumBase ensembles; every peer is a
