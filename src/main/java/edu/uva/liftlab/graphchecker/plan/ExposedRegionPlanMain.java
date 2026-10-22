@@ -141,10 +141,15 @@ public final class ExposedRegionPlanMain {
         for (JsonObject task : planned) {
             tasked.add(optionalString(task, "occurrenceId"));
         }
+        // One task per occurrence: an exposure of an occurrence the plan
+        // already tasks adds none -- a chain edge's, or a GROW re-run's
+        // exposure computed against the plan before an edge of a later
+        // generation tasked the same occurrence (solr-adhoc-19, R1: g32's
+        // edge then g33's exposure, a duplicate taskId the weave refuses).
         List<JsonObject> exposures = new ArrayList<>();
         for (JsonObject row : growth) {
             String kind = optionalString(row, "kind");
-            if (EXPOSED_REGION.equals(kind) || ZkChain.EDGE.equals(kind)
+            if ((EXPOSED_REGION.equals(kind) || ZkChain.EDGE.equals(kind))
                     && !tasked.contains(optionalString(row, "occurrence"))) {
                 exposures.add(row);
             }

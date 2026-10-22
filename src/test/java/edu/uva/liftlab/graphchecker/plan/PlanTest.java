@@ -168,6 +168,21 @@ public class PlanTest {
         }
     }
 
+    @Test
+    public void anExposureOfATaskedOccurrenceAddsNoTask() throws Exception {
+        String occurrence = tick(NodeId.parse("auto0/node3#epoch0")).render();
+        JsonObject planned = task("TASK.t");
+        planned.addProperty("occurrenceId", occurrence);
+        JsonObject exposed = new JsonObject();
+        exposed.addProperty("kind", ExposedRegionPlanMain.EXPOSED_REGION);
+        exposed.addProperty("occurrence", occurrence);
+        exposed.addProperty("sessionId", "s-grow");
+        assertTrue("the plan tasks the occurrence already",
+                ExposedRegionPlanMain.plan(null, null,
+                        Collections.singletonList(exposed),
+                        Collections.singletonList(planned)).isEmpty());
+    }
+
     private static JsonObject task(String taskId, String... actions) {
         JsonObject task = new JsonObject();
         task.addProperty("taskId", taskId);
