@@ -227,7 +227,7 @@ Paths are under `zookeeper-server/src/main/java/org/apache/zookeeper/server/` un
 | zk-adhoc-10 | quorum/ObserverMaster.java:371 RuntimeException | `test.ObserverMasterTest#testInOrderCommits[1]` (the `true` row; surefire runs both natively; automatic mode writes 21 per client, not 10001: STATUS "tree: zk-adhoc-10's focused workload") | none: writer and reader on one thread | T Q L | C |
 | zk-adhoc-11 | quorum/QuorumPeer.java:1236 IOException | `server.quorum.CurrentEpochWriteFailureTest#testReadCurrentEpochFromAcceptedEpochTmpFile` | disk only (IO rule) | T Q | C |
 | zk-adhoc-12 | quorum/QuorumPeer.java:1256 IOException | testQuorum | disk only | T Q | C |
-| zk-adhoc-13 | quorum/ReadOnlyZooKeeperServer.java:126 CloseRequestException | `test.ReadOnlyModeTest#testConnectionEvents` (check the seed observes the first client's renewal at the RO peer: timing) | none in memory today (the global-session map over Zab; no ConnectRequest door) | T Q L | C |
+| zk-adhoc-13 | quorum/ReadOnlyZooKeeperServer.java:126 CloseRequestException | `test.ReadOnlyModeTest#testConnectionEvents`; client faults cut (`case.sh` 13: the session is local, no expirer holds it) | none in memory today (the global-session map over Zab; no ConnectRequest door) | T Q L | C |
 
 State per case (runs and readings: STATUS "ZooKeeper checks"; target occurrences in `zk-adhoc/checks.tsv`, read off
 SEEDs on the automatic quorum cluster of tree `gc/zk-quorum`):
@@ -280,9 +280,14 @@ SEEDs on the automatic quorum cluster of tree `gc/zk-quorum`):
   LearnerHandler's `Request.setOwner` after Prep's `validateCreateRequest` `getOwner`, and that event does not exit
   within the 300 s order timeout while the setOwner is held. Accepted as 02's verdict (lead 2026-10-21). Before it, ZD9-02
   moved 8 CLOCK roots outside the selected path's cone and CONFIRM was NOT_ADMITTED.
-- zk-adhoc-04, zk-adhoc-13: blocked by an attribution gap (ZD11-04 FATAL_TARGET_NOT_IN_WINDOW; ZD11-13 vacuous, its target
-  on `workload/unregistered`): ReadOnlyModeTest builds its peers with QuorumUtil, whose NIOServerCxnFactory threads belong
-  to no node, so `processConnectRequest` opens no occurrence. Rerun after C's fix.
+- zk-adhoc-04: UNSAT_CLOSED, substantive, correct for the workload (ZB18-04, depth 0, 722 s): the guard's client side,
+  the ConnectRequest's `lastZxidSeen`, has no writer (no door on the client handshake) and is 0 at this connect
+  (the client has seen no zxid; its only write, `/test`, comes after); the peer's `lastProcessedZxid` is re-paired,
+  every writer >= 0. Target peer2's second life's first connect (`auto0/peer2#epoch1`).
+- zk-adhoc-13: UNSAT_CLOSED, substantive, correct for the workload (ZB18-13, 217 s, client faults cut as 02): the client's
+  session is local (ReadOnlyModeTest enables local sessions; only a persistent create), so the RO peer's global-session
+  map never holds it. Target the RO peer1's connect (`auto0/peer1#epoch0`). ZB17-13, before the cut, was a RUN_DEFECT
+  over the same UNSAT: a planted client SessionExpired on that local session had no server to expire it.
 
 Selected but not run (`docs/checks/SELECTION.md`): 05 (dead throw), 08, 09 (no path). Fit: A = one counterfactual, workload ready or trivial; B = one
 counterfactual, more adapter or a written workload; C = a named bound or vacuous expected (still run: the owner's rule
