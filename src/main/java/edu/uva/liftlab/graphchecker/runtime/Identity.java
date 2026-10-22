@@ -566,7 +566,7 @@ public final class Identity {
         state.starter = start.starter;
         state.adopted = true;
         RuntimeTraceContext.claimCarried(carrier);
-        if (!own && kind == ClaimKind.HANDOFF_TASK
+        if (!own && (kind == ClaimKind.HANDOFF_TASK || kind == ClaimKind.ITEM)
                 && Confirmation.ordering()) {
             Confirmation.entering(Confirmation.claim(start.key));
         }

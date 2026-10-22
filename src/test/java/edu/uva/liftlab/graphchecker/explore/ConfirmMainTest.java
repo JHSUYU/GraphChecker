@@ -1101,6 +1101,11 @@ public class ConfirmMainTest {
         Endpoint send = endpoint(PRODUCER, "a.Convert#send()#3:SEND");
         String step = "n0#epoch0|Root:WAKE/a.Scheduler.poll#2|<a.Step: void"
                 + " run()>#u23@0";
+        String taken = "hdfs/dn0#epoch0|Root:XCEIVER#1|<a.Throttle: void"
+                + " take()>#u4@0";
+        OccurrenceAddress throttle = OccurrenceAddress.parse(
+                "hdfs/dn0#epoch0/region/REGION.1a2b3c4d/ctx:Root:XCEIVER#1/idx:"
+                        + "<a.Throttle: void take()>@0");
         Object[][] rows = {
                 {"held where it runs", null, null, reader.activation(),
                         false},
@@ -1119,13 +1124,38 @@ public class ConfirmMainTest {
                 {"the earlier end on another worker, recorded after the"
                         + " event", null, null, Confirmation.claim(
                         ActivationRow.CLAIMED + step), false},
+                {"a send from an uninstrumented root: held at the first"
+                        + " instrumented claim of its work", send, null,
+                        Confirmation.claim(ActivationRow.CLAIMED + taken),
+                        false},
+                {"the writer's own request claims at that queue: held at"
+                        + " the send", send, null, send.activation(), false},
         };
         for (int index = 0; index < rows.length; index++) {
             Object[] row = rows[index];
             String name = (String) row[0];
             Path iteration = iteration();
             List<ActivationRow> activations = new ArrayList<ActivationRow>();
-            if (index >= 4) {
+            if (index >= 8) {
+                activations.add(ActivationRow.of("sel", throttle, "TASK.t",
+                        false, true, ActivationRow.CLAIMED + taken,
+                        ActivationRow.ClaimKind.ITEM, send));
+                activations.add(ActivationRow.of("sel", anchor, "TASK.r",
+                        false, true, ActivationRow.CLAIMED + "hdfs/dn0#epoch0|"
+                                + "Root:XCEIVER#1|<a.Stage: void take()>#u5@0",
+                        ActivationRow.ClaimKind.ITEM, send));
+                activations.add(ActivationRow.of("sel", OccurrenceAddress.parse(
+                        PRODUCER), "", false, false, "main#1",
+                        ActivationRow.ClaimKind.NONE, null));
+                if (index == 9) {
+                    activations.add(ActivationRow.of("sel", mint, "TASK.w",
+                            false, true, ActivationRow.CLAIMED + taken.replace(
+                                    "hdfs/dn0#epoch0|Root:XCEIVER#1",
+                                    "hdfs/nn0#epoch0|Root:TICK#1").replace(
+                                    "@0", "@1"),
+                            ActivationRow.ClaimKind.ITEM, null));
+                }
+            } else if (index >= 4) {
                 activations.add(ActivationRow.of("sel", anchor, "TASK.r",
                         false, true, ActivationRow.CLAIMED + step,
                         ActivationRow.ClaimKind.HANDOFF_TASK, null));
@@ -1143,7 +1173,7 @@ public class ConfirmMainTest {
                         Collections.singletonList(WriteRow.of("sel", 50L,
                                 writer, CELL, 5L, "EXPR.w", "I")),
                         RowCodec::writeWrite);
-            } else if (index >= 5) {
+            } else if (index >= 5 && index < 8) {
                 activations.add(ActivationRow.of("sel", mint, "TASK.w",
                         false, true, ActivationRow.CLAIMED + step
                                 + (index == 5 ? "" : "/<a.Cont: void accept("

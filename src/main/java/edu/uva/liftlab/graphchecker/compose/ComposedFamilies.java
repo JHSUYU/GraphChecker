@@ -1174,9 +1174,10 @@ final class ComposedFamilies {
                               Set<String> reached,
                               List<String> stated,
                               List<String> recorded,
-                              Map<String, String> planted) {
+                              Map<String, String> planted,
+                              Map<String, List<ReadRow>> sharing) {
         StateFamilies families = new StateFamilies(path, ordinal, selector,
-                pins, reached, stated);
+                pins, reached, stated, sharing);
         Map<String, List<ReadRow>> byLocation =
                 new LinkedHashMap<String, List<ReadRow>>();
         for (ReadRow read : joined) {
@@ -1218,6 +1219,7 @@ final class ComposedFamilies {
         private final Map<String, String> pins;
         private final Set<String> reached;
         private final List<String> stated;
+        private final Map<String, List<ReadRow>> sharing;
         private final Map<String, StateLocation> locations =
                 new LinkedHashMap<String, StateLocation>();
         private final Map<String, List<Out>> outsOfWriter =
@@ -1233,7 +1235,8 @@ final class ComposedFamilies {
 
         StateFamilies(Corpus.RecordedPath path, int ordinal, String selector,
                       Map<String, String> pins, Set<String> reached,
-                      List<String> stated) {
+                      List<String> stated,
+                      Map<String, List<ReadRow>> sharing) {
             this.path = path;
             this.session = path.sessionId;
             this.ordinal = ordinal;
@@ -1241,6 +1244,16 @@ final class ComposedFamilies {
             this.pins = pins;
             this.reached = reached;
             this.stated = stated;
+            this.sharing = sharing;
+        }
+
+        private List<ReadRow> sharingSymbols(StateLocation location) {
+            Set<ReadRow> reads = new LinkedHashSet<ReadRow>(location.reads);
+            for (ReadRow read : location.reads) {
+                reads.addAll(sharing.getOrDefault(read.symbol(),
+                        Collections.<ReadRow>emptyList()));
+            }
+            return new ArrayList<ReadRow>(reads);
         }
 
         void classify(String key, List<ReadRow> reads) {
@@ -1273,7 +1286,7 @@ final class ComposedFamilies {
             }
             boolean asHappened = outside || versions.size() > 1;
             OccurrenceAddress reader = reads.get(0).endpoint().occurrence();
-            List<Arms.Arm> found = writerArms(location, reader, versions);
+            List<Arms.Arm> found = writerArms(location);
             fileRefusals();
             boolean alternative = false;
             for (Arms.Arm arm : found) {
@@ -1301,9 +1314,7 @@ final class ComposedFamilies {
             locations.put(key, location);
         }
 
-        private List<Arms.Arm> writerArms(StateLocation location,
-                                          OccurrenceAddress reader,
-                                          Set<Long> versions) {
+        private List<Arms.Arm> writerArms(StateLocation location) {
             List<Arms.Arm> found = new ArrayList<Arms.Arm>();
             ReadRow first = location.reads.get(0);
             boolean named = true;
@@ -1317,8 +1328,8 @@ final class ComposedFamilies {
                         ? "its session is replaced"
                         : arm.producer() == null ? "it names no producer"
                         : leftPath(arm) ? "it is the anchor's work past the"
-                        + " path" : !seenByAll(reader, session, location.key,
-                        versions, arm.write()) ? "not every read of the"
+                        + " path" : !seenByAll(sharingSymbols(location), session,
+                        location.key, arm.write()) ? "not every read of the"
                         + " location could have seen it" : null;
                 if (aside != null) {
                     if (arm.write() != null && arm.write().version()
@@ -1554,13 +1565,13 @@ final class ComposedFamilies {
         return observedPin;
     }
 
-    private boolean seenByAll(OccurrenceAddress reader, String session,
-                              String location, Set<Long> versions,
-                              WriteRow write) {
+    private boolean seenByAll(List<ReadRow> reads, String session,
+                              String location, WriteRow write) {
         if (write == null) return true;
-        for (long version : versions) {
-            if (!arms.eligible(reader, session, location,
-                    corpus.writesOf(session, location), version, write)) {
+        List<WriteRow> writes = corpus.writesOf(session, location);
+        for (ReadRow read : reads) {
+            if (!arms.eligible(read.endpoint().occurrence(), session,
+                    location, writes, read.observedVersion(), write)) {
                 return false;
             }
         }

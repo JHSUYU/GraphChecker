@@ -2232,10 +2232,13 @@ public class ComposerTest {
         LocationId pools = LocationId.of(LocationKind.MAP, "21", "-3");
         for (String variant : new String[]{"concurrent", "constructor",
                 "constructor-caller", "started-in-constructor", "own-thread",
-                "unrowed-between"}) {
+                "unrowed-between", "read-after-its-own-write"}) {
             boolean moves = "concurrent".equals(variant)
                     || "started-in-constructor".equals(variant);
             long observed = "unrowed-between".equals(variant) ? 3L : 2L;
+            boolean own = "read-after-its-own-write".equals(variant);
+            LocationId size = LocationId.of(LocationKind.INSTANCE, "21",
+                    "count");
             Path iteration = folder.newFolder("initial-" + variant).toPath();
             OccurrenceAddress reader = occurrence("case/dn0", "REGION.get",
                     CausalContext.of(Role.of("CLIENT"), "", 1),
@@ -2270,6 +2273,17 @@ public class ComposerTest {
                             ? "Pools#<init>()V#3:WRITE" : "Pools#add#3:WRITE",
                     ExecutionIndex.of(chain), 0), pools, observed,
                     "EXPR.0000000000000011");
+            if (own) {
+                session.read(Endpoint.of(writer, "Pools#size#9:READ",
+                        at("w#3", 0), 0), pools, observed,
+                        "MAP_STATE/21#-3@v" + observed + "@s0", "L", null);
+                session.expression("EXPR.0000000000000012",
+                        integer("I", 1L));
+                session.writes.add(WriteRow.of("s0", ++session.seq,
+                        Endpoint.of(writer, "Pools#count#11:WRITE",
+                                at("w#4", 0), 0), size, 9L,
+                        "EXPR.0000000000000012", "I"));
+            }
             if ("unrowed-between".equals(variant)) {
                 session.read(Endpoint.of(writer, "Pools#size#7:READ",
                         at("w#2", 0), 0), pools, 2L, "MAP_STATE/21#-3@v2@s0",
@@ -2284,6 +2298,10 @@ public class ComposerTest {
             answered.addProperty("readEventId", session.read(asking, pools,
                     observed, "MAP_STATE/21#-3@v" + observed + "@s0", "L",
                     null));
+            if (own) {
+                session.read(Endpoint.of(reader, "Pools#count#13:READ",
+                        at("r#2", 0), 0), size, 9L, "count_v9", "I", "1");
+            }
             session.expression("EXPR.0000000000000060", binary("==",
                     answered, vmNull()));
             session.target("EXPR.0000000000000060", false, true);
@@ -2292,7 +2310,8 @@ public class ComposerTest {
             edu.uva.liftlab.graphchecker.smt.Arms arms =
                     new edu.uva.liftlab.graphchecker.smt.Arms(
                             Corpus.read(iteration, null));
-            assertEquals(variant, moves ? 2 : 1, arms.stateArms(asking, "s0",
+            assertEquals(variant, moves || "read-after-its-own-write".equals(
+                    variant) ? 2 : 1, arms.stateArms(asking, "s0",
                     SmtLowering.locationKey(pools), observed, true).size());
             Composer.Composition composition = compose(iteration, reader, 4,
                     StaticScopeMap.empty());

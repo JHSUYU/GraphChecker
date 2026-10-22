@@ -41,15 +41,18 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
     ;;
   container-reuse)
     # the pasted bug 4 (catalogue #33): the cleanup's DeleteContainerRequest(path) deletes the replacement at the path.
-    # World depth 1 (lead 2026-10-21): in the recording the client's delete of the old container finds nothing (the
-    # cleanup came first); the bug's world needs that delete to succeed -- a write no depth-0 session holds -- before
-    # the client's create and the cleanup's Prep (ZA5-cont: every depth-0 claim paired across the client's own order).
+    # The workload widens the cleanup's scan-to-post window (its worker posts the deletion 3 s after the scan), so the
+    # race -- the cleanup posting after the replacement's create -- happens natively: the client's delete, create and
+    # getData run inside the window and the cleanup deletes the replacement after the read. The bug's world is the
+    # read order that exposes the deleted replacement: getData paired with the cleanup's remove (depth 0). Without the
+    # window the world needs the client's delete to succeed, a write no depth-0 session holds, and at depth 1 EXPLORE
+    # cannot re-pair the node-map lookup that decides it (FlipQuery#movableReads skips container reads; ZA15-cont).
     # 20 claims; a CONFIRM order timeout of 2x its seed replay (71 s, ZA5-cont).
-    export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=1 CAUSYNTH_CAMPAIGN_MAX_CLAIMS=20
+    export CAUSYNTH_CAMPAIGN_MAX_CLAIMS=20
     zk_jvm_properties=(-Dcausynth.confirm.order.timeout.ms=150000)
     test_class=org.apache.zookeeper.server.CausynthContainerReuseTest
     test_method=keepsTheReplacementOfACleanedContainer
-    target_occurrence="auto0/server0#epoch0/region/REGION.ce9149ce-ad44-3ad7-b99b-58659d47dae2#1"  # its one getData (ZA1-cont)
+    target_occurrence="auto0/server0#epoch0/region/REGION.ce9149ce-ad44-3ad7-b99b-58659d47dae2#1"  # its one getData (ZA17-contfb)
     scope=(
       server:org/apache/zookeeper/server/ContainerManager
       server:org/apache/zookeeper/server/PrepRequestProcessor

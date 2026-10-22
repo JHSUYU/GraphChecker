@@ -2990,9 +2990,13 @@ selector binds its whole block (every location its arm states here) and the run 
 location of that block from another writer (hdfs-adhoc-16 HG5A: a `Block` constructor wrote
 `blockId`, `genStamp` and `numBytes`, and the run read the last two from later writers; one pass is
 the fixed point); the writer
-arms stay beside it, each binding every read, and where the reads saw several versions only a
-write each of them could have seen (`Arms#eligible` for every version; hdfs-adhoc-16: the first
-read's own later write is none); exactly one per location that has two arms or more, one of them
+arms stay beside it, each binding every read, and only a write each of them could have seen,
+judged at each read's own occurrence and version (`Arms#eligible`, `StateFamilies#sharingSymbols`):
+the symbol is one per location and version, so every read of the join closure that shares one of
+the location's symbols is judged too, though the closure states the symbol once
+(`Composer#sharing`; hdfs-adhoc-16: the first read's own later write is none; zk-bugs-container-
+reuse ZA19: an INITIAL of a stat field was offered for getData's read and taken by the create's own
+read of its own later `setMtime`); exactly one per location that has two arms or more, one of them
 an HB-concurrent writer's, else the reads keep their own joins, which are the run. The read
 rule's "a location a STATE family may
 re-pair" (`Composer#repairing`) is the same alternative: a read of it could have seen a writer
@@ -3786,7 +3790,17 @@ with it is a `RUN_DEFECT`.
   kind (`ActivationRow#heldWhereItRuns` false: a server pipeline applying one request after
   another, the writer's among them, would deadlock held), the entry of the send that started it, its
   anchor's producer followed up the chain while that send is such work too
-  (`Confirmation#submitter`); an order no hold realizes is **checked** instead: where no such
+  (`Confirmation#submitter`). Where that send runs in an activation the recording did not
+  instrument (a ClientBase test's client root: no frames, running since the test began, so no slot
+  holds it), the hold is the claim's entry of the first claimed, instrumented activation that send
+  started, in the session's activation order (`StateClosure#firstClaim`; Identity's claim hook
+  enters a queue item's claim as a hand-off's while ordering): zk-bugs-container-reuse's getData is
+  held at RequestThrottler's take of it (`submitRequest#u11`), the first server stage, until the
+  cleanup's remove has run. Holding a single-threaded stage also holds every later request queued
+  behind it, which is right for the order; it is kept to the send instead when any activation of
+  the awaited writer's own request (its node and context) claims at the same site, since the writer
+  would have to pass the held queue (the cleanup posts its deletion to PrepRequestProcessor
+  directly). An order no hold realizes is **checked** instead: where no such
   send started the work (a continuation's claim names none: hbase-adhoc-04's DisableTable request
   is sent inside `FutureUtils#addListener`'s continuation, so the DisableTableProcedure step it
   started stood on no holdable send, `ORDER_UNHELD`, and REPRODUCE planted nothing), or where the
