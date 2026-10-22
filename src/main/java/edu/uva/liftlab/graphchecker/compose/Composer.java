@@ -1754,7 +1754,8 @@ public final class Composer {
         }
         Set<String> chosen = composedFamilies.stateFamilies(path,
                 ordinal, selector, joined, joins, interactionIds,
-                familyTerms, observed, repairing.planted);
+                familyTerms, observed, repairing.planted,
+                sharing(session, reached));
         if (hold != null) {
             terms.set(fatalArm, hold.held(terms.get(fatalArm), joins));
         }
@@ -2768,6 +2769,26 @@ public final class Composer {
                 && corpus.writeOf(session,
                 SmtLowering.locationKey(read.location()),
                 read.observedVersion()) != null;
+    }
+
+    private Map<String, List<ReadRow>> sharing(String session,
+                                               RestsOn.Reached reached) {
+        Map<String, List<ReadRow>> sharing =
+                new LinkedHashMap<String, List<ReadRow>>();
+        for (String occurrenceId : reached.keySet()) {
+            OccurrenceAddress at = corpus.occurrence(occurrenceId);
+            if (at == null) continue;
+            boolean whole = anchor.id().equals(occurrenceId);
+            for (ReadRow read : corpus.readsOn(session, at)) {
+                if (read.symbol() == null || read.symbol().isEmpty()
+                        || !whole && !reached.before(occurrenceId, read)) {
+                    continue;
+                }
+                sharing.computeIfAbsent(read.symbol(),
+                        symbol -> new ArrayList<ReadRow>()).add(read);
+            }
+        }
+        return sharing;
     }
 
     void stateJoins(String session, Set<String> occurrences,

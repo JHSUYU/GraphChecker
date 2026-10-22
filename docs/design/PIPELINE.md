@@ -2982,9 +2982,13 @@ selector binds its whole block (every location its arm states here) and the run 
 location of that block from another writer (hdfs-adhoc-16 HG5A: a `Block` constructor wrote
 `blockId`, `genStamp` and `numBytes`, and the run read the last two from later writers; one pass is
 the fixed point); the writer
-arms stay beside it, each binding every read, and where the reads saw several versions only a
-write each of them could have seen (`Arms#eligible` for every version; hdfs-adhoc-16: the first
-read's own later write is none); exactly one per location that has two arms or more, one of them
+arms stay beside it, each binding every read, and only a write each of them could have seen,
+judged at each read's own occurrence and version (`Arms#eligible`, `StateFamilies#sharingSymbols`):
+the symbol is one per location and version, so every read of the join closure that shares one of
+the location's symbols is judged too, though the closure states the symbol once
+(`Composer#sharing`; hdfs-adhoc-16: the first read's own later write is none; zk-bugs-container-
+reuse ZA19: an INITIAL of a stat field was offered for getData's read and taken by the create's own
+read of its own later `setMtime`); exactly one per location that has two arms or more, one of them
 an HB-concurrent writer's, else the reads keep their own joins, which are the run. The read
 rule's "a location a STATE family may
 re-pair" (`Composer#repairing`) is the same alternative: a read of it could have seen a writer
