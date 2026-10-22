@@ -290,7 +290,8 @@ of the program -- each OUT port of every region skeleton, its method woven as a 
 region's are (`CausynthPipeline#instrumentConcolicCommunicationHandoffs`,
 `runtime.RuntimeRegionPlanner#exportSites`). A protobuf message's field is captured with its message (codec capture,
 SYMBOL-SCOPE §6.3): exported at the builder's setter and bound to the builder, handed to the message by its `build()`;
-the IPC, HBase RPC and DataTransfer doors walk the message they carry (`MessageCodec`, `WireExport`), staging each bound element
+a record a library catalog `MESSAGE` row lists (ZooKeeper's `TxnHeader`) is exported at its own setter and bound to itself;
+the IPC, HBase RPC, ZK_QUORUM and DataTransfer doors walk the message they carry (`MessageCodec`, `WireExport`), staging each bound element
 for the receiver, whose getter attaches it after the parse; the engine's plumbing and generated messages are never
 state (`EnginePlumbing`, `RowRuntime#ownCode`). Its known limits are STATUS open defects 52-56.
 Each conditional of a woven method gets the VM's decision marker just before it and, on every

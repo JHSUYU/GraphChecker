@@ -995,16 +995,18 @@ ZD7-02 without acae2a16d 849/1460). Idea (engine, general): a SECTION turn -- th
 once the previous holder's `storeEnded` ran. Accepted for now (lead 2026-10-21, workaround over grinding); revisit if a
 verdict or CONFIRM depends on which ACK completes a quorum (a refutation on a COMMIT ORDER row).
 
-**5. zxid carriage on that door** (D5): deferred (lead 2026-10-21, owner "keep ZooKeeper lean"); revisit only when a
-SEED's `.smt` shows a guard term constant for want of an envelope or txn field. What it would take: the door already
-hands the packet to `MessageDoors#outboundRequest` and `#parsed`, but the codec walk knows only protobuf messages
-(`EnginePlumbing#generatedMessage`, `SeedBackwardStaticAnalyzer#deriveWirePort`): a jute `Record` a door carries would
-join it (port `auto:<Record>.<F>` from a demanded getter, its setter calls and constructor arguments the producers, a
-constructor's export bound after `<init>`), ~100-150 engine lines. zk-bugs-observer-master's guard (ZKDatabase:341) reads
-`TxnHeader.zxid` from the packet's `data` bytes (`SerializeUtils.deserializeTxn` in `Observer.processPacket`), which the
-envelope does not hold: carrying it costs a tree registry from a packet to its `TxnHeader` (`Leader.propose`, the
-observer master's INFORM) and a `parsed(header)` after each `deserializeTxn` of a received packet (~4 sites). Optional
-after it: D6, the txn log as a store across a restart (zk-bugs-trunc-sync's chain through the log).
+**5. zxid carriage on that door** (D5): built in its txn form (lead-approved 2026-10-21 for zk-bugs-observer-master, whose
+guard ZKDatabase:341 reads `TxnHeader.zxid` from a packet's `data` bytes): the catalog's `MESSAGE` row lists jute's
+`TxnHeader` (`LibraryCatalog#messageClasses`), which the door's walk takes as a message (`EnginePlumbing#wireMessage`) and
+`SeedBackwardStaticAnalyzer#deriveWirePort` derives ports of, its own `setF` the producers (SYMBOL-SCOPE §6.2); the tree
+hands the door the header a packet carries and each learner's decode to `#parsed`, and a committed-log resend carries a
+copy set field by field (`CausynthQuorum#copyOf`; STATUS "tree: a txn's header crosses the learner stream"). Left: the
+proof -- the om SEED/PLAN shows the follower's `syncFollower` occurrence demanded, its `lastProcessedZxid` read a
+re-pairable decider; if PLAN does not reach it, no third mechanism (lead). Not carried: the envelope's own fields
+(`QuorumPacket.zxid`, a jute record no row lists), a header built by its all-fields constructor (the leader's original
+export is the door's, a constant). Follow-up (review 2026-10-21): one catalog concept for message-ness -- a `messages`
+member on CODEC rows in place of the MESSAGE kind. Optional after it: D6, the txn log as a store across a restart (zk-bugs-trunc-sync's
+chain through the log).
 
 **6. The final series** as HBase's (owner 2026-10-20/21): every case on the final engine. Runs under 30 min may run
 concurrently; every longer case runs alone on all 14 hosts; scope a too-slow case (no client faults where the mechanism
