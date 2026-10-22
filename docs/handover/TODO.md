@@ -708,8 +708,8 @@ by that very read (its first fetch), so the read was no row and a NoNode read wo
   probes) re-run COMPOSE/PLAN on a run's inputs; `SmtLowering.forSession`'s repair predicate differs from the
   Composer's, so a probe through it is not the Composer's answer.
 - Housekeeping: old snapshots (`/u/vnr3ne/gc-run/hb-*`) and tree sets (`/bigtemp/vnr3ne/wt/hb-*-trees-*`) listed in
-  H1-H4.md (e) can go once nothing reads them; `system/hbase` is not pushed to GitHub (owner's OK needed); the fork's
-  `graphchecker/hbase-checks` is pushed at 985a0dfe91.
+  H1-H4.md (e) can go once nothing reads them; `system/hbase` (pushed 2026-10-22) and the fork's
+  `graphchecker/hbase-checks` (b5d5cc6a20) are on GitHub.
 
 **12. Provenance through a construction-only container field of a copy-on-write object** (hbase-bugs-ns-rsgroup-removal
 NC3-nsrg, worked around in the tree 100878f553, STATUS "the H4 checks' stated guards"). `RSGroupInfoManagerImpl#getRSGroup`
@@ -943,8 +943,8 @@ which no ORDER holds". The cause is not CONFIRM's planning, as H3 read it from t
 ## ZooKeeper (`system/zookeeper`; finished 2026-10-21 -- what is left; DRAFT)
 
 The 16 cases ran in the final series; `results/zookeeper/README.md` has each verdict and START-HERE.md the takeover.
-Open from the series: pushing GraphChecker's `system/zookeeper` to GitHub, which needs the owner's OK. The fork's
-`graphchecker/zookeeper-checks` is pushed (51b213562). Everything below is parked engine or adapter work with its
+Both branches are on GitHub: GraphChecker's `system/zookeeper` (pushed 2026-10-22, owner) and the fork's
+`graphchecker/zookeeper-checks` (51b213562); REPRODUCE §8 runs every case from a fresh clone of the two. Everything below is parked engine or adapter work with its
 evidence; none of it blocks a verdict. The cross-cutting items this session found (a logged event's publication-order
 rank, an application BlockingQueue's timed wait, CommitProcessor's apply under no claim) are in "Cross-cutting" below.
 

@@ -1,16 +1,24 @@
-# Reproducing the 46 HDFS checks (and the Solr group, §6, and the HBase group, §7) from GitHub
+# Reproducing the checks from GitHub: the 46 HDFS cases (§0-§5), Solr (§6), HBase (§7), ZooKeeper (§8)
 
-Everything a run of the 46 HDFS cases needs is in two GitHub repositories (the Solr cases: §6). Nothing on the cluster's disks is assumed
-besides the operating system packages below.
+Everything a run needs is on GitHub: GraphChecker's branch of the system (the engine, the case settings, the VM
+sources) and the system's fork, whose `graphchecker/*` branch is the tree under test (the adapter, the target markers,
+the workloads). Clone the two, check out those branches, and the section of the system runs its cases. Nothing on the
+cluster's disks is assumed besides the operating system packages below (§0).
 
 | repository | branch | what it holds |
 | --- | --- | --- |
 | `git@github.com:JHSUYU/GraphChecker.git` (private) | `system/hdfs` | the locked body: the engine that closed 39 cases (the named bugs but 11741, and 30 study checks) |
 | | `system/hdfs1` | the newest body: the other 7 cases (07 11741 21 29 30 39 40), these tools, the VM sources |
+| | `system/solr` | the 20 Solr cases (§6) |
+| | `system/hbase` | the 22 HBase cases (§7), `results/hbase/` |
+| | `system/zookeeper` | the 16 ZooKeeper cases (§8), `results/zookeeper/` |
 | `https://github.com/JHSUYU/hadoop.git` (public fork) | `graphchecker/hdfs-checks` | the HDFS tree of 43 cases (tree `hadoop-hdfs-study-r7`) |
 | | `graphchecker/hdfs-checks-adhoc07` | hdfs-adhoc-07's tree (`hadoop-hdfs-study-r8`) |
 | | `graphchecker/hdfs-checks-adhoc21` | hdfs-adhoc-21's tree (`hadoop-hdfs-21`) |
 | | `graphchecker/hdfs-11741` | hdfs-11741's tree (`hadoop-hdfs-11741-r6`): trunk with HDFS-11741's fix reverted |
+| `https://github.com/JHSUYU/solr.git` (public fork) | `graphchecker/solr-checks` | the Solr tree (`lucene-solr-checks`) |
+| `https://github.com/JHSUYU/hbase.git` (public fork) | `graphchecker/hbase-checks` | the HBase tree (`hbase-checks`) |
+| `https://github.com/JHSUYU/zookeeper.git` (public fork) | `graphchecker/zookeeper-checks` | the ZooKeeper tree (`zookeeper-checks`) |
 
 Which branch runs which case, with the case's budget and what series EX1 ended with, is
 [`experiments/hadoop/hdfs-cases.tsv`](../experiments/hadoop/hdfs-cases.tsv); which fork branch each tree is,
@@ -226,9 +234,15 @@ cluster and bounds").
 1. **GraphChecker.** As §6.1, on the branch `system/hbase` (`~/GraphChecker-hbase`).
 
 2. **The image.** Built as the Solr image (§6.2), from `system/hbase`'s VM sources (`system/solr`'s plus the held enum
-   constant named of its class and no silent enum compare, VM.md §2/§4); on the cluster
-   `/bigtemp/vnr3ne/vm-force12/j2sdk-image` (its `SOURCE.txt` and `smoke.log` beside it). It is
-   `CAUSYNTH_CUSTOM_JDK_HOME` for every HBase run.
+   constant named of its class and no silent enum compare, VM.md §2/§4; the Solr image lacks them); on the cluster
+   `/bigtemp/vnr3ne/vm-force12/j2sdk-image` (its `SOURCE.txt` and `smoke.log` beside it):
+
+   ```bash
+   ssh <host> 'git clone -q -b system/hbase git@github.com:JHSUYU/GraphChecker.git /localtmp/$USER/gc-vm-hbase &&
+     /localtmp/$USER/gc-vm-hbase/tools/vm/build-image.sh <GC_BULK>/vm/hbase'
+   ```
+
+   `$GC_BULK/vm/hbase/j2sdk-image` is `CAUSYNTH_CUSTOM_JDK_HOME` for every HBase run.
 
 3. **The tree.** Maven and JDK 8 (§0); the first build downloads the tree's dependencies into its own repository:
 
@@ -252,7 +266,7 @@ cluster and bounds").
 4. **The cases**, each alone on the cluster with its budget:
 
    ```bash
-   export GC_OUT=$GC_BULK/gc-out/repro-hbase CAUSYNTH_CUSTOM_JDK_HOME=$GC_BULK/vm/solr/j2sdk-image
+   export GC_OUT=$GC_BULK/gc-out/repro-hbase CAUSYNTH_CUSTOM_JDK_HOME=$GC_BULK/vm/hbase/j2sdk-image
    (setsid nohup tools/rounds/run-series.sh B1 experiments/hbase/hbase-cases.tsv system/hbase=$HOME/GraphChecker-hbase \
      > $GC_OUT/series-B1.out 2>&1 < /dev/null &)
    ```
@@ -262,3 +276,80 @@ cluster and bounds").
 
 5. **Reading them**, as §6.5: a bug check reproduces when it ends `SAT_CANDIDATE` (confirmed, reproduced natively); a
    study check when its `.smt` is right, SAT confirmed or UNSAT at its fixed point.
+
+## 8. The ZooKeeper cases
+
+The 16 ZooKeeper cases ([`experiments/zookeeper/zookeeper-cases.tsv`](../experiments/zookeeper/zookeeper-cases.tsv):
+case, branch, budget; each check's target, workload and state: [checks/ZOOKEEPER.md](checks/ZOOKEEPER.md) §E; the
+final series' `.smt`, claims and time table: [`results/zookeeper/`](../results/zookeeper/README.md)) need two branches:
+- **the code:** GraphChecker's `system/zookeeper` (the engine, every case's settings, the VM sources);
+- **the adapter:** the branch `graphchecker/zookeeper-checks` of the public fork `https://github.com/JHSUYU/zookeeper.git`
+  (tree `zookeeper-checks`, [`experiments/zookeeper/trees.tsv`](../experiments/zookeeper/trees.tsv)): Apache ZooKeeper
+  master `eab165995` on Java 8, with ZOOKEEPER-5094 and ZOOKEEPER-5088 unfixed (their fixes, PR 2459 and PR 2454, are
+  the fork's branches `fix-trunc-sync-shutdown-state` and `fix/observer-master-pending-proposals`), plus the adapter
+  (the automatic ClientBase and quorum cluster `CausynthZkCluster`, client requests and replies and the quorum's
+  packets as messages `CausynthZk`, the named workarounds of STATUS "Per-system surface", ZooKeeper column), every
+  case's target marker and the workloads of the tree's own.
+
+1. **GraphChecker.** As §6.1, on the branch `system/zookeeper`:
+
+   ```bash
+   git clone -q --no-checkout -b system/zookeeper git@github.com:JHSUYU/GraphChecker.git ~/GraphChecker-zookeeper
+   git -C ~/GraphChecker-zookeeper sparse-checkout set --no-cone '/*' '!/third_party/'
+   git -C ~/GraphChecker-zookeeper checkout -q system/zookeeper
+   (cd ~/GraphChecker-zookeeper && tools/onlift.sh -g 6 mvn -q package -DskipTests)
+   source ~/GraphChecker-zookeeper/tools/lib/gc-env.sh
+   ```
+
+2. **The image.** Built as the Solr image (§6.2), from `system/zookeeper`'s VM sources (`system/hbase`'s plus a
+   compare-and-swap's concrete expected value being the word its caller passed, 3d1c9a7b0; the HBase image lacks it); on
+   the cluster `/bigtemp/vnr3ne/vm-force13/j2sdk-image`:
+
+   ```bash
+   ssh <host> 'git clone -q -b system/zookeeper git@github.com:JHSUYU/GraphChecker.git /localtmp/$USER/gc-vm-zk &&
+     /localtmp/$USER/gc-vm-zk/tools/vm/build-image.sh <GC_BULK>/vm/zookeeper'
+   ```
+
+   `$GC_BULK/vm/zookeeper/j2sdk-image` is `CAUSYNTH_CUSTOM_JDK_HOME` for every ZooKeeper run.
+
+3. **The tree.** Maven and JDK 8 (§0); the first build downloads the tree's dependencies into its own repository:
+
+   ```bash
+   cd ~/GraphChecker-zookeeper
+   tools/onlift.sh -g 8 experiments/zookeeper/prepare-trees.sh > $GC_BULK/prepare-zookeeper.log 2>&1
+   ```
+
+   `prepare-trees.sh` clones the fork's `graphchecker/zookeeper-checks` into `$GC_TREES/zookeeper-checks` (a directory
+   already there is only built), installs the checkout's jar into the tree's Maven repository (`ZOOKEEPER_MAVEN_REPO`,
+   by default `$GC_M2/zookeeper<the tree's path, / as _>`; `tools/onlift.sh` passes no environment, so give it inside
+   the command, `env ZOOKEEPER_MAVEN_REPO=...`): the tree compiles against GraphChecker's `MessageDoors` and
+   `Sessions`, so it runs on the jar of the same checkout. Then it installs each workload's module with what it needs
+   and runs every case's workload once natively by surefire as an automatic cluster (`causynth.cluster.automatic`): a
+   case's classpath is read off its workload's surefire report. The log has one line per case, `PASSED` or `FAILED`
+   (the script then fails). After a change to the tree, `SKIP_GRAPHCHECKER_INSTALL=1 SKIP_TREE_INSTALL=1
+   MAVEN_REPO_LOCAL=<repo> experiments/zookeeper/build.sh $GC_TREES/zookeeper-checks <module> <class> <method>` runs
+   one workload; never build a tree a run reads.
+
+4. **The cases**, each alone on the cluster with its budget:
+
+   ```bash
+   export GC_OUT=$GC_BULK/gc-out/repro-zookeeper CAUSYNTH_CUSTOM_JDK_HOME=$GC_BULK/vm/zookeeper/j2sdk-image
+   mkdir -p $GC_OUT
+   (setsid nohup tools/rounds/run-series.sh Z1 experiments/zookeeper/zookeeper-cases.tsv \
+     system/zookeeper=$HOME/GraphChecker-zookeeper > $GC_OUT/series-Z1.out 2>&1 < /dev/null &)
+   ```
+
+   One case alone: `CASE_TIMEOUT_SECONDS=14400 tools/rounds/launch-run.sh ~/GraphChecker-zookeeper zk-bugs-quota-init
+   Z1-bugs-quota-init` (the same `GC_OUT` and image). Our final series kept a concurrent run when it took under 30 minutes
+   and ran every longer case again alone on 14 hosts: 4.8 h in all, 4-60 min a case (`results/zookeeper/README.md`).
+
+5. **Reading them**, as §5: `tools/rounds/round-verify.sh Z1` and `tools/rounds/series-stats.py Z1` (claim, time
+   breakdown, closure regions per case). The final series' verdicts (`results/zookeeper/index.tsv`, one reading per case
+   in its README): `SAT_CANDIDATE` (confirmed by a replay, reproduced natively: `final/reproduce.json`) for quota-init,
+   election-offer, container-reuse, retry-seq-quota, observer-master (ZOOKEEPER-5088) and zk-adhoc-03;
+   `SAT_UNCONFIRMED` for zk-adhoc-01 and -02 (every claim refuted by CONFIRM: the false-positive filter);
+   `UNSAT_CLOSED` for trunc-sync (ZOOKEEPER-5094, not detected) and zk-adhoc-04, -06, -07, -10, -11, -12, -13 (10 and 11
+   vacuous by construction: `tools/analysis/vacuity.py --latest --detail <run>`). A run's
+   `out/<case>/schedule/final/candidate.smt2` compares with `results/zookeeper/<case>.smt2.gz`;
+   `tools/analysis/smt-legend.py <run>/out/<case>` names every symbol. Replays race, so wall times vary run to run, and
+   a native reproduction is a count (observer-master and 03 reproduced 4 of 10 natively, the others 10 of 10).

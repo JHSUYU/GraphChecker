@@ -3,11 +3,12 @@
 You take over a finished system. This file is self-contained: what was done, where every piece is, how to run a case
 and the whole series, what is left, and the rules.
 - **Repo:** `/u/vnr3ne/GraphChecker`, GitHub `git@github.com:JHSUYU/GraphChecker.git`.
-- **Branch:** `system/zookeeper`, worktree `/bigtemp/vnr3ne/wt/gc-zookeeper`. It is local; pushing GraphChecker needs the
-  owner's OK.
+- **The code:** GraphChecker's branch `system/zookeeper` (pushed 2026-10-22), worktree `/bigtemp/vnr3ne/wt/gc-zookeeper`.
 - **Engine:** HBase's final engine (`system/hbase` 5b4b6bae9) plus this session's ZooKeeper work (STATE §Z).
-- **Tree:** the fork https://github.com/JHSUYU/zookeeper, branch `graphchecker/zookeeper-checks` (local repo
-  `/u/vnr3ne/zookeeper`, branch `gc/zk-checks`).
+- **The adapter (the tree):** the fork https://github.com/JHSUYU/zookeeper, branch `graphchecker/zookeeper-checks` (local
+  repo `/u/vnr3ne/zookeeper`, branch `gc/zk-checks`): the automatic cluster, the message doors, the markers, the workloads.
+- **From GitHub:** clone the two and check out those branches; [../REPRODUCE.md](../REPRODUCE.md) §8 builds the VM image
+  and the tree and runs every case.
 - **Finished systems:** HDFS, Solr, HBase and ZooKeeper. STATE §0, §S, §H and §Z describe them, each on its own branch.
   HBase's takeover file is [hbase-START-HERE.md](hbase-START-HERE.md).
 
@@ -82,9 +83,10 @@ TODO "ZooKeeper" lists each item with its evidence; none blocks a verdict:
 
 Open from the final series:
 - om reproduces 4/10 natively, and 03 does too.
-- The tree is pushed: the fork's `graphchecker/zookeeper-checks` is at 51b213562 (`gc/zk-hostseed`, which contains the
-  final `gc/zk-checks` 2b6e17bf8).
-- One item is open: pushing GraphChecker's `system/zookeeper` to GitHub. It needs the owner's OK.
+- Both branches are on GitHub: GraphChecker's `system/zookeeper` (pushed 2026-10-22 with the owner's OK) and the fork's
+  `graphchecker/zookeeper-checks` at 51b213562 (`gc/zk-hostseed`, which contains the final `gc/zk-checks` 2b6e17bf8;
+  the step adds only the client's constant host-order seed in a workload and 04's read-only writable-server hold;
+  of the 16 cases only 04 and 13 give a client more than one server, so the others ran on 2b6e17bf8 unchanged).
 
 ## 4. Running a case and the series
 

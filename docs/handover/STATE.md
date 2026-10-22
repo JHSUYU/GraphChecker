@@ -1,4 +1,4 @@
-# State: HDFS finished; Solr ended; HBase finished; ZooKeeper finished (2026-10-21)
+# State: HDFS finished; Solr ended; HBase finished; ZooKeeper finished (2026-10-22)
 
 ZooKeeper: section Z below (the latest work). HBase: section H. Solr: section S. The HDFS group is finished: all 46 cases have an exported `.smt` read by hand against the HDFS code, one row each in
 [../STATUS.md](../STATUS.md) "HDFS checks" (07, the last, closed on 2026-10-07: EX1-adhoc-07e on `system/hdfs1`
@@ -27,7 +27,8 @@ The work was merged in integrations 6-13, each a snapshot of `system/zookeeper` 
 document; lead/RUNS.txt is the full log of runs and decisions.
 
 **GraphChecker.**
-- `system/zookeeper` (local; pushing it to GitHub needs the owner's OK; worktree `/bigtemp/vnr3ne/wt/gc-zookeeper`) at the merge of the handover docs (on 6bf79ac74). It is
+- `system/zookeeper` (pushed to GitHub 2026-10-22, owner; worktree `/bigtemp/vnr3ne/wt/gc-zookeeper`): the code. A fresh
+  clone of it and of the fork's `graphchecker/zookeeper-checks` (the adapter) runs every case (REPRODUCE §8). It is
   `system/hbase` 5b4b6bae9 plus:
   - `experiments/zookeeper/` (HBase's layout; per-case settings in `zk-bugs/case.sh`, `zk-adhoc/checks.tsv` + `case.sh`,
     `workflow.properties`; `doors.jsonl` with the ZK_QUORUM and ZK_SNAPSHOT rows);
@@ -79,7 +80,7 @@ platform, H2 ZooKeeper, H3 RPC, H4 checks, H5 engine analysis) took over from ST
 `experiments/hbase/hbase-cases.tsv`. **All five of the owner's bugs PASS.** Read [START-HERE.md](START-HERE.md), then
 [TODO.md](TODO.md) "HBase" (item 1: the owner's exclusive series), then LESSONS §9.
 
-**`system/hbase`** (local only, NOT pushed; = `hbase-int`; worktrees `/bigtemp/vnr3ne/wt/gc-hbase` and
+**`system/hbase`** (the code; pushed to GitHub 2026-10-22, owner; = `hbase-int`; worktrees `/bigtemp/vnr3ne/wt/gc-hbase` and
 `/bigtemp/vnr3ne/wt/gc-hbase-merge`, the latter for merges and gates on lift11): `system/solr`'s engine plus the first
 session's HBase work (doors `HBASE_RPC` and ZooKeeper, continuation and timer identity, the VM's enums and sorted maps,
 PLAN/COMPOSE/CONFIRM fixes, `tools/analysis/vacuity.py`) and, from the second session, each gated:
@@ -227,13 +228,16 @@ that serves throughput.
 
 ## 2. GraphChecker branches (repo `~/GraphChecker`, remote `origin` = github)
 
-The remote keeps three branches (2026-10-08, by the lead):
+The remote keeps one branch per system (2026-10-08 cut down to three by the lead; then one pushed per finished system):
 
 | remote branch | what it is |
 | --- | --- |
 | `main` (default) | the 2026-10-03 body (round V25, 14/14 on the named HDFS, Solr and ZooKeeper cases; VM `vm-model-guards2`, HDFS tree `gc/hdfs-unified-dtx`) |
 | `system/hdfs` | the locked HDFS body and its 39 cases (§0) |
-| `system/hdfs1` | the newest body and the other 7 cases (§0); where the next system starts |
+| `system/hdfs1` | the newest HDFS body and the other 7 cases (§0) |
+| `system/solr` | the Solr group (§S; pushed 2026-10-19), from `system/hdfs1`; tree: the fork `JHSUYU/solr` `graphchecker/solr-checks` |
+| `system/hbase` | the HBase group (§H; pushed 2026-10-22), from `system/solr`; tree: the fork `JHSUYU/hbase` `graphchecker/hbase-checks` |
+| `system/zookeeper` | the ZooKeeper group (§Z; pushed 2026-10-22), from `system/hbase`; tree: the fork `JHSUYU/zookeeper` `graphchecker/zookeeper-checks` |
 
 Every other remote branch was deleted, bundled first: `/bigtemp/vnr3ne/handover/2026-10-08/graphchecker-remote-branches.bundle`
 (`study`, `hdfs-compose-perf-wip`, `hdfs-container-writers`; `git fetch <bundle> 'refs/remotes/origin/*:refs/remotes/bundle/*'`
@@ -242,8 +246,6 @@ branches still exist (`git branch`, their worktrees in `git worktree list`); tho
 
 | local branch | head | state |
 | --- | --- | --- |
-| `system/solr` | `system/hdfs1` + the Solr plan (worktree `/bigtemp/vnr3ne/wt/gc-solr`) | the Solr group's branch (TODO Solr): 20 cases, the 8 bug checks SAT |
-| `system/hbase`, `system/zookeeper` | `fe3a5f1a0` (= `main`) | each system's branch-to-be: `system/hdfs1` is merged into it when its turn comes (TODO) |
 | `hdfs1-confirm-first` | `da913cd7c` | no witness attempt starts while a confirmation is queued, running or returned; merge only if a confirmation is seen waiting > 10 min (TODO HDFS §5) |
 | `hdfs1-prefix-span`, `hdfs-rule1`, `hdfs-u18-fix` | `40127e2b5`, `7d2819214`, `8ed56ddeb` | not for merge: the merged-span prefix (superseded by TODO HDFS §3's design), rule 1 and the own-fault key (missed the throughput bar, open defect 51) |
 | `solr-bug-reindex` | `12283e3f1` | Solr #04 and Solr replay fidelity; SBR26 13/14 (solr-18413 regressed). For the Solr turn |
@@ -276,6 +278,8 @@ any of them anew from the fork ([../REPRODUCE.md](../REPRODUCE.md) §3):
 | `/bigtemp/vnr3ne/wt/pno-trees/lucene-solr-checks` | `gc/solr-zk2` `914e56311a` | (part of the final tree) | Z2's codec capture (`Utils.toJSON`/`fromJSON`) on `gc/solr-zk-next`; built |
 | `/bigtemp/vnr3ne/wt/sg2b-trees/lucene-solr-checks` | detached `88425b0` | none | the tree of rounds SG2b/SG2c and agent F2's runs |
 | `/bigtemp/vnr3ne/wt/lucene-solr-bugs` | `gc/solr-bugs` `f65aaf7` | none | `gc/solr-checks`' base; `solr-bug-reindex`'s rounds |
+| `/u/vnr3ne/hbase` | `gc/hbase-checks` `b5d5cc6a20` | `graphchecker/hbase-checks` on the fork `JHSUYU/hbase` | THE HBase tree of every `system/hbase` case (REPRODUCE §7 clones it; STATE §H) |
+| `/u/vnr3ne/zookeeper` | `gc/zk-checks` `51b213562` | `graphchecker/zookeeper-checks` on the fork `JHSUYU/zookeeper` | THE ZooKeeper tree of every `system/zookeeper` case (REPRODUCE §8 clones it; STATE §Z; the final series' tree sets `/bigtemp/vnr3ne/wt/zk-int-trees-11`, `-12`) |
 | `/bigtemp/vnr3ne/wt/zookeeper-unified`, `zookeeper-hb` | `gc/zk-unified` `8f18cf3a4`, `gc/zk-unified-hb` `47ddc8b36` | none (never push: apache remote) | the zk-bugs cases (`main`) |
 | `/bigtemp/vnr3ne/wt/hbase-unified` | `gc/hbase-unified` `1051825287` | none (never push: apache remote) | HBase cases; must drop `CausynthRpc.java:61-62`'s `, call.param` before any run on the new body |
 

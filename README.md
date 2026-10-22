@@ -54,18 +54,23 @@ The owner (long-term, 2026-10-05): "一定要最大化利用10个server。这10�
 checks"; 07, the last, closed on 2026-10-07), and every case then ran alone on the ten lifts for its time breakdown
 (series EX1, [docs/design/PERFORMANCE.md](docs/design/PERFORMANCE.md) §6). The work ends as two branches, by the owner's
 ruling: `system/hdfs` (the locked body, 39 cases) and `system/hdfs1` (the newest body, the other 7 and every later
-engine change); nothing goes to `main`. The remote keeps `main`, `system/hdfs` and `system/hdfs1`; the Hadoop fork keeps
-the four trees the cases read (`graphchecker/*`, STATE §3). Everything a run of the 46 cases needs is on those
+engine change); nothing goes to `main`. The remote keeps `main`, one branch per system (`system/hdfs`, `system/hdfs1`,
+`system/solr`, `system/hbase`, `system/zookeeper`); each system's fork keeps the trees its cases read (`graphchecker/*`,
+STATE §3). Everything a run of the 46 cases needs is on those
 branches: [docs/REPRODUCE.md](docs/REPRODUCE.md) rebuilds it from a fresh clone (the VM image, the four trees, both
 checkouts) and runs the series. **Solr is finished for now** (2026-10-19): the engine's rewrite and the final round
 SGF9 are on `system/solr` (pushed; from `system/hdfs1`), the tree is the Solr fork's `graphchecker/solr-checks`, and
 [docs/REPRODUCE.md](docs/REPRODUCE.md) §6 runs the 20 cases from a fresh clone.
 [docs/handover/STATE.md](docs/handover/STATE.md) §S says where it stands, [docs/handover/TODO.md](docs/handover/TODO.md)
-"Solr: after SGF9" what is left; STATUS "Solr checks" each case's result. **HBase is the current work** (this branch,
-`system/hbase`, built from `system/solr`; the tree is the HBase fork's `graphchecker/hbase-checks`), stopped by the
-owner on 2026-10-19 for a handover: [docs/handover/START-HERE.md](docs/handover/START-HERE.md) is where the next lead
-starts, STATE §H what `system/hbase` holds and each case's result, TODO "HBase" the next runs in order, LESSONS §9 what
-HBase taught us, [docs/REPRODUCE.md](docs/REPRODUCE.md) §7 how to run the HBase cases from a fresh clone.
+"Solr: after SGF9" what is left; STATUS "Solr checks" each case's result. **HBase is finished** (2026-10-21): the code is
+`system/hbase` (built from `system/solr`; `results/hbase/` holds each case's final `.smt`, claim and time table), the
+adapter the HBase fork's `graphchecker/hbase-checks`; [docs/REPRODUCE.md](docs/REPRODUCE.md) §7 runs the 22 cases from a
+fresh clone of the two, [docs/handover/hbase-START-HERE.md](docs/handover/hbase-START-HERE.md) is its takeover file, STATE
+§H what it holds. **ZooKeeper is finished** (2026-10-22; this branch): the code is `system/zookeeper` (built from
+`system/hbase`; `results/zookeeper/`), the adapter the ZooKeeper fork's `graphchecker/zookeeper-checks`
+(`https://github.com/JHSUYU/zookeeper.git`); [docs/REPRODUCE.md](docs/REPRODUCE.md) §8 runs the 16 cases from a fresh
+clone of the two. [docs/handover/START-HERE.md](docs/handover/START-HERE.md) is where a new lead starts, STATE §Z what
+the branch holds, TODO "ZooKeeper" what is parked, LESSONS §10 what ZooKeeper taught us.
 
 The README is an index. The handover documents hold the state, the plan and the rules. Every agent
 that works on this project takes [RULES.md](docs/handover/RULES.md),
@@ -74,8 +79,8 @@ that works on this project takes [RULES.md](docs/handover/RULES.md),
 
 | # | document | what it holds |
 | --- | --- | --- |
-| 0 | [docs/handover/START-HERE.md](docs/handover/START-HERE.md) | A new lead starts here: where HBase stands at the 2026-10-19 handover, what to read in order, what is left, how to run a case, the rules, where everything is |
-| 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands: HBase at the 2026-10-19 handover (§H: what `system/hbase` and the HBase fork's tree hold, each case's result, where everything is); Solr after its final round SGF9 (2026-10-19, §S: what `system/solr` holds, the fork's tree, each study check's result and time); the end of the HDFS group (2026-10-08): the two HDFS branches and what each holds; the goals (verbatim); the remote and the parked local branches; every system tree (Hadoop, Solr, ZooKeeper, HBase) with its branch and, for HDFS, the fork's branch it is; VM images and snapshots; the rounds that closed each case; where the evidence lives. |
+| 0 | [docs/handover/START-HERE.md](docs/handover/START-HERE.md) | A new lead starts here: ZooKeeper finished (2026-10-22), each case's verdict, what to read in order, what is left, how to run a case and the series, the rules, where everything is (HBase's: [hbase-START-HERE.md](docs/handover/hbase-START-HERE.md)) |
+| 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands: ZooKeeper finished (§Z: what `system/zookeeper` and the ZooKeeper fork's tree hold, snapshots, images, runs, evidence); HBase finished (§H: what `system/hbase` and the HBase fork's tree hold, each case's result, where everything is); Solr after its final round SGF9 (2026-10-19, §S: what `system/solr` holds, the fork's tree, each study check's result and time); the end of the HDFS group (2026-10-08): the two HDFS branches and what each holds; the goals (verbatim); the remote and the parked local branches; every system tree (Hadoop, Solr, ZooKeeper, HBase) with its branch and, for HDFS, the fork's branch it is; VM images and snapshots; the rounds that closed each case; where the evidence lives. |
 | 2 | [docs/handover/TODO.md](docs/handover/TODO.md) | The plan, per system in the owner's order (HDFS, Solr, HBase, ZooKeeper): for HDFS the follow-ups (the two-phase final acceptance run, the general fixes the workarounds stand in for, the defects found, speed, cleanup); then each next system's steps. |
 | 3 | [docs/handover/RULES.md](docs/handover/RULES.md) | The owner's standing rules, long-term, quoted: what a finished check is (only SAT or UNSAT, a right `.smt`), symbolic scope first, general fixes only, no fallback code, a large closure converges (a bound is a rare last resort), workarounds with measure, system by system, git and safety. |
 | 3b | [docs/handover/CHECKING.md](docs/handover/CHECKING.md) | How every verdict and `.smt` is checked before it counts (round-verify's columns, the hand check with the legend) and the twenty-one traps the leads fell into (cut searches, unbound handoffs, bounded rounds, constant fatal arms, unreached arms, one-value domains, HELD values, the let-binding trap, NO-SYMBOL, a sweep's default budget, run-to-run open arms, read-order divergence, residue that cannot move a constant phi, ...). |
@@ -89,7 +94,7 @@ that works on this project takes [RULES.md](docs/handover/RULES.md),
 | 8 | [docs/design/README.md](docs/design/README.md) | The design at a glance, stage by stage, and the index of the design specs (PIPELINE, SYMBOL-SCOPE, IDENTITY, CONTRACT-SPEC, VM, PERFORMANCE). |
 | 9 | [docs/design/PERFORMANCE.md](docs/design/PERFORMANCE.md) | Where a campaign's time goes, how ten lifts run many campaigns at once, why cases were slow, how to debug a slow case, the open speed items. |
 | 10 | [docs/STATUS.md](docs/STATUS.md) | Every capability: done / partial / not done, with code pointers and the per-system surface (adapters, workarounds); every HDFS case's verdict and its `.smt` read by hand ("HDFS checks"); the open defects. |
-| 11 | [docs/REPRODUCE.md](docs/REPRODUCE.md) | From the GitHub branches alone: the machines, both GraphChecker checkouts, the VM image, the four HDFS trees, running one case or all 46 (each alone, as series EX1), reading the results against `experiments/hadoop/hdfs-cases.tsv`. |
+| 11 | [docs/REPRODUCE.md](docs/REPRODUCE.md) | From the GitHub branches alone: the machines, the GraphChecker checkout of each system, its VM image, its fork's trees, running one case or all of them, reading the results: HDFS (§0-§5), Solr (§6), HBase (§7), ZooKeeper (§8). |
 
 The sections below are the user-level reference: the pipeline, running one case, running the bug
 checks, outputs, and the repository map.
