@@ -116,18 +116,22 @@ public final class Identity {
             if (consumed && start.thread.get() != Thread.currentThread()) {
                 serves();
             }
-            Claim held = starts.peek();
-            if (held != null && held.scope == claimScope()
-                    && onlyStartsFrom(held.depth)) {
-                while (depth() > held.depth) levels.remove(depth());
-                closeStartsFrom(held.depth);
-            }
+            endHeldClaim();
             starts.push(new Claim(depth(), start.key, own, consumed,
                     own ? ClaimKind.NONE : kind, claimScope(), claimSerial++));
             for (Frame frame : own || ranHere
                     ? Collections.singletonList(start.frame())
                     : start.frames) {
                 levels.add(new Level(frame, 0L, null, start.window));
+            }
+        }
+
+        private void endHeldClaim() {
+            Claim held = starts.peek();
+            if (held != null && held.scope == claimScope()
+                    && onlyStartsFrom(held.depth)) {
+                while (depth() > held.depth) levels.remove(depth());
+                closeStartsFrom(held.depth);
             }
         }
 
@@ -538,7 +542,10 @@ public final class Identity {
     private static void adopt(State state, Object carrier, Object queue,
                               boolean item, boolean continuation) {
         Start start = taken(carrier, queue);
-        if (item && (start == null || start == Start.UNNAMED)) state.serves();
+        if (item && (start == null || start == Start.UNNAMED)) {
+            state.serves();
+            state.endHeldClaim();
+        }
         if (start == null) return;
         boolean own = carrier == Thread.currentThread();
         if (start == Start.UNNAMED) {

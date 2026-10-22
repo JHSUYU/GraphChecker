@@ -181,7 +181,11 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   ran on its last task's frames and each send nested under the one before (HBA1: 3777 frames). Work
   its starter runs itself (an executor that runs a task on the calling thread) stands on the
   starter's frames already and opens the start frame alone (`Start#ranHere`). A queue item's claim
-  lasts until the consumer takes its next item in the same work (`#claimItem`) or until the region
+  lasts until the consumer takes its next item in the same work (`#claimItem`, `State#endHeldClaim`,
+  whether that item's start is named, unnamed or absent -- ended only by a named one, a named
+  item's carried scope kept naming a long-running consumer's region: once ZooKeeper's Prep `run()`
+  took the container manager's delete, filed under the test's root, every later client request,
+  whose start is unnamed, ran inside that occurrence and opened none of its own, ZA8-cont) or until the region
   entry it was taken inside exits, whatever that entry opened -- an occurrence, a fold's marker or
   unnamed work's (`#regionExit`: the claims at or below the depth the entry was made at close with
   their scope; a claim taken before the entry, as a queue loop's condition calling a folded

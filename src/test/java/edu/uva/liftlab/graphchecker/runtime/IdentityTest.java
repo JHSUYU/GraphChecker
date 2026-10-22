@@ -163,6 +163,35 @@ public class IdentityTest {
     }
 
     @Test
+    public void anUnnamedItemEndsTheClaimOfTheItemBeforeIt() throws Exception {
+        Object putter = new Object();
+        RuntimeTraceContext.registerSource(putter, DN);
+        Object queue = new LinkedBlockingQueue<Object>();
+        Object cleanup = new Object();
+        long request = RuntimeTraceContext.beginRequest(putter, "cleanup");
+        Identity.startWork("<a.Manager: void check()>#u5", cleanup, queue);
+        RuntimeTraceContext.endRequest(request);
+        Object client = new Object();
+        Identity.startWork("<a.Worker: void submit()>#u8", client, queue);
+        Object daemon = new Object();
+        Identity.startWork(ACCEPT, daemon, null);
+        List<String> seen = claimed(daemon, carrier -> {
+            List<String> said = new ArrayList<String>();
+            said.add(opened("REGION.prep"));
+            Identity.claimItem(cleanup, queue);
+            said.add(Identity.currentOccurrence(DN.key()).context().render());
+            Identity.claimItem(client, queue);
+            long hop = RuntimeTraceContext.beginRequest(DN, "served");
+            said.add(Identity.currentOccurrence(DN.key()).context().render());
+            RuntimeTraceContext.endRequest(hop);
+            Identity.regionExit(null);
+            return said;
+        });
+        assertEquals(Arrays.asList("none", "Root:CLIENT/cleanup#1",
+                "Root:CLIENT/served#1"), seen);
+    }
+
+    @Test
     public void aTurnInsideAnOccurrenceRestartsNoCount() {
         String loop = "<a.Actor: void offerService()>#u3";
         String send = "<a.Actor: void sendHeartBeat()>#u5";
