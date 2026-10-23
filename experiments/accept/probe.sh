@@ -7,6 +7,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/../../tools/lib/gc-env.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/../../tools/lib/z3-race.sh"
 ACCEPT_Z3_TIMEOUT=${Z3_TIMEOUT_SECONDS:-600}
 ACCEPT_WHOLE=${PROBE_WHOLE_SECONDS:-60}
+# The probe re-decides what the campaign's DECIDE already decided, for the report alone: its per-path split stops at
+# this budget over the whole probe (solr-adhoc-05, R3: 340 paths x up to 600 s each, serially, held its row for hours).
+ACCEPT_BUDGET=${PROBE_BUDGET_SECONDS:-900}
+probe_started=$(date +%s)
 (( ACCEPT_WHOLE > ACCEPT_Z3_TIMEOUT )) && ACCEPT_WHOLE=$ACCEPT_Z3_TIMEOUT
 
 case_id=${1:?case}; dir=${2:?case dir}; work=${3:?work dir}
@@ -110,6 +114,11 @@ run() {
     undecided=""
     verdict=""
     for each in $(ls "$work/probe/paths" | grep '\.smt2$' | sort -n); do
+      if (( $(date +%s) - probe_started >= ACCEPT_BUDGET )); then
+        verdict=BUDGET
+        [[ -n "$undecided" ]] || undecided=BUDGET
+        break
+      fi
       cat "$work/probe/paths/$each" >"$work/probe/paths/$name.$each.q"
       [[ -n "$extra" && -s "$extra" ]] \
         && cat "$extra" >>"$work/probe/paths/$name.$each.q"
