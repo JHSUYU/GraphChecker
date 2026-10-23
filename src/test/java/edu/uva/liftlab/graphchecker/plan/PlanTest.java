@@ -183,6 +183,26 @@ public class PlanTest {
                         Collections.singletonList(planned)).isEmpty());
     }
 
+    @Test
+    public void anExposurePastTheTaskBoundAddsNoTask() throws Exception {
+        List<JsonObject> planned = new ArrayList<JsonObject>();
+        for (int index = 0; index < ExecutionTask.maxCampaignTasks();
+             index++) {
+            JsonObject task = task("TASK." + index);
+            task.addProperty("occurrenceId", "planned-" + index);
+            planned.add(task);
+        }
+        JsonObject exposed = new JsonObject();
+        exposed.addProperty("kind", ExposedRegionPlanMain.EXPOSED_REGION);
+        exposed.addProperty("occurrence",
+                tick(NodeId.parse("auto0/node3#epoch0")).render());
+        exposed.addProperty("sessionId", "s-grow");
+        assertTrue("the plan is at the campaign's task bound",
+                ExposedRegionPlanMain.plan(null, null,
+                        Collections.singletonList(exposed), planned)
+                        .isEmpty());
+    }
+
     private static JsonObject task(String taskId, String... actions) {
         JsonObject task = new JsonObject();
         task.addProperty("taskId", taskId);
