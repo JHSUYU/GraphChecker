@@ -1947,7 +1947,9 @@ unanswered when the exploration ended). One GROW is one GENERATION of the plan
 and the class tree, under `generations/g<k>/`, BUILT BESIDE THE LOOP (`campaign_stream_grow_build`,
 GROW's lane, §7.9; one at a time, from the plan and the tree current when it started):
 `plan.ExposedRegionPlanMain` writes the generation's plan, the one before it plus one task row per
-exposed address (admission basis `EXPOSED_BY:`, static inputs only, the plan's `replayGroupId`) and
+exposed address the plan does not task yet (admission basis `EXPOSED_BY:`, static inputs only, the plan's
+`replayGroupId`; an exposure of a tasked occurrence adds none, whether a ZooKeeper chain edge's or a GROW re-run's
+computed against an older plan -- solr-adhoc-19 R1 died at a weave that refused g33's duplicate taskId) and
 each grown invocation (below), as a new file, and INSTRUMENT weaves that plan
 (`campaign_instrument`'s plan argument) into the generation's own tree where its weave key (§4) is
 not the key of the tree it stands on; the head meanwhile goes on starting, collecting, landing and
@@ -2287,7 +2289,9 @@ obligation cancelled or reaped, by id, and `roundDropped`, a round never taken):
   `reproduce_min_s`) twice -- its native runs go out at once and its control runs queue behind
   them, two waves where the pool holds one --, never less than
   `campaign_reserve_s` (600; a budget not above it is refused by
-  `validate_config`). The exploration ends as at a witness (queue cancelled, what runs or returned
+  `validate_config`). The exploration may also carry its own cap, `explore_budget_s` (0: none; solr-adhoc runs
+  7200, owner 2026-10-22: "exploration上限给2小时"): once EXPLORE has run that long it stops the same way, its detail
+  naming that budget. The exploration ends as at a witness (queue cancelled, what runs or returned
   unlanded reaped, a round planning or untaken dropped), and the stop is a DIAGNOSTIC row stating
   what it left owed. A REAP ENDS WHOLE TREES (`campaign_stream_reap`, `campaign_frozen_tree`): each
   process is stopped as it is listed and the tree listed again until no new one appears, before
@@ -2623,7 +2627,9 @@ against 400 MB before, so 27 of its 353 paths composed before the bound, against
 minute says how full the old generation is. A composition whose paths all fit the bound can still run out of the engine heap
 building the body (SGF8-adhoc-05: 332 of 332 paths at 73 %); `do_compose` then composes again with half the
 paths the composer said it composed (`ComposeMain --max-paths`, the rest named `COMPOSE_HEAP_BOUND` as above),
-until one composition ends or one path is all it had.
+until one composition ends or one path is all it had. A case may cap the composed paths from the start instead
+(`compose_max_paths`, 0: none; solr-adhoc-14 composes at most 117: its R2 composition outgrew 16384 and 21504 MB at
+235 of 260 paths, 2 h of COMPOSE before the halving).
 
 THE COMPOSER HOLDS WHAT THE PATH IT COMPOSES ASKS FOR, AS FAR AS ITS HEAP HAS ROOM (`Corpus#holding`,
 `contract.RowHold`, `RowHold#SHARE` 0.6). Its corpus is read `Parallel#READS` sessions at a time, the next ones
@@ -3901,7 +3907,9 @@ hold, read off `final/result.json`, `gaps.json` and `cone.json`:
   families.
 
 `probe.sh` strips the `valuation__` pins from `candidate.smt2` and asks z3 about the formula
-unpinned, with the accepted assignment and with the other polarity; it is reported, never gated on.
+unpinned, with the accepted assignment and with the other polarity; it is reported, never gated on. Undecided whole
+in 60 s, it asks path by path (600 s each), until `PROBE_BUDGET_SECONDS` (900) over the whole probe, then says
+`BUDGET` (solr-adhoc-05 R3: 340 paths held its summary row 48+ min).
 
 Before the cases and before each case, `accept.sh` requires `MIN_FREE_GB` (6) free on the
 filesystem `OUT` is written to (its nearest existing parent before `OUT` exists), `acc_free_gb`;

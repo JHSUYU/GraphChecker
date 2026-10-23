@@ -136,7 +136,8 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
   `W6C*`, `Z*`, `G*` (in their own `GC_OUT`). Use a fresh name: the next `main` round is `V26`, the next HDFS group round `HG11` (used 2026-10-06/07 on the two HDFS branches: `HL1`, `HL1R-*`, `HF1`-`HF3`, `OK3`-`OK5`, `W21`, `CC*`, `EX1`; used 2026-10-05/06: `HG8*`, `HG9`, `HG9B`, `HG9L-<case>`, `SW1`, `SW1L-45`, `HG10V`; agents', each in its own `GC_OUT`: `TM*`, `CL*`, `AR*`, `AW*`, `DO*`, `FD*`, `CW*`, `SH55`, `NP*`, `WD*`, `SL*`) (HDFS-study names used: `HG1`-`HG5`, `HG5A`, `HG7`, `HS*`, `HN*`, `TD*`, `DS2`-`DS8`, `DC*`, `IOF*`, `HSS*`, `HSC*`, `HOA*`, `HDV*`, `HCS*`; agents' of 2026-10-05, each in its own `GC_OUT`: `RIH*`, `MCH*`, `WHF*`, `HCL*`, `PS*`, `AS*`, `HR*`, `DW*`, `D1`).
 - Typical wall time: the 46 HDFS cases each alone on the ten lifts are [../design/PERFORMANCE.md](../design/PERFORMANCE.md)
   §6 (series EX1: most 10-40 min, 11741 ~1.5 h, 07 ~3 h). After the campaign, the acceptance report's `probe.sh` (z3
-  per alternative path, 600 s each) can add up to 30 min before the summary row is written; it is reported, not a gate.
+  per alternative path, 600 s each, at most `PROBE_BUDGET_SECONDS` 900 over the probe) adds up to ~15 min before the
+  summary row is written; it is reported, not a gate.
 
 **The HDFS group (a sweep of the 46 cases), as the 2026-10-05 lead ran it (round HG7):**
 
