@@ -155,6 +155,16 @@ public final class ExposedRegionPlanMain {
             }
         }
         if (exposures.isEmpty()) return new ArrayList<>();
+        // The plan stays within the campaign's task bound, as a planning
+        // round's closure stops at its ceiling: an exposure past it is not
+        // tasked (solr-adhoc-31, X1: g25 grew past 1024 tasks and the weave
+        // refused the plan, ending the campaign).
+        int bound = ExecutionTask.maxCampaignTasks();
+        int room = bound - planned.size();
+        if (room <= 0) {
+            pastBound(bound, planned.size(), exposures.size());
+            return new ArrayList<>();
+        }
         StaticScopeMap scopeMap = StaticScopeMap.read(scopeMapFile);
         if (!scopeMap.stated()) {
             throw new IOException("static scope map states no site: "
@@ -179,6 +189,7 @@ public final class ExposedRegionPlanMain {
         List<RegionInstancePlan> exposed = new ArrayList<>();
         List<String> exposedBy = new ArrayList<>();
         Set<String> seen = new LinkedHashSet<>();
+        int past = 0;
         for (JsonObject row : exposures) {
             OccurrenceAddress address = OccurrenceAddress.parse(
                     optionalString(row, "occurrence"));
@@ -192,6 +203,10 @@ public final class ExposedRegionPlanMain {
                         + "occurrence address or names no session: " + row);
             }
             if (!seen.add(address.render())) continue;
+            if (exposed.size() >= room) {
+                past++;
+                continue;
+            }
             StaticProgram.RegionRow skeleton = skeletons.get(regionId);
             if (skeleton == null && edge) {
                 System.out.println(ZkChain.EDGE + " " + address.render()
@@ -213,6 +228,7 @@ public final class ExposedRegionPlanMain {
             exposed.add(plan);
             exposedBy.add(sessionId);
         }
+        if (past > 0) pastBound(bound, planned.size() + exposed.size(), past);
         ConcolicScheduler.SymbolicInputSelection inputs =
                 ConcolicScheduler.SymbolicInputSelection.read(scopeMap,
                         regionCatalog);
@@ -247,6 +263,13 @@ public final class ExposedRegionPlanMain {
             rows.add(task);
         }
         return rows;
+    }
+
+    private static void pastBound(int bound, int planned, int past) {
+        System.out.println(EXPOSED_REGION + ": the plan holds " + planned
+                + " of the campaign's " + bound + " tasks, so " + past
+                + " exposed occurrence(s) are not tasked: the closure is "
+                + "truncated there");
     }
 
     private static Map<String, Object> planRow(
