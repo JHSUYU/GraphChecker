@@ -21,6 +21,9 @@ case "$1" in
     export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0
     client_fault_transports=(NONE)
     export CAUSYNTH_CAMPAIGN_MAX_CLAIMS=1
+    # 14's body outgrows the engine heap past ~120 paths (R2: 235 of 260 composed at 16384 and at 21504 MB, then
+    # out of heap): compose at most 117 from the start
+    [[ "$1" != 14 ]] || export CAUSYNTH_COMPOSE_MAX_PATHS=117
     ;;
   09|10|13|19|21|39|40)
     export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0 ;;

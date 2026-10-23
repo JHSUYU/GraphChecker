@@ -126,6 +126,7 @@ workflow_config_keys=(
   "view_hold_max_ms CAUSYNTH_VIEW_HOLD_MAX_MS krp 3000"
   "recording_max_trace_mb CAUSYNTH_RECORDING_MAX_TRACE_MB krp 4096"
   "compose_max_valuations CAUSYNTH_COMPOSE_MAX_VALUATIONS krp 16"
+  "compose_max_paths CAUSYNTH_COMPOSE_MAX_PATHS krp 0"
   "declared_target_occurrence CAUSYNTH_TARGET_OCCURRENCE krp -"
 )
 
@@ -656,6 +657,9 @@ ${campaign_stop_after}" ;;
   [[ "${causynth_scope_growth_budget}" =~ ^[0-9]+$ ]] \
     || die "causynth_scope_growth_budget must be a non-negative integer: \
 ${causynth_scope_growth_budget}"
+  [[ "${compose_max_paths}" =~ ^[0-9]+$ ]] \
+    || die "compose_max_paths must be a non-negative integer (0: none): \
+${compose_max_paths}"
   [[ "${explore_budget_s}" =~ ^[0-9]+$ ]] \
     || die "explore_budget_s must be a non-negative integer (0: none): \
 ${explore_budget_s}"
@@ -873,6 +877,10 @@ do_compose() {
     || selection+=(--root-domains "${causynth_root_domains}")
   [[ -z "${compose_reuse_dir:-}" ]] \
     || selection+=(--reuse "${compose_reuse_dir}")
+  # A case may cap the composed paths from the start (compose_max_paths, 0: none) rather than learn the cap from an
+  # out-of-heap composition: solr-adhoc-14 composed 235 of 260 paths at 16384 MB and again at 21504 MB before each ran
+  # out (R2, 2 h of COMPOSE); the paths left out are named, DIAGNOSTIC (Composer: HEAP_BOUND)
+  (( compose_max_paths == 0 )) || cap=(--max-paths "${compose_max_paths}")
   said=$(mktemp) || return
   while true; do
     status=0

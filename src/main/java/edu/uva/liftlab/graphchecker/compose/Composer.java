@@ -1334,10 +1334,11 @@ public final class Composer {
                 refused(path, Collections.singletonList(GapRow.of(
                         path.sessionId, GapKind.ADMISSION_GAP,
                         GapClass.DIAGNOSTIC, HEAP_BOUND, "left out (best "
-                                + "effort): " + (capped ? "a composition of "
-                                + "more paths ran out of the engine heap "
-                                + "building its body, so at most " + maxPaths
-                                + " are composed" : "the composer's old "
+                                + "effort): " + (capped ? "at most " + maxPaths
+                                + " paths are composed (--max-paths: the "
+                                + "case's compose_max_paths, or a composition "
+                                + "of more ran out of the engine heap)"
+                                : "the composer's old "
                                 + "generation was past "
                                 + Math.round(HEAP_SHARE * 100) + " % after "
                                 + "its last sweep with " + ordinal
