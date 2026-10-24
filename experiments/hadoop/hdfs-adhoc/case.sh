@@ -1,4 +1,5 @@
 export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0
+export CAUSYNTH_REGION_PATH_MAX_TASKS=128
 repo=${GC_TREES}/hadoop-hdfs-study-r7
 if [[ "$1" == 21 ]]; then
   repo=${GC_TREES}/hadoop-hdfs-21
@@ -9,9 +10,6 @@ row=$(awk -F'\t' -v id="${1:?usage: case.sh <NN>}" '$1 == id' "${here}/checks.ts
 IFS=$'\t' read -r _ test_class test_method window target_occurrence classes <<<"${row}"
 if [[ "$1" == 07 ]]; then
   export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=6
-fi
-if [[ "$1" == 14 || "$1" == 16 ]]; then
-  export CAUSYNTH_REGION_PATH_MAX_TASKS=128
 fi
 if [[ "$1" == 24 || "$1" == 26 || "$1" == 37 ]]; then
   export CAUSYNTH_REPLAY_TIMEOUT_S=7200
