@@ -19,7 +19,7 @@ everything lives, how to build, test, run and read a campaign, and the traps the
 | Solr trees | `system/solr`'s 20 cases: **`lucene-solr-checks`** (`$GC_TREES/lucene-solr-checks`, branch `gc/solr-checks`, a worktree of `~/lucene-solr-8_11`; to be the fork's `graphchecker/solr-checks`, `experiments/solr/trees.tsv`): `gc/solr-bugs` plus every case's marker, the bug checks' workloads and the full-distributed tests' hook. **Making it** from the fork: `experiments/solr/prepare-trees.sh` via `tools/onlift.sh -g 8` (clone, Ant build against the checkout's jar, every case's workload once natively; after a tree change `SKIP_TREE_BUILD=1 experiments/solr/build.sh <tree> <seed> '<Class>#<method>'` runs one workload). `main`'s cases: one Solr 8.11 tree line, `~/lucene-solr-unified` (branch `gc/solr-unified`, a worktree of `~/lucene-solr-8_11`): the shared adapter, both cases' workloads and target markers, the two kept scaffold patches (inventory: `/bigtemp/vnr3ne/analysis/unify/solr-inventory.md`); solr-18406 and solr-18413 name its successor `gc/solr-unified-storing` (`/bigtemp/vnr3ne/wt/lucene-solr-storing`: the same plus SolrZkClient's `MessageDoors#storing` write brackets). The older per-case worktrees (`gc/solr`, `~/lucene-solr-18406`, `~/lucene-solr-18413`, `~/lucene-solr-8_11-adhoc`) serve only rounds started on them. Ant build; native Ant tests need `-Dtests.useSecurityManager=false`. `~/solr` is apache/solr main (blobless: never `git grep` a commit there). |
 | ZooKeeper trees | `/bigtemp/vnr3ne/wt/zookeeper-hb` (`gc/zk-unified-hb`, + the RESPONSE door, for `hb-schedule`; Maven repo `/bigtemp/vnr3ne/m2/zookeeper-hb`). `/bigtemp/vnr3ne/wt/zookeeper-unified` (branch `gc/zk-unified` on `branch-3.9`, a worktree of `~/zookeeper`): the adapter (`CausynthZk`, `CausynthZkCluster`), the `zk-bugs` cases' target markers and the quota workload. Maven build into its own repository `/bigtemp/vnr3ne/m2/zookeeper` (`experiments/zookeeper/build.sh`, which installs the GraphChecker jar there; never `~/.m2`). Build a case's workload before its first run: `SKIP_GRAPHCHECKER_INSTALL=1 bash experiments/lib/run.sh experiments/zookeeper/zk-bugs <case> build`. Its only remote is apache/zookeeper: never push it. |
 | HBase tree | `/bigtemp/vnr3ne/wt/hbase-unified` (`gc/hbase-unified`); clones `~/hbase`, `~/zookeeper`, `~/hadoop`, `~/lucene-solr-8_11`; private Maven repos `/bigtemp/vnr3ne/m2/<name>` |
-| host ledger | `$CAUSYNTH_HOST_LEDGER` = `/bigtemp/vnr3ne/gc-out/hosts/<lift>/charges/<mb>.<host>.<pid>.<time>.<rand>`: a charge's mtime is its 120 s lease, renewed every 10 s by its holder; a lapsed lease no longer counts (it is deleted at ten leases); `explorations/` = the capped explorations running. `ls` the charges of a host to see what holds it |
+| host ledger | `$CAUSYNTH_HOST_LEDGER` = `/bigtemp/vnr3ne/gc-out/hosts/<lift>/charges/<mb>.<cores>.<host>.<pid>.<time>.<rand>` (CloudLab: `/bulk/gc-out/hosts/`): a charge's MB and the cores it keeps busy; its mtime is its 120 s lease, renewed every 10 s by its holder; a lapsed lease no longer counts (it is deleted at ten leases); `explorations/` = the capped explorations running. `ls` the charges of a host to see what holds it |
 | evidence and agent tools | `/bigtemp/vnr3ne/gc-out/solr-bugs/{evidence,agent-tools,scripts}` (jstacks of the ZkStateReader-race hangs, A2's `watch-sb.sh`/`watch-stall.sh` run watchers, the storing tree's `spelledAs-adapter.patch`); `/bigtemp/vnr3ne/readout-stream/` (A6's `measure-seed.sh`, `measure-obl.sh`, `compare.py` and the retained-heap tool `heap/tool/HeapRetained.java`: how replay memory was measured; 4.2 GB of data); `/bigtemp/vnr3ne/gc-out/hb-schedule/` (Z1–Z5 with their `run.sh` recipes); `/bigtemp/vnr3ne/ab/` (offline gates; jars in `ab/jars/`) |
 | round outputs | `/bigtemp/vnr3ne/gc-out/hdfs-study/` (the HDFS group's rounds: `accept-<round>-<n>/`, `sweep-<round>-cases.tsv` maps n to the case, `rounds/<round>.cases`); `/bigtemp/vnr3ne/gc-out/hdfs-excl/` (series EX1, every case alone, PRUNE=0: the offline gate's corpora); `/bigtemp/vnr3ne/gc-out/<branch or agent>/` for agents' runs; `gc-out/accept-V25-*` `main`'s last round |
 | owner's memory notes | `~/.claude/projects/-u-vnr3ne-GraphChecker/memory/` (one fact per file, index `MEMORY.md`) |
@@ -88,6 +88,13 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
   cases, so no host heads two before every host heads one; `lift11` heads nothing. A head only drives its campaign: every
   engine JVM, the seed and CONFIRM replays and REPRODUCE's runs go wherever there is room, its own
   host first (PIPELINE §7.7).
+- **Cores bind on CloudLab, memory on liftlab.** Every charge also states the cores it keeps busy (a replay the
+  campaign's measured `campaign_replay_cores`, a solve 2, an engine JVM, a REPRODUCE run and a `fanout.sh` job 1;
+  PIPELINE §7.7), and a start goes only where the live charged cores of every campaign on the host plus its own stay
+  within `CAUSYNTH_HOST_MAX_CORES_PCT` (100) percent of `nproc` (a host whose charges keep no core busy takes any one
+  start). On liftlab (30 GB, 48 cores) memory always bound first. On CloudLab (251 GB, 40 logical cores) memory never
+  binds: with cores counted per campaign, round C1's nine campaigns each filled every host to 40 cores (load 70-93,
+  HDFS replays 3-5x slower than liftlab's). Campaigns of a build before this charge no cores (their rows read as 0).
 - REPRODUCE's native runs are charged `reproduce_charge_pct` (130) percent of the recording's peak resident
   memory (`run_engine.sh` `campaign_reproduce_one`): a native run's own peak scatters around the recording's
   (110 runs: 32 above it, the largest 1.27x), and ten charged at 100 % on one host outgrew its 70 % ceiling
@@ -120,7 +127,7 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
   checks") gives every case `CAUSYNTH_STREAM_SHARED_POOL=true`, so the cases it runs at once share
   the lifts: each exploration keeps its share in flight, the slots of its hosts at its measured
   replay charge (`campaign_pool_slots`: on each lift as many replays as fit under the 70 % ceiling
-  at that charge, at most its cores) over the sharing explorations running now (their entries in
+  at that charge, at most its core limit over a replay's cores) over the sharing explorations running now (their entries in
   `$CAUSYNTH_HOST_LEDGER/explorations/`), at least one, read again at every start
   (`campaign_stream_has_slot`).
   A sweep's head is admitted (`fanout.sh` `ADMIT_MB`, no lifelong charge: its campaign reserves the room) for the room it reserves on its host
@@ -279,7 +286,9 @@ everything else, never writing under `<src>`.
   `obligations-<NNNN>/<id>/obligation_result.jsonl` holds ADMITTED / NOT_ADMITTED / UNSAT /
   ADMISSION_GAP, with the reason. Counting refusal reasons across a round finds the dominant waste.
 - **The host ledger** (`$CAUSYNTH_HOST_LEDGER/<lift>/charges/`). It tells you whether a step waits
-  for memory ("waiting for memory for a head step"). A lapsed charge is a file older than 120 s.
+  for memory or cores ("waiting for memory for a head step", "waiting for room: ... N cores charged"). A lapsed
+  charge is a file older than 120 s; a host's live charged cores:
+  `find <ledger>/<host>/charges -newermt @$(( $(date +%s) - 120 )) -printf '%f\n' | awk -F. '{c += $2} END {print c}'`.
 - **Offline first.** A COMPOSE, EXPLORE or CONFIRM-planning change can be replayed on a recorded
   round with `offline-ab.sh` (§6) before any live run.
 
@@ -436,7 +445,7 @@ On this cluster:
 | what | where / how |
 | --- | --- |
 | hosts | `LIFTS="node0 node1 node2 node3 node4"`: all five are workers and heads (`GC_CONTROL_HOST` empty: node0 runs the sessions and serves /bulk, and NFS stays sub-millisecond under load). Builds and offline gates go to node1-4 by hand (`ssh node<k> 'cd <dir> && ...'`) or `tools/onlift.sh`. |
-| the limit | **cores, not memory**: 251 GB never binds; replays keep ~0.8-1.4 cores busy each (`workload_cores_x100`), and the old CPUs run a replay 2-3x slower than a lift. The host ledger charges memory only and a campaign counts only its own starts' cores, so campaigns side by side oversubscribe the CPUs (C1: load 70-93 on 40); judge a host by `/proc/loadavg` too. Development rounds run as sweeps (`tools/adhoc/sweep.sh`, shared pool), about ten campaigns at once; a case's final run goes alone (`tools/rounds/run-series.sh`). |
+| the limit | **cores, not memory**: 251 GB never binds; replays keep ~0.8-1.4 cores busy each (`workload_cores_x100`), and the old CPUs run a replay 2-3x slower than a lift. Every ledger charge states its cores beside its MB (`<mb>.<cores>.<host>...`, §4, PIPELINE §7.7), and a start goes only where every campaign's live charged cores plus its own stay within `CAUSYNTH_HOST_MAX_CORES_PCT` (100) percent of the node's 40; before that a campaign counted only its own starts' cores and campaigns side by side oversubscribed the CPUs (C1: load 70-93 on 40). A build older than the core charges writes rows read as no cores: its campaigns load a node uncounted, so judge a host by `/proc/loadavg` beside its charged cores. Development rounds run as sweeps (`tools/adhoc/sweep.sh`, shared pool), about ten campaigns at once; a case's final run goes alone (`tools/rounds/run-series.sh`). |
 | shared storage | `/bulk` = `GC_BULK`: node0's `/dev/sdb` (ext4 at `/data`), `/data/bulk` exported over NFS 4.2 to the subnet and mounted at `/bulk` on every node (node0 by a bind mount). The home directory is local to each node: everything a run on another node reads lives on /bulk. |
 | local scratch | `/localtmp` on each node = its own `/dev/sdb` (`/data/localtmp`, a bind mount); replays' working directories go to `/localtmp/$USER/graphchecker/`. |
 | repositories | `/bulk/GraphChecker` (`GC_REPO`; worktrees by `tools/lib/worktree-add.sh`, sparse, serialized by a flock), `/bulk/hadoop` (the fork JHSUYU/hadoop; the trees are its worktrees) |
