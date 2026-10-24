@@ -1051,6 +1051,78 @@ public class ComposerTest {
     }
 
     @Test
+    public void aDeliveryHandedOnIsTheOwnRunsOnlyUnderAnOwnArm()
+            throws Exception {
+        Endpoint sent = Endpoint.of(PRODUCER, "PORT.key", at("export#1", 0),
+                0);
+        Endpoint received = Endpoint.of(ANCHOR, "PORT.key",
+                at("attach#1", 0), 0);
+        Endpoint near = Endpoint.of(UPSTREAM, "PORT.near", at("export#2", 0),
+                0);
+        Endpoint far = Endpoint.of(UPSTREAM, "PORT.far", at("export#3", 0), 0);
+        Endpoint fromNear = Endpoint.of(PRODUCER, "PORT.near",
+                at("attach#2", 0), 0);
+        Endpoint fromFar = Endpoint.of(PRODUCER, "PORT.far",
+                at("attach#3", 0), 0);
+        Path iteration = folder.newFolder("handed-on").toPath();
+        for (String id : new String[] {"s0", "s1"}) {
+            boolean seed = id.equals("s0");
+            Session session = new Session(iteration, id, !seed);
+            session.activation(PRODUCER);
+            session.activation(UPSTREAM);
+            session.expression("EXPR.near", constant(seed ? "true" : "false"));
+            session.expression("EXPR.far", constant("true"));
+            session.expression("EXPR.key", symbol(seed ? "v_near" : "v_far",
+                    "Z"));
+            session.export(near, "EXPR.near", 1L, seed ? "true" : "false");
+            session.export(far, "EXPR.far", 2L, "true");
+            session.attach(fromNear, "v_near", seed ? "true" : "false", near);
+            session.attach(fromFar, "v_far", "true", far);
+            session.export(sent, "EXPR.key", 3L, "true");
+            session.attach(received, "vh", "true", sent);
+            session.target("(not vh)", false, true);
+            session.write();
+        }
+        Composer.Composition composition = compose(iteration, 8);
+        String path = null;
+        for (Composer.Disjunct disjunct : composition.disjuncts()) {
+            if (disjunct.path().sessionId.equals("s0")) {
+                path = disjunct.selector();
+            }
+        }
+        assertNotNull("the seed's path is composed", path);
+        Object[][] table = {
+            {"the path's own delivery", received, "s0", true},
+            {"handed on to its own arm: the delivery its run attached",
+                    fromNear, "s0", true},
+            {"handed on to its own arm: another run's delivery", fromNear,
+                    "s1", false},
+            {"handed on only to another run's arm", fromFar, "s0", false},
+        };
+        for (Object[] row : table) {
+            String arm = null;
+            for (String selector : composition.armSelectors()) {
+                ComposedFamilies.ArmChoice choice = composition.arm(selector);
+                if (Refutations.ordinal(selector).equals(
+                        Refutations.ordinal(path))
+                        && choice.attachEndpointIds().contains(
+                        ((Endpoint) row[1]).id())
+                        && choice.sessionIds().contains((String) row[2])) {
+                    arm = selector;
+                }
+            }
+            assertNotNull((String) row[0] + ": an arm", arm);
+            boolean own = (Boolean) row[3];
+            assertEquals((String) row[0] + ": " + composition.ownRun(path),
+                    own, composition.ownRun(path).contains("(assert " + arm
+                            + ")"));
+            assertEquals((String) row[0] + ": taken, a re-pairing", !own,
+                    !composition.repaired(path, Collections.singletonList(
+                            arm)).isEmpty());
+        }
+    }
+
+    @Test
     public void aWorldAnExploredReplayRanToTheFatalIsAValuation()
             throws Exception {
         Object[][] table = {

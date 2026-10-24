@@ -1760,7 +1760,7 @@ public final class Composer {
         }
         terms.addAll(statedJoins(joins, chosen, terms, familyTerms));
 
-        composedFamilies.commit();
+        composedFamilies.commit(observed);
         String fatal = "path_fatal__" + ordinal;
         List<String> withoutFatalArm = new ArrayList<String>(terms);
         if (fatalArm >= 0) withoutFatalArm.remove(fatalArm);

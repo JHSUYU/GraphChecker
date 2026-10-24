@@ -2893,7 +2893,14 @@ handoffs, asserted once the path's arms are all known as `(=> <path> (=> (or <th
 nested message holds as it was closed (hdfs-11741 m1: another run's six-key export, nested under
 the path, contradicted the five-key export of the path's own run in 234 of 235 paths). Its arms
 are chosen only with one of those (`(=> (or <its arms>) (or <those arms>))`), so the model's true
-arm selectors are the chain its path took. A level's messages are closed before any of their arms
+arm selectors are the chain its path took. The path's own run takes its chain too
+(`ComposedFamilies#ownThroughNeeders`, at `#commit`): a handed-on message's arm is the path's own where an
+arm resting on it is own -- the path's own delivery, its run writer, an arm owned so, to a fixed point -- and the
+arm is the delivery the path's session attached at that slot (its arms pair only that session's attach at the
+slot's interaction; one whose body an earlier arm shares is that arm); an arm of a message only other runs'
+arms rest on is never own, since holding it would force one of them (hdfs-17897 C3: the explored fault world's
+own run took a two-hop handoff's inner delivery, which `Composition#repaired` read as a re-pairing, so the own
+witness was refused and a re-pairing at the recorded valuation was claimed first). A level's messages are closed before any of their arms
 closes its own; an arm resting on a message the path closed already is one more thing resting on
 it. A copy per arm instead is a family per arm per level: hdfs-11741 i1's body ran an 8 GB heap
 out. A refused arm, or one whose body equals an earlier arm's (it rests on the same messages),
@@ -3433,8 +3440,8 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    in their order: the first sat path's answer (the asks
    after it stopped, a check still running cancelled), else undecided if any path was, else unsat with the union of
    the paths' cores. A path is asked in its own run first (`Disjunction#pathAsk`,
-   `Composition#ownRun`): its own session's arm of each message the path received and each state
-   read's observed writer, selectors only (never the values its handoffs carried, which are on its
+   `Composition#ownRun`): its own session's arm of each message the path received, of each message
+   an own arm was handed on (§8), and each state read's observed writer, selectors only (never the values its handoffs carried, which are on its
    own clock), within 10 minutes at most; a model there is a model of the question, and only where
    its own run is refuted or undecided is the path asked free (hdfs-11741 L1: two fatal-observing
    paths sat in about 100 s in their own runs, undecided after 30 minutes free). A path unsat under some assertions is unsat under every set containing them,
