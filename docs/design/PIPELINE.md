@@ -3531,10 +3531,24 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    when the recording does not decide, is named DIAGNOSTIC `FORMULA_SAT_AT_RECORDED_VALUATION`.
    `polarityDecides` = ordinal 0 unsat with a `valuation__` pin in its core.
 4. The claim, first match. First of all an explored session's own run, at any count of moved
-   fault markers, fewest first (`ClaimPolicy.Reading#ownWitness`: the selected session's own run
-   as defined below, a replay that planted those roots, pairings and orders and observed the fatal
-   at the anchor, which CONFIRM confirms as "itself the run"; if CONFIRM refutes it, the claim loop
-   excludes its arms and the next composition takes the order below): a world a replay already ran
+   fault markers, fewest first (`ClaimPolicy.Reading#ownWitness`: a replay that planted those roots,
+   pairings and orders and observed the fatal at the anchor, which CONFIRM confirms as "itself the
+   run"; if CONFIRM refutes it, the claim loop excludes its arms and the next composition takes the
+   order below). For each valuation in order whose moved roots a fatal-observing explored session
+   ran (`Composition#ranRoots`; not the seed's, whose fatal blocks), that session's path is asked in
+   its own run, whatever path or arms the valuation's own model chose: the valuation's pins, its own
+   arms and observed writers (`Composition#ownRun`) and its world's clocks -- each cell its replay
+   planted at that skew, every other running on from its reading (`Composition#worldClocks`) -- and
+   the answer is claimed where it selects that path and the test of the own run below holds
+   (without `recordingDecides`, only where `polarityDecides`). Each path is asked once
+   (`Disjunction#askOwnRun`: its own run alone, never then free) and the pass has a sixth of the
+   decide budget (`ClaimPolicy#OWN_RUN_SHARE`); past it the ranking decides, named DIAGNOSTIC
+   `SOLVER_TIMEOUT` `own runs`. A world that planted equal skews on consecutive cells of one clock
+   moves only the first in `movedRoots` (the next jumps by nothing), so its own run fails the clock
+   test and the ranking decides it: a lost own claim, never a wrong one. Unsat or undecided, the order
+   below decides as before (hdfs-17897 C1 0002: each of 15 fatal-observing explored paths was sat in
+   its own run, while the valuation's whole model took another run's arm on it, so the pass judging
+   that model claimed a re-pairing at the recorded valuation instead). A world a replay already ran
    to the fatal is ahead of every world only the model holds (hbase-bugs-ns-rsgroup-removal NC7:
    EXPLORE's replay of the namespace Mutate's fault observed the fatal, while every claim composed
    moved no fault -- STATE re-pairings holding the client's synchronous calls past their own
@@ -3557,15 +3571,12 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    confirm it as one; `UNPRODUCIBLE_ANSWER` DIAGNOSTIC names the root and the reads, once.
    - a moved valuation that is a witness — under the as-happened pins when the recording decides —
      whose moved roots are in no unattested arm (else DIAGNOSTIC `UNATTESTED_ARM`): its `mechanism`.
-     Its own-run part is asked in the first pass above, so within the rank only the rest is left
-     (`ClaimPolicy.Reading#ownRun`, the test of the own run: the selected path observed the fatal, every arm the model takes on
-     it is its own run's pairing, `Composition#repaired`, and the session ran the model's world --
-     its moved roots at the model's values, its clocks the model's jumps, no planted pairing,
-     `Composition#ranModel`, `explore.Moved#ranBy`, the very test CONFIRM's `realizedBy` confirms
-     such a claim by), judged aside so that a corpus with none is decided as without it -- a
-     candidate is first one whose moved roots its session ran (`Composition#ranRoots`), and each
-     valuation is asked as happened or refined (`leastClocks`, margins) once for both passes; then the
-     rest in the valuations' order, which says nothing of what a run already reached (hdfs-adhoc-10
+     Its own run is asked in the first pass above (`ClaimPolicy.Reading#ownRun`, the test of the own
+     run: every arm the model takes on the path is its own run's pairing, `Composition#repaired`, and
+     the session ran the model's world -- its moved roots at the model's values, its clocks the
+     model's jumps, no planted pairing, `Composition#ranModel`, `explore.Moved#ranBy`, the very test
+     CONFIRM's `realizedBy` confirms such a claim by), so within the rank only the rest is left, in
+     the valuations' order, which says nothing of what a run already reached (hdfs-adhoc-10
      SL1: a fault first in the root order was claimed through a writer arm re-paired from another
      session, an order the program forbids, while the SYNC fault its own session had run waited
      thirteen valuations behind);
