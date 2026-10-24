@@ -227,8 +227,10 @@ final class Disjunction implements AutoCloseable {
 
     Z3.Answer whole(List<String> assertions, List<String> asked,
                     boolean wantCore, long budgetMillis) {
-        return solver.ask(composition.query(assertions), asked, wantCore,
-                budgetMillis);
+        Z3.Answer answer = solver.ask(composition.query(assertions), asked,
+                wantCore, budgetMillis);
+        if (answer.timedOut() || answer.memOut()) pathByPath.set(true);
+        return answer;
     }
 
     Z3.Answer askOwnRun(String selector, List<String> assertions,

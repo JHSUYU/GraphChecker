@@ -183,31 +183,16 @@ public final class ClaimPolicy {
         List<Outcome> outcomes = new ArrayList<Outcome>(decided.outcomes());
         Composer.Valuation everyRoot = composition.free(outcomes.size());
         Z3.Answer whole = asks.whole(everyRoot.assertions(),
-                askedSymbols(composition), false,
+                askedSymbols(composition), composition.assertsRefutations(),
                 Math.max(1L, leftMillis(deadlineNanos) / 2L));
         Outcome free = whole.decided()
                 ? new Outcome(everyRoot, Collections.<String>emptyList(),
                 whole, selectedOf(composition, whole),
                 armsOf(composition, whole))
                 : outcome(composition, asks, everyRoot,
-                Collections.<String>emptyList(), false);
+                Collections.<String>emptyList(),
+                composition.assertsRefutations());
         Z3.Answer formula = free.answer();
-        if (formula.unsat() && composition.assertsRefutations()) {
-            Z3.Answer cored = asks.whole(everyRoot.assertions(),
-                    Collections.<String>emptyList(), true,
-                    Math.max(1L, leftMillis(deadlineNanos)));
-            if (cored.unsat() && cored.coreKnown()) {
-                formula = cored;
-            } else {
-                gaps.add(GapRow.of(Composer.COMPOSITION,
-                        GapKind.SOLVER_TIMEOUT, GapClass.DIAGNOSTIC,
-                        "core not returned", "the composed formula is unsat;"
-                                + " its core, asked after the verdict, was not"
-                                + " returned (" + cored.status() + "), so"
-                                + " which refuted claims it rests on is not"
-                                + " known"));
-            }
-        }
         if (formula.unsat()) {
             contradictions(composition, asks, gaps);
             return new Decision(claimWith(claim, gaps), outcomes, formula);
