@@ -11,6 +11,9 @@ IFS=$'\t' read -r _ test_class test_method window target_occurrence classes <<<"
 if [[ "$1" == 07 ]]; then
   export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=6
 fi
+if [[ "$1" == 14 ]]; then
+  export CAUSYNTH_REGION_PATH_MAX_TASKS=256
+fi
 if [[ "$1" == 24 || "$1" == 26 || "$1" == 37 ]]; then
   export CAUSYNTH_REPLAY_TIMEOUT_S=7200
 fi
