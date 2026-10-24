@@ -67,6 +67,7 @@ public final class Identity {
         private boolean adopted;
         private Object work;
         private String requestVerb = "";
+        private String handedMessage = "";
 
         private State() {
             levels.add(new Level(null, 0L, null));
@@ -499,7 +500,8 @@ public final class Identity {
         State state = state();
         boolean continuation = carrier instanceof Continuations.Carrier;
         String named = continuation ? Continuations.registrant()
-                : state.requestVerb;
+                : state.handedMessage.isEmpty() ? state.requestVerb
+                : state.handedMessage;
         String site = named.isEmpty() ? stable : stable + ":" + named;
         int window = RecordingWindow.index();
         int iteration = state.nextStartEvent(site, window);
@@ -545,6 +547,34 @@ public final class Identity {
         if (token <= 0L) return;
         exitFrame(token);
         requestInHand("");
+    }
+
+    static Object handoffStarting(String message) {
+        if (trimmed(message).isEmpty()) return null;
+        State state = state();
+        Handoff handoff = new Handoff(state.scopeBase, state.handedMessage);
+        state.scopeBase = state.depth();
+        state.handedMessage = message;
+        return handoff;
+    }
+
+    static void handoffEnded(Object token) {
+        if (!(token instanceof Handoff)) return;
+        Handoff handoff = (Handoff) token;
+        State state = state();
+        state.handedMessage = handoff.message;
+        state.scopeBase = Math.max(0, Math.min(handoff.scopeBase,
+                state.depth()));
+    }
+
+    private static final class Handoff {
+        final int scopeBase;
+        final String message;
+
+        Handoff(int scopeBase, String message) {
+            this.scopeBase = scopeBase;
+            this.message = message;
+        }
     }
 
     static void doorFaulted(String marker) {

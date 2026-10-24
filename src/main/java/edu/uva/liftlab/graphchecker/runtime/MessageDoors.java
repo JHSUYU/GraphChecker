@@ -70,6 +70,11 @@ public final class MessageDoors {
     private MessageDoors() {
     }
 
+    public static Object captureScope() {
+        return guarded("captureScope", null, null,
+                CausynthTraceRecorder::captureScope);
+    }
+
     public static Outbound outbound(String transport, String correlationId,
                                     String attemptId, String half,
                                     Object localOwner, Object scope) {
@@ -135,6 +140,24 @@ public final class MessageDoors {
         guarded("requestEnded", null, () -> Identity.requestEnded(request));
     }
 
+    public static Object handingOff(String transport, String correlationId,
+                                    String half) {
+        try {
+            String sender = Interactions.sender(trimmed(transport),
+                    trimmed(correlationId), trimmed(half));
+            return Identity.handoffStarting(sender.isEmpty() ? ""
+                    : trimmed(transport) + "." + sender);
+        } catch (RuntimeException fault) {
+            doorFault("handingOff " + transport + " " + correlationId,
+                    fault);
+            return null;
+        }
+    }
+
+    public static void handedOff(Object handoff) {
+        guarded("handedOff", null, () -> Identity.handoffEnded(handoff));
+    }
+
     public static Inbound inbound(String trace, String symbolic,
                                   String transport, String correlationId,
                                   String attemptId, String half,
@@ -180,6 +203,40 @@ public final class MessageDoors {
         } catch (RuntimeException fault) {
             doorFault("parsed", fault);
         }
+    }
+
+    public static Inbound received(String symbolic, String transport,
+                                   String correlationId, String attemptId,
+                                   Object localOwner) {
+        try {
+            return take(symbolic, transport, correlationId, attemptId,
+                    localOwner);
+        } catch (RuntimeException fault) {
+            doorFault("received " + transport + " " + correlationId, fault);
+            return Inbound.EMPTY;
+        }
+    }
+
+    private static Inbound take(String symbolic, String transport,
+                                String correlationId, String attemptId,
+                                Object localOwner) {
+        endInbound(true);
+        SymbolicMessageEnvelope.clearInbound();
+        String declared = trimmed(symbolic);
+        boolean correlated = !trimmed(correlationId).isEmpty();
+        if (!correlated && declared.isEmpty()) {
+            return Inbound.EMPTY;
+        }
+        if (correlated) {
+            CausynthTraceRecorder.receivedExchange(transport, correlationId,
+                    attemptId, REQUEST, localOwner);
+        }
+        if (!declared.isEmpty()) {
+            SymbolicMessageEnvelope.installInbound(declared);
+        }
+        Inbound scope = new Inbound(0L, correlationId, attemptId, REQUEST);
+        CURRENT.set(scope);
+        return scope;
     }
 
     public static void endInbound(Inbound scope) {
@@ -1004,13 +1061,13 @@ public final class MessageDoors {
         return CURRENT.get();
     }
 
-    static Inbound setAside() {
+    public static Inbound setAside() {
         Inbound held = CURRENT.get();
         CURRENT.remove();
         return held;
     }
 
-    static void putBack(Inbound held) {
+    public static void putBack(Inbound held) {
         if (held == null) CURRENT.remove();
         else CURRENT.set(held);
     }
@@ -1035,6 +1092,14 @@ public final class MessageDoors {
 
     public static boolean vacant(long tick) {
         return CausynthTraceRecorder.vacantDaemonTick(tick);
+    }
+
+    public static Object startupStep(String step, String who) {
+        return CausynthTraceRecorder.startupStep(step, who);
+    }
+
+    public static void startupDone(Object pass) {
+        CausynthTraceRecorder.startupDone(pass);
     }
 
     public static void endTick(long token) {
@@ -1075,6 +1140,10 @@ public final class MessageDoors {
 
     public static void stopRecording() {
         CausynthTraceRecorder.stopRecording();
+    }
+
+    public static boolean replaying() {
+        return CausynthTraceRecorder.replaying();
     }
 
     public static void registerSource(Object anchor, String kind, String role,
@@ -1134,6 +1203,10 @@ public final class MessageDoors {
 
     public static void endWorkloadCall(long call, String api) {
         if (call != 0L) endRequest(call, api);
+    }
+
+    public static Outbound outboundNone() {
+        return Outbound.EMPTY;
     }
 
     public static final class Outbound {

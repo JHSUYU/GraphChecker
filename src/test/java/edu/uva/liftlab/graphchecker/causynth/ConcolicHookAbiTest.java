@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.plan.WorkStartSites;
 import edu.uva.liftlab.graphchecker.runtime.MessageDoors;
+import org.apache.hadoop.ipc.CausynthMessagePropagation;
 import org.junit.Test;
 
 import java.lang.reflect.InvocationTargetException;
@@ -33,6 +34,7 @@ public class ConcolicHookAbiTest {
     private static final String LIFECYCLE_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.JUnitLifecycle";
     private static final String PACKAGE = "edu.uva.liftlab.graphchecker.";
+    private static final String SHIM = "org.apache.hadoop.ipc.";
     private static final String EXTERNAL_CALLERS =
             "src/test/resources/external-callers.txt";
 
@@ -297,7 +299,8 @@ public class ConcolicHookAbiTest {
             }
             Method api;
             try {
-                api = Class.forName(PACKAGE + called[0])
+                api = Class.forName(called[0].startsWith(SHIM)
+                        ? called[0] : PACKAGE + called[0])
                         .getMethod(called[1], parameters);
             } catch (ReflectiveOperationException gone) {
                 fail("the system trees call " + row + "; deleting it "
@@ -403,6 +406,10 @@ public class ConcolicHookAbiTest {
             case "predicate": return java.util.function.Predicate.class;
             case "doors.Outbound": return MessageDoors.Outbound.class;
             case "doors.Inbound": return MessageDoors.Inbound.class;
+            case "shim.Outbound":
+                return CausynthMessagePropagation.Outbound.class;
+            case "shim.Inbound":
+                return CausynthMessagePropagation.Inbound.class;
             case "runnable": return Runnable.class;
             case "list": return java.util.List.class;
             case "RefType.v(\"java.lang.Throwable\")": return Throwable.class;
