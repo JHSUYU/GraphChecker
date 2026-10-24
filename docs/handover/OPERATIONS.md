@@ -83,8 +83,9 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
 - A launch must name its VM image (`CAUSYNTH_CUSTOM_JDK_HOME`; a sweep's `VM_IMAGE`): there is no
   default image.
 - `launch-round.sh` chooses each case's head host at launch from the hosts' room in the ledger
-  (`campaign_host_room`): the heaviest case first (its `engine_memory_mb`, `tools/lib/heads.sh`
-  `case_engine_heap_mb`), each to the host with the most room among those heading the fewest
+  (`campaign_host_room`: its memory room and its free cores): the heaviest case first (its `engine_memory_mb`, `tools/lib/heads.sh`
+  `case_engine_heap_mb`), each to the host with the most room (the most free cores, then the most memory room,
+  `campaign_host_roomier`) among those heading the fewest
   cases, so no host heads two before every host heads one; `lift11` heads nothing. A head only drives its campaign: every
   engine JVM, the seed and CONFIRM replays and REPRODUCE's runs go wherever there is room, its own
   host first (PIPELINE §7.7).

@@ -147,7 +147,7 @@ every tool call starts a shell there.
   `LIFTS` (below).
 
 **2. Launching.** One command per batch of cases; heads are chosen by room, never lift11, every obligation spread over
-`LIFTS`, each start to the host with the most room (a replay ended for memory queued again at its full need, never a
+`LIFTS`, each start to the host with the most room, the most free cores first and memory room breaking ties (a replay ended for memory queued again at its full need, never a
 verdict; OPTIMIZATIONS 1.32):
 ```bash
 cd ~/gc-run/<snap> && env -u BASH_ENV \
