@@ -309,6 +309,7 @@ public final class ClaimPolicy {
                 && faults <= reading.mostFaults(); faults++) {
             reading.faults = faults;
             claimed = reading.movedRoot(false);
+            if (claimed == null) claimed = reading.ownClockWorld();
             if (claimed == null) claimed = reading.clockOrPairing();
             if (claimed == null) claimed = reading.movedRoot(true);
         }
@@ -369,13 +370,9 @@ public final class ClaimPolicy {
             this.gaps = gaps;
             selfContradictory(composition, asks, gaps, selfCheckCapMillis);
             List<Composer.Valuation> valuations = composition.valuations();
-            Outcome first = valuations.isEmpty() ? null : outcome(composition,
-                    asks, valuations.get(0), Collections.<String>emptyList(),
-                    true);
-            if (first != null && !first.answer().decided()) {
-                undecided(first, gaps);
-            }
-            recorded = first;
+            recorded = outcome(composition, asks, valuations.get(0),
+                    Collections.<String>emptyList(), true);
+            if (!recorded.answer().decided()) undecided(recorded, gaps);
             cells = composition.clockCells();
             List<String> pairings = composition.recordedPairings();
             asHappened = new ArrayList<String>(pins(composition, cells));
@@ -395,17 +392,16 @@ public final class ClaimPolicy {
                 recorded = leastClocks(composition, asks, ownPairings, cells,
                         true, gaps);
             }
-            List<Composer.Valuation> rest = valuations.isEmpty() ? valuations
-                    : valuations.subList(1, valuations.size());
-            Disjunction together = asks.asking(Math.max(1, Math.min(
-                    PARALLEL_ASKS, rest.size())));
+            List<Composer.Valuation> rest =
+                    valuations.subList(1, valuations.size());
+            Disjunction together = asks.asking(Math.min(PARALLEL_ASKS,
+                    rest.size()));
             outcomes = new ArrayList<Outcome>();
-            if (recorded != null) outcomes.add(recorded);
+            outcomes.add(recorded);
             outcomes.addAll(inParallel(rest, valuation -> outcome(composition,
                     together, valuation, Collections.<String>emptyList(),
                     false)));
-            for (Outcome outcome : outcomes.subList(Math.min(1,
-                    outcomes.size()), outcomes.size())) {
+            for (Outcome outcome : outcomes.subList(1, outcomes.size())) {
                 if (!outcome.answer().decided()) undecided(outcome, gaps);
             }
             if (recorded != null && recorded.witness()
@@ -441,10 +437,10 @@ public final class ClaimPolicy {
 
         Decision ownWitness(boolean configuration) {
             if (!recordingDecides && !polarityDecides) return null;
-            for (int index = 0; index < outcomes.size(); index++) {
+            for (int index = 1; index < outcomes.size() && !ownRunsCut;
+                 index++) {
                 Outcome free = outcomes.get(index);
                 Composer.Valuation valuation = free.valuation();
-                boolean recordedRoots = valuation.ordinal() == 0;
                 if (free.answer().unsat()
                         || faultsOf(free) != faults
                         || !ranked(composition, free, configuration)
@@ -452,37 +448,52 @@ public final class ClaimPolicy {
                         .isEmpty()) {
                     continue;
                 }
-                for (Composer.Disjunct path : composition.disjuncts()) {
-                    if (!path.fatalObserved() || path.path().sessionId
-                            .equals(composition.seedSessionId())
-                            || !composition.ranRoots(path,
-                            valuation.moved())) {
-                        continue;
-                    }
-                    long left = ownRunsUntil - System.currentTimeMillis();
-                    if (left <= 0L) {
-                        ownRunsCut(valuation, path);
-                        return null;
-                    }
-                    Outcome asked = ownRunOf(valuation, path, left);
-                    List<GapRow> named = new ArrayList<GapRow>();
-                    if (!asked.witness() || !asked.selected().selector()
-                            .equals(path.selector())
-                            || !ownRun(asked)
-                            || recordedRoots && movedRoots(composition, asked)
-                            .isEmpty()
-                            || unattested(composition, asked, named)) {
-                        continue;
-                    }
-                    gaps.addAll(named);
-                    outcomes.set(index, asked);
-                    if (recordedRoots) {
-                        return claimed(ClaimKind.CLOCK_SKEW, asked);
-                    }
-                    if (recordingDecides) outcomes.set(0, asRecorded);
-                    return claimed(mechanism(composition, asks, asked,
-                            clockDriven), asked);
+                Outcome asked = ownRunAt(valuation, false);
+                if (asked == null) continue;
+                outcomes.set(index, asked);
+                if (recordingDecides) outcomes.set(0, asRecorded);
+                return claimed(mechanism(composition, asks, asked,
+                        clockDriven), asked);
+            }
+            return null;
+        }
+
+        Decision ownClockWorld() {
+            Outcome free = outcomes.get(0);
+            if (faults != 0 || !recordingDecides || ownRunsCut
+                    || free.answer().unsat()) {
+                return null;
+            }
+            Outcome asked = ownRunAt(free.valuation(), true);
+            if (asked == null) return null;
+            outcomes.set(0, asked);
+            return claimed(ClaimKind.CLOCK_SKEW, asked);
+        }
+
+        private Outcome ownRunAt(Composer.Valuation valuation,
+                                 boolean clocksOnly) {
+            for (Composer.Disjunct path : composition.disjuncts()) {
+                if (!path.fatalObserved() || path.path().sessionId
+                        .equals(composition.seedSessionId())
+                        || !composition.ranRoots(path, valuation.moved())
+                        || clocksOnly && !composition.plantsAClock(path)) {
+                    continue;
                 }
+                long left = ownRunsUntil - System.currentTimeMillis();
+                if (left <= 0L) {
+                    ownRunsCut(valuation, path);
+                    return null;
+                }
+                Outcome asked = ownRunOf(valuation, path, left);
+                List<GapRow> named = new ArrayList<GapRow>();
+                if (!asked.witness() || !asked.selected().selector()
+                        .equals(path.selector())
+                        || !ownRun(asked)
+                        || unattested(composition, asked, named)) {
+                    continue;
+                }
+                gaps.addAll(named);
+                return asked;
             }
             return null;
         }

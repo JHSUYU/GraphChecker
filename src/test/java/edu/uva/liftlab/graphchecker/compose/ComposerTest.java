@@ -1051,7 +1051,7 @@ public class ComposerTest {
         ClaimPolicy.Decision first = ClaimPolicy.decide(compose(ordered, 8),
                 new Z3(script, 30000L, 8192));
         String text = new String(Files.readAllBytes(log),
-                java.nio.charset.StandardCharsets.UTF_8);
+                StandardCharsets.UTF_8);
         int asHappened = text.indexOf("clock_pinned__");
         int moved = text.indexOf("(= " + MARKER + " true) :named valuation__");
         Object[][] table = {
@@ -1063,9 +1063,11 @@ public class ComposerTest {
                     && first.outcomes().get(0).answer().sat()
                     && first.outcomes().get(1).answer().sat(), null, null},
             {"a world that moved no root and planted a clock skew is claimed"
-                    + " in its own run", null, "500", "1200"},
-            {"one whose clocks did not jump is not this pass's: the ranking"
-                    + " decides", null, null, null},
+                    + " in its own run", null, "500", "1200", false},
+            {"one that planted no clock is not asked: the ranking decides",
+                    null, null, null, false},
+            {"an explored fault world's own run ranks before it", null, "500",
+                    null, true},
         };
         for (Object[] row : table) {
             if (row[1] != null) {
@@ -1073,16 +1075,20 @@ public class ComposerTest {
                         + " " + first.outcomes(), (Boolean) row[1]);
                 continue;
             }
+            boolean faulted = (Boolean) row[4];
             Path iteration = folder.newFolder().toPath();
-            for (String id : new String[] {"s0", "s1"}) {
-                boolean explored = id.equals("s1");
-                String reading = explored ? "1200" : "700";
+            for (String id : faulted ? new String[] {"s0", "s1", "s2"}
+                    : new String[] {"s0", "s1"}) {
+                boolean explored = !id.equals("s0");
+                String reading = id.equals("s1") ? "1200" : "700";
                 Session session = new Session(iteration, id, explored);
+                session.marker(id.equals("s2") ? "true" : "false");
                 session.clock(reading);
                 session.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK
                         + " 1000) (not (> " + CLOCK + " 1000)))", CLOCK_ROOT,
                         Long.parseLong(reading));
-                session.target("(> " + CLOCK + " 1000)", explored, true);
+                session.target("(or (> " + CLOCK + " 1000) " + MARKER + ")",
+                        explored, true);
                 session.write();
             }
             obligation(iteration, "s1", Collections.<String, String>emptyMap(),
@@ -1091,9 +1097,20 @@ public class ComposerTest {
                             ? Collections.<String, String>emptyMap()
                             : Collections.singletonMap(CLOCK_ROOT,
                             (String) row[2]));
+            if (faulted) {
+                obligation(iteration, "s2", Collections.singletonMap(
+                        MARKER_ROOT, "true"));
+            }
             ClaimPolicy.Decision decision = ClaimPolicy.decide(
                     compose(iteration, 8), solver());
             String name = row[0] + ": " + decision.claim().gaps();
+            if (faulted) {
+                assertEquals(name, ClaimKind.MARKER_FLIPPED,
+                        decision.claim().kind());
+                assertEquals(name, "true",
+                        decision.claim().movedRoots().get(MARKER_ROOT));
+                continue;
+            }
             assertEquals(name, ClaimKind.CLOCK_SKEW, decision.claim().kind());
             String clock = decision.claim().movedRoots().get(CLOCK);
             assertNotNull(name, clock);

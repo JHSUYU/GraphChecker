@@ -1029,6 +1029,28 @@ public final class Composer {
         }
 
         public List<String> worldClocks(Disjunct selected) {
+            Map<String, String[]> planted = plantedSkews(selected);
+            List<String> pins = new ArrayList<String>();
+            for (String cell : clockCells) {
+                String[] skew = planted.get(cell);
+                String pin = skew != null
+                        ? "(= (- " + cell + " " + integralLiteral(skew[0])
+                        + ") " + integralLiteral(skew[1]) + ")"
+                        : clockStep(cell, clockReadings, clockBefore, 0);
+                pins.add("(assert (! " + pin + " :named world_clock__"
+                        + ArtifactIO.digest(cell, 10) + "))");
+            }
+            return pins;
+        }
+
+        public boolean plantsAClock(Disjunct selected) {
+            for (String[] skew : plantedSkews(selected).values()) {
+                if (!skew[1].trim().matches("-?0*")) return true;
+            }
+            return false;
+        }
+
+        private Map<String, String[]> plantedSkews(Disjunct selected) {
             Map<String, String> deltas = corpus.world(
                     selected.path().sessionId).clockDeltas;
             Map<String, String> rootOf = new LinkedHashMap<String, String>();
@@ -1038,20 +1060,18 @@ public final class Composer {
                     rootOf.putIfAbsent(row.symbol(), row.rootId());
                 }
             }
-            List<String> pins = new ArrayList<String>();
+            Map<String, String[]> planted =
+                    new LinkedHashMap<String, String[]>();
             for (String cell : clockCells) {
                 String root = rootOf.get(cell);
                 String skew = root == null ? null : deltas.get(root);
                 String reading = root == null ? null
                         : clockRootReadings.get(root);
-                String pin = skew != null && reading != null
-                        ? "(= (- " + cell + " " + integralLiteral(reading)
-                        + ") " + integralLiteral(skew) + ")"
-                        : clockStep(cell, clockReadings, clockBefore, 0);
-                pins.add("(assert (! " + pin + " :named world_clock__"
-                        + ArtifactIO.digest(cell, 10) + "))");
+                if (skew != null && reading != null) {
+                    planted.put(cell, new String[] {reading, skew});
+                }
             }
-            return pins;
+            return planted;
         }
 
         private boolean ran(Disjunct selected, Map<String, String> movedRoots,

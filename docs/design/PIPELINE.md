@@ -3370,11 +3370,13 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    on it; refuted by phi alone everywhere, no root of the corpus turns any path to the fatal arm,
    which is the claim's own answer (b20h BlockTokenSecretManager-511, a40s
    BackupCmd-343: the null-checked read is pinned to the object the run read). Then the recorded
-   valuation is asked alone, and the recording's own questions right after it (3: as it happened,
-   its own pairings), before any other valuation, so the polarity every claim rule rests on is
-   decided first (hdfs-11741 F1: 128 valuations path by path over 170 paths spent the 30 minutes,
-   and the as-happened ask, made after them, was never answered, so the clock world valuation 0
-   had answered sat on its fatal-observing explored path was claimed by no rule). Then every other valuation is asked (4 at
+   valuation is asked alone, on the whole room rather than a slot shared four ways, and the
+   recording's own questions right after it (3: as it happened, its own pairings, and the clock
+   refinement of a clock-driven recording, `leastClocks` within `REFINE_BUDGET_MS`), before any
+   other valuation, so the polarity every claim rule rests on is decided first (hdfs-11741 F1: 128
+   valuations path by path over 170 paths spent the 30 minutes, and the as-happened ask, made after
+   them, was never answered, so the clock world valuation 0 had answered sat on its fatal-observing
+   explored path was claimed by no rule). Then every other valuation is asked (4 at
    once; each question is written to its z3s from the one body the composition holds, never copied
    per ask or per arithmetic engine, `Composition#query`/`#scopeQuery`, `Z3#ask`) for the path
    selectors, arm selectors, the nested state selectors a state arm's stores are chosen among (§8),
@@ -3545,10 +3547,8 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    arms and observed writers (`Composition#ownRun`) and its world's clocks -- each cell its replay
    planted at that skew, every other running on from its reading (`Composition#worldClocks`) -- and
    the answer is claimed where it selects that path and the test of the own run below holds
-   (without `recordingDecides`, only where `polarityDecides`). The recorded valuation counts too: a
-   session whose world moved no declared root (only clocks) is asked there, and its own run is
-   claimed `CLOCK_SKEW` where its clocks jumped (`movedRoots` holds the cells); one whose clocks did
-   not jump is no claim of this pass. Each path is asked once
+   (without `recordingDecides`, only where `polarityDecides`); the recorded valuation is not this
+   pass's but its own rank below. Each path is asked once
    (`Disjunction#askOwnRun`: its own run alone, never then free) and the pass has a sixth of the
    decide budget (`ClaimPolicy#OWN_RUN_SHARE`); past it the ranking decides, named DIAGNOSTIC
    `SOLVER_TIMEOUT` `own runs`. A world that planted equal skews on consecutive cells of one clock
@@ -3593,6 +3593,15 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
      (else DIAGNOSTIC `FORMULA_SAT_AT_RECORDED_VALUATION`, saying whether ordinal 0 was sat or refuted
      by a core naming no valuation pin; an undecided ordinal 0 is BLOCKING already and raises no
      second gap);
+   - an explored clock world in its own run (`ClaimPolicy.Reading#ownClockWorld`, with
+     `recordingDecides`, at no fault): a fatal-observing explored path whose world moved no declared
+     root and planted a clock skew on a cell of the composition (`Composition#plantsAClock`; a world
+     that planted none is not asked) is asked at the recorded valuation in its own run, its world's
+     clocks held, within the own pass's share, and claimed `CLOCK_SKEW` where the test of the own
+     run holds; so the order is: own runs of moved valuations at any fault count, then per count the
+     moved-root rule, at no fault the explored clock world, then the faultless mechanism below, then
+     the configuration-only moved roots (hdfs-11741 F1: 5ce842be's world, nn0's and dn1's key
+     clocks +20 h and the balancer's +30 h, observed the fatal and moved no declared root);
    - a witness moving no root whose mechanism is `CLOCK_SKEW`, `STATE_PAIRING_FLIPPED` or
      `MESSAGE_PAIRING_FLIPPED`, with `recordingDecides` or `polarityDecides`;
    - ordinal 0 sat on another session's path that observed the fatal, all its families attested, and
