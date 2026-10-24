@@ -1117,6 +1117,39 @@ public class ComposerTest {
             assertEquals(name, row[3] != null, row[3] != null
                     && row[3].equals(clock.trim()));
         }
+        Path oneShot = folder.newFile("z3-no-as-happened.sh").toPath();
+        Files.write(oneShot, Arrays.asList("#!/bin/bash", "q=$(cat)",
+                "if [[ $q == *clock_pinned__* ]]; then echo unknown;"
+                        + " echo '(:reason-unknown \"timeout\")'; exit 0; fi",
+                "printf '%s\\n' \"$q\" | " + z3() + " \"$@\""));
+        assertTrue(oneShot.toFile().setExecutable(true));
+        Path iteration = folder.newFolder("own-polarity").toPath();
+        for (String id : new String[] {"s0", "s1"}) {
+            boolean explored = id.equals("s1");
+            String reading = explored ? "1200" : "700";
+            Session session = new Session(iteration, id, explored);
+            session.marker("false");
+            session.clock(reading);
+            session.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK
+                    + " 1000) (not (> " + CLOCK + " 1000)))", CLOCK_ROOT,
+                    Long.parseLong(reading));
+            session.target("(or (> " + CLOCK + " 1000) " + MARKER + ")",
+                    explored, true);
+            session.write();
+        }
+        obligation(iteration, "s1", Collections.<String, String>emptyMap(),
+                "nn#u1", Collections.<String>emptyList(),
+                Collections.<String, String>emptyMap(),
+                Collections.singletonMap(CLOCK_ROOT, "500"));
+        ClaimPolicy.Decision decided = ClaimPolicy.decide(
+                compose(iteration, 8), new Z3(ScopedFixture.of(oneShot),
+                        30000L, 8192));
+        String name = "the whole formula's as-happened question undecided,"
+                + " the path's own at the readings decides: "
+                + decided.claim().gaps();
+        assertEquals(name, ClaimKind.CLOCK_SKEW, decided.claim().kind());
+        assertEquals(name, "1200",
+                decided.claim().movedRoots().get(CLOCK).trim());
     }
 
     @Test

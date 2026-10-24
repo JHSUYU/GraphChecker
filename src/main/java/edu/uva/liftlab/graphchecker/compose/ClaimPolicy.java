@@ -375,7 +375,8 @@ public final class ClaimPolicy {
             if (!recorded.answer().decided()) undecided(recorded, gaps);
             cells = composition.clockCells();
             List<String> pairings = composition.recordedPairings();
-            asHappened = new ArrayList<String>(pins(composition, cells));
+            asHappened = new ArrayList<String>(pins(composition, cells,
+                    "clock_pinned__"));
             asHappened.addAll(pairings);
             asRecorded = recorded != null && recorded.witness()
                     && !asHappened.isEmpty()
@@ -460,8 +461,7 @@ public final class ClaimPolicy {
 
         Decision ownClockWorld() {
             Outcome free = outcomes.get(0);
-            if (faults != 0 || !recordingDecides || ownRunsCut
-                    || free.answer().unsat()) {
+            if (faults != 0 || ownRunsCut || free.answer().unsat()) {
                 return null;
             }
             Outcome asked = ownRunAt(free.valuation(), true);
@@ -483,6 +483,18 @@ public final class ClaimPolicy {
                 if (left <= 0L) {
                     ownRunsCut(valuation, path);
                     return null;
+                }
+                if (clocksOnly && !recordingDecides) {
+                    if (!outcomeOn(composition, asks, valuation,
+                            pins(composition, cells, "clock_read__"), false,
+                            path.selector(), left).answer().unsat()) {
+                        continue;
+                    }
+                    left = ownRunsUntil - System.currentTimeMillis();
+                    if (left <= 0L) {
+                        ownRunsCut(valuation, path);
+                        return null;
+                    }
                 }
                 Outcome asked = ownRunOf(valuation, path, left);
                 List<GapRow> named = new ArrayList<GapRow>();
@@ -1253,12 +1265,12 @@ public final class ClaimPolicy {
     }
 
     private static List<String> pins(Composer.Composition composition,
-                                     List<String> cells) {
+                                     List<String> cells, String name) {
         List<String> pinned = new ArrayList<String>();
         for (String cell : cells) {
             pinned.add("(assert (! (= " + cell + " " + integralLiteral(
                     Long.toString(composition.clockReadings().get(cell)))
-                    + ") :named clock_pinned__" + ArtifactIO.digest(cell, 10)
+                    + ") :named " + name + ArtifactIO.digest(cell, 10)
                     + "))");
         }
         return pinned;

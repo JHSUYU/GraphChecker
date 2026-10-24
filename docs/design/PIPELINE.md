@@ -3593,12 +3593,17 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
      (else DIAGNOSTIC `FORMULA_SAT_AT_RECORDED_VALUATION`, saying whether ordinal 0 was sat or refuted
      by a core naming no valuation pin; an undecided ordinal 0 is BLOCKING already and raises no
      second gap);
-   - an explored clock world in its own run (`ClaimPolicy.Reading#ownClockWorld`, with
-     `recordingDecides`, at no fault): a fatal-observing explored path whose world moved no declared
-     root and planted a clock skew on a cell of the composition (`Composition#plantsAClock`; a world
-     that planted none is not asked) is asked at the recorded valuation in its own run, its world's
-     clocks held, within the own pass's share, and claimed `CLOCK_SKEW` where the test of the own
-     run holds; so the order is: own runs of moved valuations at any fault count, then per count the
+   - an explored clock world in its own run (`ClaimPolicy.Reading#ownClockWorld`, at no fault): a
+     fatal-observing explored path whose world moved no declared root and planted a clock skew on a
+     cell of the composition (`Composition#plantsAClock`; a world that planted none is not asked) is
+     asked at the recorded valuation in its own run, its world's clocks held, within the own pass's
+     share, and claimed `CLOCK_SKEW` where the test of the own run holds. Its polarity is
+     `recordingDecides`, else that path's own question: its formula at the recorded valuation with
+     every cell at its reading (`clock_read__` pins, the world's clocks unplanted) unsat, so on that
+     path the clocks decide, which is all the claim of its own run rests on; every other rank keeps
+     the whole formula's (hdfs-11741 F1, offline on its final inputs: the as-happened ask over 170
+     paths stayed undecided within the decide budget, with or without four more z3 hosts). So the
+     order is: own runs of moved valuations at any fault count, then per count the
      moved-root rule, at no fault the explored clock world, then the faultless mechanism below, then
      the configuration-only moved roots (hdfs-11741 F1: 5ce842be's world, nn0's and dn1's key
      clocks +20 h and the balancer's +30 h, observed the fatal and moved no declared root);
