@@ -3370,10 +3370,10 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    on it; refuted by phi alone everywhere, no root of the corpus turns any path to the fatal arm,
    which is the claim's own answer (b20h BlockTokenSecretManager-511, a40s
    BackupCmd-343: the null-checked read is pinned to the object the run read). Then the recorded
-   valuation is asked alone, on the whole room rather than a slot shared four ways, and the
-   recording's own questions right after it (3: as it happened, its own pairings, and the clock
-   refinement of a clock-driven recording, `leastClocks` within `REFINE_BUDGET_MS`), before any
-   other valuation, so the polarity every claim rule rests on is decided first (hdfs-11741 F1: 128
+   valuation is asked alone, on the whole room rather than a slot shared four ways, then the
+   explored clock worlds' candidate (4, its last rank, within a sixth of the budget), then the
+   recording's own questions (3: as it happened, its own pairings, and the clock refinement of a
+   clock-driven recording, `leastClocks` within `REFINE_BUDGET_MS`), before any other valuation, so the polarity every claim rule rests on is decided first (hdfs-11741 F1: 128
    valuations path by path over 170 paths spent the 30 minutes, and the as-happened ask, made after
    them, was never answered, so the clock world valuation 0 had answered sat on its fatal-observing
    explored path was claimed by no rule). Then every other valuation is asked (4 at
@@ -3593,22 +3593,6 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
      (else DIAGNOSTIC `FORMULA_SAT_AT_RECORDED_VALUATION`, saying whether ordinal 0 was sat or refuted
      by a core naming no valuation pin; an undecided ordinal 0 is BLOCKING already and raises no
      second gap);
-   - an explored clock world in its own run (`ClaimPolicy.Reading#ownClockWorld`, at no fault): a
-     fatal-observing explored path whose world moved no declared root and planted a clock skew on a
-     cell of the composition (`Composition#plantsAClock`; a world that planted none is not asked) is
-     asked right after the recorded valuation, before the recording's own questions, within a sixth
-     of the decide budget, in its own run, its world's clocks held, and kept as a candidate that is
-     claimed `CLOCK_SKEW` at this rank where the test of the own run holds and no rank before it
-     claimed by the deadline. Its polarity is that path's own question: its formula at the recorded
-     valuation with every cell at its reading (`clock_read__` pins, the world's clocks unplanted)
-     unsat, so on that path the clocks decide, which is all the claim of its own run rests on; every
-     other rank keeps the whole formula's, whose as-happened question keeps the rest of the budget
-     (hdfs-11741 F1, offline on its final inputs: that question over 170 paths stayed undecided
-     until the deadline, with or without four more z3 hosts, and every rank after it came too late).
-     So the order is: own runs of moved valuations at any fault count, then per count the
-     moved-root rule, at no fault the explored clock world, then the faultless mechanism below, then
-     the configuration-only moved roots (hdfs-11741 F1: 5ce842be's world, nn0's and dn1's key
-     clocks +20 h and the balancer's +30 h, observed the fatal and moved no declared root);
    - a witness moving no root whose mechanism is `CLOCK_SKEW`, `STATE_PAIRING_FLIPPED` or
      `MESSAGE_PAIRING_FLIPPED`, with `recordingDecides` or `polarityDecides`;
    - ordinal 0 sat on another session's path that observed the fatal, all its families attested, and
@@ -3642,9 +3626,28 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
      its pairings exactly those its replay realized, `Composition#realizedPairings`, inherited ones and
      ones no other writer could replace included); else a DIAGNOSTIC names why and the next path that
      observed the fatal and took a pairing is tried, the recorded valuation's first;
+   - the last rank, an explored clock world in its own run (`ClaimPolicy.Reading#ownClockWorld`): a
+     fatal-observing explored path whose world moved no declared root and planted a clock skew on a
+     cell of the composition (`Composition#plantsAClock`; a world that planted none is not asked) is
+     asked right after the recorded valuation, within a sixth of the decide budget, in its own run,
+     its world's clocks held, and kept as a candidate claimed `CLOCK_SKEW` here where the test of the
+     own run holds and no rank above claimed. Its polarity is that path's own question: its formula
+     at the recorded valuation with every cell at its reading (`clock_read__` pins, the world's
+     clocks unplanted) unsat, so on that path the clocks decide, which is all the claim of its own
+     run rests on (a path that reaches the fatal at the readings through another run's delivery is
+     no candidate); every other rank keeps the whole formula's (hdfs-11741 F1, offline on its final
+     inputs: the as-happened question over 170 paths stayed undecided until the deadline, with or
+     without four more z3 hosts, so no rank above could claim; 5ce842be's world, nn0's and dn1's key
+     clocks +20 h and the balancer's +30 h, observed the fatal and moved no declared root);
    - else THE FORMULA DECIDES (`ClaimPolicy#closed`): the composed formula is asked whole, every
      root free over its domain -- the very text exported as `final/candidate.smt2` -- and its answer
-     is the verdict; the enumeration of single and pair moves above only picks a witness's
+     is the verdict: first one-shot, both arithmetic engines racing, no core, with half the budget
+     left (`Disjunction#whole`, whatever path-by-path mode an earlier whole ask set, and past
+     `WHOLE_BUDGET_MS`), then, undecided, path by path with the rest; an unsat over asserted
+     refutations then asks its core whole within what is left, and a core not returned is a
+     DIAGNOSTIC `core not returned` (which refutations it rests on unknown), never the UNSAT
+     (hdfs-adhoc-52 F5: one path's scoped ask ran the remaining 1390 s while the exported file is
+     unsat in 35 s under `tools/lib/z3-race.sh`); the enumeration of single and pair moves above only picks a witness's
      valuation. Unsat: `NO_SUPPORTED_WITNESS` (UNSAT_CLOSED). Undecided within the budget: BLOCKING
      (a defect, never a refutation). Sat: `FORMULA_SAT` at the first enumerated witness a replay can
      plant, else at the formula's own model (`Composition#modelValuation`: each declared root at the

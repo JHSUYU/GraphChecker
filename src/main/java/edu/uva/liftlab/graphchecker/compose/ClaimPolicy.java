@@ -124,13 +124,14 @@ public final class ClaimPolicy {
 
     static Decision decide(Composer.Composition composition, Z3 solver,
                            long budgetMillis) {
-        Z3 bounded = solver.until(System.nanoTime()
-                + TimeUnit.MILLISECONDS.toNanos(budgetMillis));
+        long deadline = System.nanoTime()
+                + TimeUnit.MILLISECONDS.toNanos(budgetMillis);
+        Z3 bounded = solver.until(deadline);
         Decision decision;
         try (Disjunction asks = new Disjunction(composition, bounded)) {
             decision = closed(composition, asks, read(composition, asks,
                     budgetMillis / SELF_CHECK_SHARE,
-                    budgetMillis / OWN_RUN_SHARE));
+                    budgetMillis / OWN_RUN_SHARE), deadline);
         }
         if (bounded.pastDeadline()) {
             List<GapRow> gaps = new ArrayList<GapRow>(
@@ -171,7 +172,8 @@ public final class ClaimPolicy {
     }
 
     private static Decision closed(Composer.Composition composition,
-                                   Disjunction asks, Decision decided) {
+                                   Disjunction asks, Decision decided,
+                                   long deadlineNanos) {
         Claim claim = decided.claim();
         if (claim.kind() != ClaimKind.NO_SUPPORTED_WITNESS
                 || composition.disjuncts().isEmpty()) {
@@ -179,11 +181,33 @@ public final class ClaimPolicy {
         }
         List<GapRow> gaps = new ArrayList<GapRow>(claim.gaps());
         List<Outcome> outcomes = new ArrayList<Outcome>(decided.outcomes());
-        Outcome free = outcome(composition, asks,
-                composition.free(outcomes.size()),
-                Collections.<String>emptyList(),
-                composition.assertsRefutations());
+        Composer.Valuation everyRoot = composition.free(outcomes.size());
+        Z3.Answer whole = asks.whole(everyRoot.assertions(),
+                askedSymbols(composition), false,
+                Math.max(1L, leftMillis(deadlineNanos) / 2L));
+        Outcome free = whole.decided()
+                ? new Outcome(everyRoot, Collections.<String>emptyList(),
+                whole, selectedOf(composition, whole),
+                armsOf(composition, whole))
+                : outcome(composition, asks, everyRoot,
+                Collections.<String>emptyList(), false);
         Z3.Answer formula = free.answer();
+        if (formula.unsat() && composition.assertsRefutations()) {
+            Z3.Answer cored = asks.whole(everyRoot.assertions(),
+                    Collections.<String>emptyList(), true,
+                    Math.max(1L, leftMillis(deadlineNanos)));
+            if (cored.unsat() && cored.coreKnown()) {
+                formula = cored;
+            } else {
+                gaps.add(GapRow.of(Composer.COMPOSITION,
+                        GapKind.SOLVER_TIMEOUT, GapClass.DIAGNOSTIC,
+                        "core not returned", "the composed formula is unsat;"
+                                + " its core, asked after the verdict, was not"
+                                + " returned (" + cored.status() + "), so"
+                                + " which refuted claims it rests on is not"
+                                + " known"));
+            }
+        }
         if (formula.unsat()) {
             contradictions(composition, asks, gaps);
             return new Decision(claimWith(claim, gaps), outcomes, formula);
@@ -250,6 +274,11 @@ public final class ClaimPolicy {
                 gaps), outcomes, formula);
     }
 
+    private static long leftMillis(long deadlineNanos) {
+        return TimeUnit.NANOSECONDS.toMillis(deadlineNanos
+                - System.nanoTime());
+    }
+
     private static Outcome inCone(Composer.Composition composition,
                                   Disjunction asks, int ordinal,
                                   Outcome free) {
@@ -309,11 +338,11 @@ public final class ClaimPolicy {
                 && faults <= reading.mostFaults(); faults++) {
             reading.faults = faults;
             claimed = reading.movedRoot(false);
-            if (claimed == null) claimed = reading.ownClockWorld();
             if (claimed == null) claimed = reading.clockOrPairing();
             if (claimed == null) claimed = reading.movedRoot(true);
         }
         if (claimed == null) claimed = reading.observedElsewhere();
+        if (claimed == null) claimed = reading.ownClockWorld();
         return claimed != null ? claimed : reading.noWitness();
     }
 
@@ -390,8 +419,7 @@ public final class ClaimPolicy {
             asHappened = new ArrayList<String>(pins(composition, cells,
                     "clock_pinned__"));
             asHappened.addAll(pairings);
-            asRecorded = recorded != null && recorded.witness()
-                    && !asHappened.isEmpty()
+            asRecorded = recorded.witness() && !asHappened.isEmpty()
                     ? outcome(composition, asks, recorded.valuation(),
                             asHappened, false) : null;
             recordingDecides = asRecorded != null
@@ -417,8 +445,7 @@ public final class ClaimPolicy {
             for (Outcome outcome : outcomes.subList(1, outcomes.size())) {
                 if (!outcome.answer().decided()) undecided(outcome, gaps);
             }
-            if (recorded != null && recorded.witness()
-                    && !recorded.selected().fatalObserved()
+            if (recorded.witness() && !recorded.selected().fatalObserved()
                     && !recordingDecides) {
                 gaps.add(GapRow.of(recorded.selected().path().sessionId,
                         GapKind.FORMULA_SAT_AT_RECORDED_VALUATION,
@@ -428,8 +455,7 @@ public final class ClaimPolicy {
                                 + "root at its recorded value, and its own "
                                 + "recording took the healthy arm"));
             }
-            polarityDecides = recorded != null
-                    && recorded.answer().unsat()
+            polarityDecides = recorded.answer().unsat()
                     && namesAValuation(recorded.answer().core());
         }
 
@@ -475,7 +501,7 @@ public final class ClaimPolicy {
         }
 
         Decision ownClockWorld() {
-            if (faults != 0 || clockWorld == null) return null;
+            if (clockWorld == null) return null;
             outcomes.set(0, clockWorld);
             return claimed(ClaimKind.CLOCK_SKEW, clockWorld);
         }
@@ -640,7 +666,7 @@ public final class ClaimPolicy {
         }
 
         Decision observedElsewhere() {
-            if (recorded == null || !recorded.witness()) return null;
+            if (!recorded.witness()) return null;
             boolean attested = recorded.selected().fatalObserved()
                     && attestedArms(composition, recorded);
             List<Composer.Disjunct> worlds = worldPairings();
@@ -766,7 +792,7 @@ public final class ClaimPolicy {
 
         Decision noWitness() {
             return new Decision(Claim.of(ClaimKind.NO_SUPPORTED_WITNESS,
-                    recorded == null ? 0 : recorded.valuation().ordinal(),
+                    recorded.valuation().ordinal(),
                     Collections.<String, String>emptyMap(), polarityDecides,
                     gaps), outcomes);
         }
