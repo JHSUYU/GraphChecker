@@ -301,3 +301,25 @@ as the default java (set JDK 8 with update-alternatives); the unit tests call `z
 the shell test needs `jq`; Ubuntu 22.04 has no gcc-6 (build the VM in the sources' Ubuntu 18.04 image,
 `tools/vm/build-image-docker.sh`); four tree builds at once race on the shared Maven wrapper's download (run `./mvnw -v`
 once first); a surefire provider is fetched at the first online `mvn package`, so the first test run must not be `-o`.
+A remote background job is started with `ssh -f <host> 'setsid nohup <cmd> >log 2>&1 </dev/null &'`: without `-f`
+the ssh session stays open on the job and the calling tool waits on it (agent D's offline composes, 2026-10-24: its
+shell call never returned, the four composes never started, and the agent sat silent for an hour until stopped).
+
+**Bounds calibrated on liftlab:** CloudLab's cores are 2-5x slower per case (F1: TestDFSUpgrade's seed replay 2957 s
+against EX1's whole case of 1857 s). `replay_timeout_s=2400` then kills a focused replay that runs a long workload to
+its window's close: hdfs-adhoc-24, 26, 37 ended BOUNDED by it on the same three response-loss flips, each past the
+target's section of the test, so `case.sh` declares 7200 for them. A bound's expiry that repeats on the same flips in
+every case of a family is the workload's length, not a hang: read where the killed replay was (the test's line).
+
+**Heartbeat recency is the time model:** with 1 s heartbeats, the NameNode's choice of a block recovery's primary (the
+most recently heartbeated replica) followed how the nodes' heartbeats fell, and under CloudLab's load every replay of
+`TestBlockRecovery2#testRecoveryTimeout` chose the other DataNode than its recording (F1-adhoc-28 MISSING). The tree's
+first answer, the first live replica in the block's order, still followed the write pipeline's order, which a replay
+drew otherwise (F2-adhoc-29); the primary is now the live replica with the least DataNode UUID, a value both passes
+share. A workaround must stand on what both passes agree on, not on a second order that may differ.
+
+**Memory is plentiful, so heaps are large, and a table sized by the heap is large too:** HDFS sizes its INodeMap and
+BlocksMap by `Runtime.maxMemory()`, so a 22 GB seed replay's INodeMap had 33M buckets and every fsimage save walked them
+all in the interpreter; the stall watchdog (300 s with no new event) then ended 225 of hdfs-adhoc-52's replays. On liftlab
+the heaps were small enough. Read a REPLAY_NO_PROGRESS replay's thread dump before calling it a hang: a RUNNABLE main
+thread in the workload's own loop is a computation, not a stall (the tree now sizes a GSet as for 64 MB).

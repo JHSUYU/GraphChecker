@@ -17,6 +17,19 @@ A SAT comes with a claim naming the roots that moved (`claim.json`) and one repl
 the program agrees (`confirm.json`). What the rows do not state is named, never silently
 defaulted.
 
+## This branch: the 46 HDFS cases on HBase's engine, on CloudLab
+
+`system/hdfs-cloudlab` (2026-10-24) runs every HDFS case of `system/hdfs` and `system/hdfs1` on `system/hbase`'s engine,
+on a CloudLab cluster of five nodes, `node0`-`node4` (40 logical cores and 251 GB each, `/bulk` shared over NFS): the Hadoop
+shim restored, the host ledger charging cores as well as memory, DECIDE's own-run claims, HBase's process for every
+case (world depth 0, `results/hdfs/`), and the Hadoop fork's `graphchecker/hdfs-checks` adapted. Result
+(`results/hdfs/README.md`): 12 SAT confirmed in the VM (every named bug's mandated mechanism; 11 reproduced 10/10
+natively, hdfs-11741 0/10), 33 UNSAT at the fixed point with z3 unsat on the file, hdfs-adhoc-52 a RUN_DEFECT row over an
+unsat file; no new bug. **Start at
+[docs/handover/START-HERE.md](docs/handover/START-HERE.md)**; the cluster is [docs/handover/OPERATIONS.md](docs/handover/OPERATIONS.md)
+§11, a fresh clone [docs/REPRODUCE.md](docs/REPRODUCE.md) §9. The rest of this README is the shared index; where it names
+`lift*` hosts and `/bigtemp`, read node0-4 and `/bulk` on this branch.
+
 ## Use all ten servers, in parallel -- mandatory for whoever takes over
 
 The owner (long-term, 2026-10-05): "一定要最大化利用10个server。这10个server配有nfs,你只要做好代码隔离等。可以大大加速的。这是你的
@@ -66,7 +79,7 @@ SGF9 are on `system/solr` (pushed; from `system/hdfs1`), the tree is the Solr fo
 the code is `system/hbase` (built from `system/solr`; `results/hbase/` holds each case's final `.smt`, claim and time
 table), the adapter the HBase fork's `graphchecker/hbase-checks` (`https://github.com/JHSUYU/hbase.git`);
 [docs/REPRODUCE.md](docs/REPRODUCE.md) §7 runs the 22 cases from a fresh clone of the two.
-[docs/handover/START-HERE.md](docs/handover/START-HERE.md) is where a new lead starts, STATE §H what `system/hbase` holds
+[docs/handover/hbase-START-HERE.md](docs/handover/hbase-START-HERE.md) is HBase's takeover file, STATE §H what `system/hbase` holds
 and each case's result, TODO "HBase" what is parked, LESSONS §9 what HBase taught us. **ZooKeeper is finished**
 (2026-10-22) on its own branch, `system/zookeeper` (built from this one), with the fork's `graphchecker/zookeeper-checks`;
 that branch's START-HERE and REPRODUCE §8 run it.
@@ -78,7 +91,8 @@ that works on this project takes [RULES.md](docs/handover/RULES.md),
 
 | # | document | what it holds |
 | --- | --- | --- |
-| 0 | [docs/handover/START-HERE.md](docs/handover/START-HERE.md) | A new lead starts here: HBase finished (2026-10-21), each case's verdict, what to read in order, what is left, how to run a case, the rules, where everything is |
+| 0 | [docs/handover/START-HERE.md](docs/handover/START-HERE.md) | A new lead starts here: the 46 HDFS cases on HBase's engine on CloudLab (this branch, 2026-10-24): what changed, the results (`results/hdfs/`), what to read, how to run a case and the series, the rules |
+| 0b | [docs/handover/hbase-START-HERE.md](docs/handover/hbase-START-HERE.md) | HBase's takeover file (finished 2026-10-21, `system/hbase`) |
 | 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands: HBase finished (§H: what `system/hbase` and the HBase fork's tree hold, each case's result, where everything is); Solr after its final round SGF9 (2026-10-19, §S: what `system/solr` holds, the fork's tree, each study check's result and time); the end of the HDFS group (2026-10-08): the two HDFS branches and what each holds; the goals (verbatim); the remote and the parked local branches; every system tree (Hadoop, Solr, ZooKeeper, HBase) with its branch and, for HDFS, the fork's branch it is; VM images and snapshots; the rounds that closed each case; where the evidence lives. |
 | 2 | [docs/handover/TODO.md](docs/handover/TODO.md) | The plan, per system in the owner's order (HDFS, Solr, HBase, ZooKeeper): for HDFS the follow-ups (the two-phase final acceptance run, the general fixes the workarounds stand in for, the defects found, speed, cleanup); then each next system's steps. |
 | 3 | [docs/handover/RULES.md](docs/handover/RULES.md) | The owner's standing rules, long-term, quoted: what a finished check is (only SAT or UNSAT, a right `.smt`), symbolic scope first, general fixes only, no fallback code, a large closure converges (a bound is a rare last resort), workarounds with measure, system by system, git and safety. |

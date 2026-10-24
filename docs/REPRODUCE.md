@@ -1,4 +1,4 @@
-# Reproducing the checks from GitHub: the 46 HDFS cases (§0-§5), Solr (§6), HBase (§7)
+# Reproducing the checks from GitHub: the 46 HDFS cases (§0-§5; on HBase's engine and CloudLab: §9), Solr (§6), HBase (§7)
 
 Everything a run needs is on GitHub: GraphChecker's branch of the system (the engine, the case settings, the VM
 sources) and the system's fork, whose `graphchecker/*` branch is the tree under test (the adapter, the target markers,
@@ -12,6 +12,7 @@ packages below (§0).
 | | `system/hdfs1` | the newest body: the other 7 cases (07 11741 21 29 30 39 40), these tools, the VM sources |
 | | `system/solr` | the 20 Solr cases (§6) |
 | | `system/hbase` | the 22 HBase cases (§7), `results/hbase/` |
+| | `system/hdfs-cloudlab` | the 46 HDFS cases on HBase's engine, on a CloudLab cluster (§9), `results/hdfs/` |
 | | `system/zookeeper` | the 16 ZooKeeper cases (its own REPRODUCE §8), `results/zookeeper/` |
 | `https://github.com/JHSUYU/hadoop.git` (public fork) | `graphchecker/hdfs-checks` | the HDFS tree of 43 cases (tree `hadoop-hdfs-study-r7`) |
 | | `graphchecker/hdfs-checks-adhoc07` | hdfs-adhoc-07's tree (`hadoop-hdfs-study-r8`) |
@@ -306,3 +307,80 @@ cluster and bounds").
    HBase 19) and 31 (vacuous; its RUN_DEFECT was stale generation gaps, fixed after the run). A run's
    `out/<case>/schedule/final/candidate.smt2` compares with `results/hbase/<case>.smt2.gz`; replays race, so wall times
    vary run to run and a native reproduction is a count.
+
+## 9. The HDFS cases on HBase's engine, on CloudLab (`system/hdfs-cloudlab`)
+
+The 46 HDFS cases ([`experiments/hadoop/hdfs-cases.tsv`](../experiments/hadoop/hdfs-cases.tsv): case, branch, budget, and
+what EX1 ended with on liftlab) run on GraphChecker's `system/hdfs-cloudlab` (HBase's engine with the Hadoop shim restored)
+and three trees of the Hadoop fork ([`experiments/hadoop/trees.tsv`](../experiments/hadoop/trees.tsv)):
+`graphchecker/hdfs-checks` (`hadoop-hdfs-study-r7`, every case but 21 and 11741), `graphchecker/hdfs-checks-adhoc21`
+(`hadoop-hdfs-21`) and `graphchecker/hdfs-11741` (`hadoop-hdfs-11741-r6`). Every case explores at world depth 0 but 11741
+(2: its witness moves two clocks) and 07 (6, its workaround).
+
+1. **The cluster.** Five Ubuntu 22.04 nodes `node0`-`node4` with passwordless ssh between them and to GitHub, a private
+   subnet, and a spare disk `/dev/sdb` each (a CloudLab experiment; [handover/OPERATIONS.md](handover/OPERATIONS.md) §11).
+   From any node with a checkout of this branch:
+
+   ```bash
+   git clone -q -b system/hdfs-cloudlab git@github.com:JHSUYU/GraphChecker.git ~/gc-setup
+   BULK_SUBNET=10.10.1.0/24 ~/gc-setup/tools/cloudlab/setup-nodes.sh
+   ```
+
+   It installs JDK 8 (the default java), Maven, NFS, Docker and jq on every node, makes `/dev/sdb` each node's
+   `/data` (`/localtmp` on it), exports node0's `/data/bulk` and mounts it at `/bulk` everywhere, links `~/.m2` to
+   `/bulk/m2/dot-m2`, and puts z3 4.14.1 at `/bulk/bin/z3` (and `/usr/local/bin/z3`). `tools/lib/gc-env.sh`'s defaults are
+   this cluster's (`GC_BULK=/bulk`, `LIFTS=node0 .. node4`); another cluster edits them.
+
+2. **GraphChecker** on /bulk, the repository the worktrees come from (`GC_REPO`), and a sparse checkout to run from:
+
+   ```bash
+   git clone -q git@github.com:JHSUYU/GraphChecker.git /bulk/GraphChecker
+   git -C /bulk/GraphChecker worktree add -q --no-checkout /bulk/wt/gc-hdfs-cloudlab system/hdfs-cloudlab
+   git -C /bulk/wt/gc-hdfs-cloudlab sparse-checkout set --no-cone '/*' '!/third_party/'
+   git -C /bulk/wt/gc-hdfs-cloudlab checkout -q
+   ssh node1 'cd /bulk/wt/gc-hdfs-cloudlab && mvn -q package -DskipTests'
+   ```
+
+   The first build (online) fills `~/.m2`; later builds run `mvn -q -o`. The first `mvn package` with tests must also be
+   online (surefire fetches its provider).
+
+3. **The image**, from a full checkout (the VM sources are under `third_party/`), in the sources' Ubuntu 18.04 image
+   (gcc-6; Ubuntu 22.04 has none):
+
+   ```bash
+   git clone -q -b system/hdfs-cloudlab git@github.com:JHSUYU/GraphChecker.git /localtmp/$USER/gc-vm
+   /localtmp/$USER/gc-vm/tools/vm/build-image-docker.sh /bulk/vm/hbase
+   ```
+
+   About 15 minutes on one node; `smoke.log` must end `SMOKE_EXIT=0`. `/bulk/vm/hbase/j2sdk-image` is
+   `CAUSYNTH_CUSTOM_JDK_HOME` for every run.
+
+4. **The trees**, each cloned from the fork into `GC_TREES`, built against this checkout's jar with a Maven repository of its
+   own, and every workload run once natively (its surefire report is the case's classpath):
+
+   ```bash
+   cd /bulk/wt/gc-hdfs-cloudlab
+   build() { ssh "$1" "cd /bulk/wt/gc-hdfs-cloudlab && GC_TREES=/bulk/trees/f1 GC_M2=/bulk/m2/f1 \
+     experiments/hadoop/prepare-trees.sh $2" > /bulk/prepare-$2.log 2>&1; }
+   build node1 hadoop-hdfs-study-r7
+   build node2 hadoop-hdfs-21 & build node3 hadoop-hdfs-11741-r6 & wait
+   ```
+
+   Each log ends with one line per workload (`PASSED`, `FAILED`, `MISSING`): r7's 29 workloads, 21's and 11741's one each.
+   The first build alone fetches the Maven wrapper; concurrent first builds race on its shared download. Never rebuild a
+   tree a run reads: a tree changed during a series is a new tree set (`GC_TREES=/bulk/trees/f<k>`, `GC_M2=/bulk/m2/f<k>`,
+   a worktree of the fork at the new commit).
+
+5. **The cases.** One: `cd <snapshot> && env GC_OUT=/bulk/gc-out/<dir> GC_TREES=/bulk/trees/f1
+   CAUSYNTH_CUSTOM_JDK_HOME=/bulk/vm/hbase/j2sdk-image CASES="hdfs-17960" CASE_TIMEOUT_SECONDS=14400 PRUNE=0
+   tools/rounds/launch-round.sh <snapshot> <ROUND>` (a snapshot: `tools/lib/worktree-add.sh /bulk/gc-run/<name> <commit>
+   --detach`, then `mvn -q -o package -DskipTests`). All of them as the final round ran: the case table split into lanes,
+   each lane a `tools/rounds/run-series.sh <ROUND> <lane.tsv> system/hdfs-cloudlab=<snapshot>` started detached on its
+   own node (`ssh -f node<k> 'setsid nohup ... &'`), every case's obligations and replays spread over all five nodes by the
+   host ledger's memory and cores.
+
+6. **Reading them**, as §5: `tools/rounds/round-verify.sh <ROUND>`, `tools/analysis/vacuity.py --latest --detail <run>` on
+   every UNSAT, `results/hdfs/final-stats.py --order <rounds> --cases experiments/hadoop/hdfs-cases.tsv --out <GC_OUT>`.
+   `results/hdfs/README.md` has each case's verdict, native k/N, time breakdown and reading; a run's
+   `out/<case>/schedule/final/candidate.smt2` compares with `results/hdfs/<case>.smt2.gz`.
+

@@ -1,8 +1,10 @@
-# State: HDFS finished; Solr ended; HBase finished (final series 2026-10-21: all five owner bugs PASS)
+# State: HDFS on HBase's engine on CloudLab (system/hdfs-cloudlab, 2026-10-24); HDFS, Solr, HBase finished
 
-HBase: section H below (finished: the code is this branch, `system/hbase`, the adapter the HBase fork's
-`graphchecker/hbase-checks`, both on GitHub; [../REPRODUCE.md](../REPRODUCE.md) §7 runs every case from a fresh clone
-of the two). ZooKeeper finished after it on its own branch `system/zookeeper` (built from this one; its STATE §Z). Solr: section S. The HDFS group is finished: all 46 cases have an exported `.smt` read by hand against the HDFS code, one row each in
+This branch, `system/hdfs-cloudlab`: section C below (the 46 HDFS cases on HBase's engine, on CloudLab's node0-4; the
+trees the Hadoop fork's `graphchecker/hdfs-checks*` and `graphchecker/hdfs-11741`; [../REPRODUCE.md](../REPRODUCE.md) §9).
+HBase: section H (finished: the code is `system/hbase`, the adapter the HBase fork's `graphchecker/hbase-checks`, both on
+GitHub; [../REPRODUCE.md](../REPRODUCE.md) §7 runs every case from a fresh clone of the two). ZooKeeper finished on its own
+branch `system/zookeeper` (built from `system/hbase`; its STATE §Z). Solr: section S. The HDFS group on its earlier bodies (`system/hdfs`, `system/hdfs1`, liftlab) is finished: all 46 cases have an exported `.smt` read by hand against the HDFS code, one row each in
 [../STATUS.md](../STATUS.md) "HDFS checks" (07, the last, closed on 2026-10-07: EX1-adhoc-07e on `system/hdfs1`
 8c446418b). Every case then ran alone on the ten lifts for its time breakdown (series EX1,
 `/bigtemp/vnr3ne/gc-out/hdfs-excl`; the 46 rows are [../design/PERFORMANCE.md](../design/PERFORMANCE.md) §6). The owner
@@ -13,13 +15,52 @@ file, then [TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [C
 [../design/](../design/README.md); every check's state is in [../checks/README.md](../checks/README.md); done / partial /
 missing per requirement in [../STATUS.md](../STATUS.md).
 
+## C. HDFS on HBase's engine, on CloudLab (system/hdfs-cloudlab, 2026-10-24) -- read this first if you take over HDFS
+
+The owner's goal (2026-10-24, verbatim): "阅读当前目录下graphchecker的全部代码和hadoop的graphchecker/adhoc分支。参考graphchecker的
+system/hbase。用里面整个流程重构现在的graphchecker的system/hdfs和system/hdfs1。开发方式全部在代码文档里，请理解这些开发踩过的坑。grpahchecker
+分支上的文档都读一读。最终目标是graphchecker commit并push一个system/hdfs-cloudlab分支。这个分支能跑出system/hdfs和system/hdfs1里的hdfs
+adhoc check的所有.smt，对于sat做validation就像system/hbase一样。。并应用system/hbase里的所有流程。hadoop有一个对应的分支，汇总了所有的
+workaround/test case在graphchecker/hdfs-checks下。这个分支也要对应更新做适配。同时，在cloudlab上你有5个server node0, node1, node2, node3,
+node4彼此互相ssh。而且彼此都可以访问我的git仓库。你要在system/hdfs-cloudlab里把liftlab上那一套并行调度弄过来，需要注意的是我们内存很充足";
+then "system/hbase的整个流程优化和systeem/hdfs已经有很大不同。所以我建议你从system/hbase作为基准，开始迁移" and "开发起来5个ndoe都要用，
+多agent协作也可以参考我们的文档". [START-HERE.md](START-HERE.md) says what was done; this section says where it is.
+
+**`system/hdfs-cloudlab`** (GitHub; from `system/hbase` 26910df2a): the shim and door entry points restored, the CloudLab
+platform, the cores in the host ledger and the host order by free cores (agent L, branch `hdfs-ledger-cpu`), DECIDE's own
+arms and own-run ask (agent D, branch `hdfs-decide`), REPRODUCE's pure-re-pairing plant, the HDFS declarations on HBase's
+process (depth 0; 11741 2; 07 6; seed factor 130), `results/hdfs/`. Every merge was built and tested (`mvn -q -o package`
++ the shell test) on node1-4; agent D's two COMPOSE batches each had an independent review before the merge.
+
+**The fork's branches** (`/bulk/hadoop`, local -> remote): `gc/hdfs-cloudlab-11` -> `graphchecker/hdfs-checks` 899c200cc8e
+(on bd72fcc1a13: 75cb90e9dfe QJM replies in the loggers' order; a2038d083d7 + 0d2b473db63 a recovery's primary by DataNode
+UUID; 57e091c8af6 a LightWeightGSet sized for 64 MB; 899c200cc8e TestEncryptedTransfer without block-acquire retries;
+local branches `gc/hdfs-cloudlab`, `-rp`, `-rp2`, `-gset` hold the earlier heads), `gc/hdfs-cloudlab-21-f6` ->
+`graphchecker/hdfs-checks-adhoc21` 25b4f1e531f (21's two commits merged with each step of the former), `gc/hdfs-11741-r6`
+-> `graphchecker/hdfs-11741` (6c86fca9a2b, unchanged); `graphchecker/hdfs-checks-adhoc07` is not read by this branch
+(its patch is in `graphchecker/hdfs-checks`) and stays for `system/hdfs1`.
+
+**On the cluster** (OPERATIONS §11): `/bulk` (node0's sdb over NFS) holds the repositories `/bulk/GraphChecker`,
+`/bulk/hadoop`; the integration worktree `/bulk/wt/gc-hdfs-cloudlab`; agents' worktrees `/bulk/wt/gc-hdfs-ledger-cpu`,
+`/bulk/wt/gc-hdfs-decide`, `/bulk/wt/gc-hdfs-decide-11741`; the tree sets `/bulk/trees/f1` (as F1 started), `f2`
+(a2038d083d7, superseded), `f3`, `f5`, `f6` (Maven repositories `/bulk/m2/f<k>/<tree>`); the older tree worktrees
+`/bulk/wt/hadoop-hdfs-*` (development rounds); the VM image `/bulk/vm/hbase/j2sdk-image`; snapshots `/bulk/gc-run/hc1`..`hc8`
+(development), `hcF1`, `hcF2`, `hcF2b`, `hcF2c`, `hcF5`, `hcF6`, `hcF7a`, `hcF7d`, `hcF7`, `hcF8` (the final rounds); outputs `/bulk/gc-out/hdfs-cloudlab`
+(development rounds C1-C4, D1-D6), `/bulk/gc-out/hdfs-final` (F1-F8, lane tables `lanes*/`, series logs, `superseded/`),
+`/bulk/gc-out/agent-ledger`, `/bulk/gc-out/agent-decide` (the agents' runs and offline copies); briefs and helpers
+`/bulk/analysis/hdfs-2026-10-24/` (COMMON.md, brief-*.md, watch.sh, progress.py, verify-final.sh, PLAN-final.md).
+
+**Rounds:** C1 (nine canaries, hc1, depth 3), C2-C4 (21's tree workaround, 17897 at depth 0, 11741 at depth 2), D1-D6
+(development sweeps of the rest, hc3-hc7), F1 (the final series, hcF1 + f1, every case), F2-F8 (the reruns each case's
+declaration or workaround needed; `results/hdfs/README.md` has the table of rounds). Results: `results/hdfs/`.
+
 ## H. HBase (finished: final series 2026-10-21) -- read this first if you take over HBase
 
 The owner's goal: "基于我们solr现在这么好的代码基础，完成对hbase的adhod check" (RULES "HBase: the goal and its scope").
 The first session (2026-10-19, a lead and five coding agents) built the HBase platform on `system/solr`'s engine; the owner
 stopped it for a handover at 23:10. The second session (2026-10-19 23:40 to 2026-10-20, a new lead and five agents: H1
 platform, H2 ZooKeeper, H3 RPC, H4 checks, H5 engine analysis) took over from START-HERE and ran every case of
-`experiments/hbase/hbase-cases.tsv`. **All five of the owner's bugs PASS.** Read [START-HERE.md](START-HERE.md), then
+`experiments/hbase/hbase-cases.tsv`. **All five of the owner's bugs PASS.** Read [hbase-START-HERE.md](hbase-START-HERE.md), then
 [TODO.md](TODO.md) "HBase" (item 1, the owner's final series, is done; the rest are parked engine items), then LESSONS §9.
 
 **`system/hbase`** (the code; pushed to GitHub 2026-10-22, owner; = `hbase-int`; worktrees `/bigtemp/vnr3ne/wt/gc-hbase` and

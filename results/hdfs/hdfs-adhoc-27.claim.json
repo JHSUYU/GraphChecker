@@ -1,0 +1,345 @@
+{
+  "schemaVersion": 1,
+  "kind": "CLAIM",
+  "anchor": "auto0/dn0#epoch0/region/REGION.f02ccc7d-0914-39d9-bde5-d82a3b3e9377/ctx:Anchor:cd3af6e8ac66aecf@HADOOP_IPC/test/idx:\u003corg.apache.hadoop.hdfs.server.datanode.DataNode: void initBlockPool(org.apache.hadoop.hdfs.server.datanode.BPOfferService)\u003e@0/\u003corg.apache.hadoop.hdfs.server.datanode.DataNode: void initStorage(org.apache.hadoop.hdfs.server.protocol.NamespaceInfo)\u003e@0/\u003corg.apache.hadoop.hdfs.server.datanode.DataStorage: void recoverTransitionRead(org.apache.hadoop.hdfs.server.datanode.DataNode,org.apache.hadoop.hdfs.server.protocol.NamespaceInfo,java.util.Collection,org.apache.hadoop.hdfs.server.common.HdfsServerConstants$StartupOption)\u003e@0/\u003corg.apache.hadoop.hdfs.server.datanode.DataStorage: java.util.List addStorageLocations(org.apache.hadoop.hdfs.server.datanode.DataNode,org.apache.hadoop.hdfs.server.protocol.NamespaceInfo,java.util.Collection,org.apache.hadoop.hdfs.server.common.HdfsServerConstants$StartupOption)\u003e@0/\u003corg.apache.hadoop.hdfs.server.datanode.DataStorage: java.util.List loadBlockPoolSliceStorage(org.apache.hadoop.hdfs.server.datanode.DataNode,org.apache.hadoop.hdfs.server.protocol.NamespaceInfo,java.util.Collection,org.apache.hadoop.hdfs.server.common.HdfsServerConstants$StartupOption,java.util.concurrent.ExecutorService)\u003e@0/\u003corg.apache.hadoop.hdfs.server.datanode.DataStorage: java.util.List loadBlockPoolSliceStorage(org.apache.hadoop.hdfs.server.datanode.DataNode,org.apache.hadoop.hdfs.server.protocol.NamespaceInfo,java.util.Collection,org.apache.hadoop.hdfs.server.common.HdfsServerConstants$StartupOption,java.util.concurrent.ExecutorService)\u003e#u58@0/\u003corg.apache.hadoop.hdfs.server.datanode.BlockPoolSliceStorage$1: java.lang.Object call()\u003e@0/\u003corg.apache.hadoop.hdfs.server.datanode.BlockPoolSliceStorage$1: org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory call()\u003e@0",
+  "claim": {
+    "kind": "NO_SUPPORTED_WITNESS",
+    "valuationOrdinal": 0,
+    "movedRoots": {},
+    "polarityDecides": false,
+    "gaps": []
+  },
+  "solverRuns": 10,
+  "seedSessionId": "seed-result-31c05be8",
+  "valuations": [
+    {
+      "ordinal": 0,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.d544c927-af72-34ae-9b6e-aa6c8a95d95f": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4fa9cbf6-db3d-380f-8772-ae744956e0c4": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8a9355f2-6858-345e-9b72-1f8a41ed31a4": "false",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.9f2683be-91f5-3882-bfec-b18e27998f52": "false",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.167d1f6d-b4c9-3c98-aa27-c1ccd2ebff82": "false"
+      },
+      "moved": {},
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 1,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.d544c927-af72-34ae-9b6e-aa6c8a95d95f": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4fa9cbf6-db3d-380f-8772-ae744956e0c4": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8a9355f2-6858-345e-9b72-1f8a41ed31a4": "false",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.9f2683be-91f5-3882-bfec-b18e27998f52": "false",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.167d1f6d-b4c9-3c98-aa27-c1ccd2ebff82": "false"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.d544c927-af72-34ae-9b6e-aa6c8a95d95f": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 2,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.d544c927-af72-34ae-9b6e-aa6c8a95d95f": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4fa9cbf6-db3d-380f-8772-ae744956e0c4": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8a9355f2-6858-345e-9b72-1f8a41ed31a4": "false",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.9f2683be-91f5-3882-bfec-b18e27998f52": "false",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.167d1f6d-b4c9-3c98-aa27-c1ccd2ebff82": "false"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4fa9cbf6-db3d-380f-8772-ae744956e0c4": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 3,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.d544c927-af72-34ae-9b6e-aa6c8a95d95f": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4fa9cbf6-db3d-380f-8772-ae744956e0c4": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8a9355f2-6858-345e-9b72-1f8a41ed31a4": "true",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.9f2683be-91f5-3882-bfec-b18e27998f52": "false",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.167d1f6d-b4c9-3c98-aa27-c1ccd2ebff82": "false"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8a9355f2-6858-345e-9b72-1f8a41ed31a4": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 4,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.d544c927-af72-34ae-9b6e-aa6c8a95d95f": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4fa9cbf6-db3d-380f-8772-ae744956e0c4": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8a9355f2-6858-345e-9b72-1f8a41ed31a4": "false",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.9f2683be-91f5-3882-bfec-b18e27998f52": "true",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.167d1f6d-b4c9-3c98-aa27-c1ccd2ebff82": "false"
+      },
+      "moved": {
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.9f2683be-91f5-3882-bfec-b18e27998f52": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 5,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.d544c927-af72-34ae-9b6e-aa6c8a95d95f": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4fa9cbf6-db3d-380f-8772-ae744956e0c4": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8a9355f2-6858-345e-9b72-1f8a41ed31a4": "false",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.9f2683be-91f5-3882-bfec-b18e27998f52": "false",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.167d1f6d-b4c9-3c98-aa27-c1ccd2ebff82": "true"
+      },
+      "moved": {
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.167d1f6d-b4c9-3c98-aa27-c1ccd2ebff82": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 6,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.d544c927-af72-34ae-9b6e-aa6c8a95d95f": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4fa9cbf6-db3d-380f-8772-ae744956e0c4": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8a9355f2-6858-345e-9b72-1f8a41ed31a4": "false",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.9f2683be-91f5-3882-bfec-b18e27998f52": "false",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.167d1f6d-b4c9-3c98-aa27-c1ccd2ebff82": "false"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.d544c927-af72-34ae-9b6e-aa6c8a95d95f": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4fa9cbf6-db3d-380f-8772-ae744956e0c4": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 7,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.d544c927-af72-34ae-9b6e-aa6c8a95d95f": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4fa9cbf6-db3d-380f-8772-ae744956e0c4": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8a9355f2-6858-345e-9b72-1f8a41ed31a4": "true",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.9f2683be-91f5-3882-bfec-b18e27998f52": "false",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.167d1f6d-b4c9-3c98-aa27-c1ccd2ebff82": "false"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.d544c927-af72-34ae-9b6e-aa6c8a95d95f": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8a9355f2-6858-345e-9b72-1f8a41ed31a4": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 8,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.d544c927-af72-34ae-9b6e-aa6c8a95d95f": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4fa9cbf6-db3d-380f-8772-ae744956e0c4": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8a9355f2-6858-345e-9b72-1f8a41ed31a4": "false",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.9f2683be-91f5-3882-bfec-b18e27998f52": "true",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.167d1f6d-b4c9-3c98-aa27-c1ccd2ebff82": "false"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.d544c927-af72-34ae-9b6e-aa6c8a95d95f": "true",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.9f2683be-91f5-3882-bfec-b18e27998f52": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 9,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.d544c927-af72-34ae-9b6e-aa6c8a95d95f": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4fa9cbf6-db3d-380f-8772-ae744956e0c4": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8a9355f2-6858-345e-9b72-1f8a41ed31a4": "false",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.9f2683be-91f5-3882-bfec-b18e27998f52": "false",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.167d1f6d-b4c9-3c98-aa27-c1ccd2ebff82": "true"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.d544c927-af72-34ae-9b6e-aa6c8a95d95f": "true",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.167d1f6d-b4c9-3c98-aa27-c1ccd2ebff82": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 10,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.d544c927-af72-34ae-9b6e-aa6c8a95d95f": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4fa9cbf6-db3d-380f-8772-ae744956e0c4": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8a9355f2-6858-345e-9b72-1f8a41ed31a4": "true",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.9f2683be-91f5-3882-bfec-b18e27998f52": "false",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.167d1f6d-b4c9-3c98-aa27-c1ccd2ebff82": "false"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4fa9cbf6-db3d-380f-8772-ae744956e0c4": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8a9355f2-6858-345e-9b72-1f8a41ed31a4": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 11,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.d544c927-af72-34ae-9b6e-aa6c8a95d95f": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4fa9cbf6-db3d-380f-8772-ae744956e0c4": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8a9355f2-6858-345e-9b72-1f8a41ed31a4": "false",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.9f2683be-91f5-3882-bfec-b18e27998f52": "true",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.167d1f6d-b4c9-3c98-aa27-c1ccd2ebff82": "false"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4fa9cbf6-db3d-380f-8772-ae744956e0c4": "true",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.9f2683be-91f5-3882-bfec-b18e27998f52": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 12,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.d544c927-af72-34ae-9b6e-aa6c8a95d95f": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4fa9cbf6-db3d-380f-8772-ae744956e0c4": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8a9355f2-6858-345e-9b72-1f8a41ed31a4": "false",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.9f2683be-91f5-3882-bfec-b18e27998f52": "false",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.167d1f6d-b4c9-3c98-aa27-c1ccd2ebff82": "true"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4fa9cbf6-db3d-380f-8772-ae744956e0c4": "true",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.167d1f6d-b4c9-3c98-aa27-c1ccd2ebff82": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 13,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.d544c927-af72-34ae-9b6e-aa6c8a95d95f": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4fa9cbf6-db3d-380f-8772-ae744956e0c4": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8a9355f2-6858-345e-9b72-1f8a41ed31a4": "true",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.9f2683be-91f5-3882-bfec-b18e27998f52": "true",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.167d1f6d-b4c9-3c98-aa27-c1ccd2ebff82": "false"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8a9355f2-6858-345e-9b72-1f8a41ed31a4": "true",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.9f2683be-91f5-3882-bfec-b18e27998f52": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 14,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.d544c927-af72-34ae-9b6e-aa6c8a95d95f": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4fa9cbf6-db3d-380f-8772-ae744956e0c4": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8a9355f2-6858-345e-9b72-1f8a41ed31a4": "true",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.9f2683be-91f5-3882-bfec-b18e27998f52": "false",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.167d1f6d-b4c9-3c98-aa27-c1ccd2ebff82": "true"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8a9355f2-6858-345e-9b72-1f8a41ed31a4": "true",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.167d1f6d-b4c9-3c98-aa27-c1ccd2ebff82": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 15,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.d544c927-af72-34ae-9b6e-aa6c8a95d95f": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4fa9cbf6-db3d-380f-8772-ae744956e0c4": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8a9355f2-6858-345e-9b72-1f8a41ed31a4": "false",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.9f2683be-91f5-3882-bfec-b18e27998f52": "true",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.167d1f6d-b4c9-3c98-aa27-c1ccd2ebff82": "true"
+      },
+      "moved": {
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.9f2683be-91f5-3882-bfec-b18e27998f52": "true",
+        "REGION.40211c0f-b4b7-3211-885f-63e7712b9063.in.167d1f6d-b4c9-3c98-aa27-c1ccd2ebff82": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    }
+  ],
+  "gaps": []
+}

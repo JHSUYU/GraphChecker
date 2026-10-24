@@ -1,4 +1,4 @@
-# TODO: HDFS finished; Solr ended; HBase finished (final series 2026-10-21: all five owner bugs PASS, results/hbase/)
+# TODO: HDFS on HBase's engine on CloudLab (system/hdfs-cloudlab, 2026-10-24); HDFS, Solr, HBase finished
 
 Order:
 1. HDFS is finished (STATE §0): its follow-up items below are optional engine work, done when a later system needs
@@ -14,6 +14,55 @@ checks has an exported `.smt` that is right (SAT confirmed, or UNSAT at the fixe
 passes. Branch, tree and path details are in [STATE.md](STATE.md); every check with its state in
 [../checks/README.md](../checks/README.md) and its reading in [../STATUS.md](../STATUS.md); commands in
 [OPERATIONS.md](OPERATIONS.md); speed and the cluster in [../design/PERFORMANCE.md](../design/PERFORMANCE.md).
+
+## HDFS on CloudLab (`system/hdfs-cloudlab`, 2026-10-24)
+
+What the port left open, each with its evidence (STATE §C has where things are; `results/hdfs/README.md` each case):
+1. **hdfs-17897's replay race** (F1 confirmed it, 10/10; the race remains). The fatal of dn0's heartbeat-fault world is observed in some replays and not others:
+   C3-17897 observed it (session 344f), DD1 (`/bulk/gc-out/agent-decide/accept-DD1-17897`) did not (the test passed), and
+   then the composed formula holds the fault valuations UNSAT and DECIDE has only the faultless pairing claims, each
+   refuted by CONFIRM (8 of 8 in DD1). Natively EX1 reproduced it 10/10. Look at which order in the striped-checksum
+   client decides it; a run where no explored world observes the fatal is a race, not a verdict.
+2. **hdfs-adhoc-28/29's seed replay under load** (done by a tree workaround, a2038d083d7 + 0d2b473db63: the live
+   replica not yet tried with the least DataNode UUID is the primary; F3 reruns 28-30 on it). Why the write pipeline's
+   order still differs between a recording and its replay (F2-adhoc-29) is open (STATUS defect 40).
+3. **DECIDE's nested own arms** (agent D): the order dependence when a nested family is first closed under another
+   session's scope (PIPELINE §9, measured zero on C1 and C3); the plant-writer seed (`recordedAtPlants`) and view-version
+   families are not owned (reviewer's follow-ups).
+4. **The core ledger** charges a replay `campaign_replay_cores` whole cores (the p90 rounded up, 2 for HDFS replays that keep
+   0.8-1.4 busy), so a host whose 40 charged cores are full runs at a load of 25-35; finer units (tenths) would fill it.
+   Processes outside the ledger (another build, another user) are invisible to it: real load is not read.
+5. **CloudLab's CPUs are slower than liftlab's** (Xeon E5-2660 v2): seed replays take 2-4x EX1's; the time family's seed
+   replays need `seed_replay_time_factor=130` and 6 h budgets.
+6. **The own-witness pass and equal planted skews** on consecutive cells of one clock (the second jump is 0 and drops out of
+   movedRoots): the own claim is lost, never wrong (PIPELINE §9).
+7. **The canonical witness** (agent D, branch `hdfs-decide` 1d70822bd, built and unit-tested, not reviewed, not merged):
+   DECIDE claims a re-pairing model z3 answered with arbitrary clock jumps and re-pairings outside the cone (17897 DD1:
+   eight claims each with 10-13 jumps, each refused by CONFIRM for those parts); `ClaimPolicy#canonical` holds a
+   witness to its least clocks and its fewest re-pairings within a sixth of the decide budget. Not needed by the final
+   rounds (17897 F1: MARKER_FLIPPED, confirmed, 10/10); its offline evidence (DD1, D5-1 0000, C3 0000) was never run.
+8. **`replay_timeout_s` on CloudLab** is liftlab's 2400 s; hdfs-adhoc-24/26/37 declare 7200 (their focused replays run
+   the whole upgrade test). A general rule would bound a focused replay by the seed replay's own measured time.
+9. **A consumer named by arrival paired with another handle-paired send** (hdfs-adhoc-11 F1, investigator 2026-10-24):
+   dn0's SASL consumer is the k-th accepted connection, so a race that adds or drops a client retry before it pairs it
+   with another send (TOPOLOGY_DIVERGENCE "a replacement, not growth"); a handle-paired attach (each SASL message carries
+   its `hdfs-sasl-<uuid>`) could be a second slot or a DIAGNOSTIC in `SlotTable#replaced`/`#take`, or the region where
+   SaslDataTransferServer receives the handshake could open under the SASL anchor (`DataTransferSaslUtil#inboundSasl`).
+   The tree avoids it for 11 (no block-acquire retries).
+10. **A replay that ends at its witness before a planted root's mint** (agent D's design C, deferred): 11741's obligation
+   0088b8 reached the fatal and ended AT_WITNESS before the balancer's second pending move minted the door root its parent
+   world planted, so `FocusedReplay` (:672 at 9c1bbe157) refused it for the missing mint; such a run could name the roots it
+   never minted and keep only the minted ones in its world (`Corpus.world`), CONFIRM re-planting strictly.
+11. **DECIDE's budget on large corpora**: 52's 128 valuations each timed out path by path (a scoped path ask ran up to
+   ~1390 s) and the composer's own whole one-shot ask ran out of memory at 292 s, while the exported file is unsat in 35 s
+   under `tools/lib/z3-race.sh` (4 GB per engine). Why the composer's one-shot differs from the race (options, model
+   symbols, its room) is open.
+12. **hdfs-11741's native plant** (F7, F8): every confirmed CLOCK_SKEW claim reproduced 0 of 10 natively; the five clocks
+   were planted, the two ORDER rows on dn1's `removeExpiredKeys` occurrence (653dbe1f..., before the balancer's
+   6306493a...) never came (`reproduce/run-*/answer.json` `NOT_REACHED`). system/hdfs's 10/10 also applied the
+   serial-number hook; here SERIAL_NO stays at its recording and is not planted. Read which native occurrence runs dn1's
+   key removal and whether the order's identity or the unplanted serial number keeps it apart.
+
 
 ## HDFS (finished: `system/hdfs` 39 cases, `system/hdfs1` 7; trees r7, r7-21, r8, 11741-r6 = the fork's `graphchecker/*` branches; image `vm-hg5`)
 
@@ -550,7 +599,7 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
 
 ## HBase (`system/hbase`; finished 2026-10-21)
 
-Read [START-HERE.md](START-HERE.md) and [STATE.md](STATE.md) §H first; every case's state is `docs/checks/HBASE.md` §E;
+Read [hbase-START-HERE.md](hbase-START-HERE.md) and [STATE.md](STATE.md) §H first; every case's state is `docs/checks/HBASE.md` §E;
 the agents' handover notes are [hbase-agents/](hbase-agents/) (`H1-H5.md` first session, `second-session-H*.md` second
 session: exact run dirs, snapshots, tree sets, commits). All five of the owner's bugs PASS; every case has its final .smt and
 result in `results/hbase/` (the final series, item 1).

@@ -1,0 +1,144 @@
+{
+  "schemaVersion": 1,
+  "kind": "CLAIM",
+  "anchor": "auto0/client0#epoch0/region/REGION.ea13921a-a9f4-358b-997d-4ae0adbc929b/ctx:Anchor:a37d427db8e097fc@HADOOP_IPC/test/idx:\u003corg.apache.hadoop.hdfs.server.datanode.DataNode: void transferBlock(org.apache.hadoop.hdfs.protocol.ExtendedBlock,org.apache.hadoop.hdfs.protocol.DatanodeInfo[],org.apache.hadoop.fs.StorageType[],java.lang.String[])\u003e@0/\u003corg.apache.hadoop.hdfs.server.datanode.DataNode: org.apache.hadoop.hdfs.server.datanode.BPOfferService getBPOSForBlock(org.apache.hadoop.hdfs.protocol.ExtendedBlock)\u003e@0",
+  "claim": {
+    "kind": "NO_SUPPORTED_WITNESS",
+    "valuationOrdinal": 0,
+    "movedRoots": {},
+    "polarityDecides": false,
+    "gaps": []
+  },
+  "solverRuns": 10,
+  "seedSessionId": "seed-result-facec4cd",
+  "valuations": [
+    {
+      "ordinal": 0,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.e75d0cc9-ad9b-3944-a2bc-d302b93aad11": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.f6e6eac1-a526-3af2-a243-60cb2ff7d43e": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8907a6ad-2e83-3d12-a3f4-0acf1af39116": "false"
+      },
+      "moved": {},
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 1,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.e75d0cc9-ad9b-3944-a2bc-d302b93aad11": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.f6e6eac1-a526-3af2-a243-60cb2ff7d43e": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8907a6ad-2e83-3d12-a3f4-0acf1af39116": "false"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.e75d0cc9-ad9b-3944-a2bc-d302b93aad11": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 2,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.e75d0cc9-ad9b-3944-a2bc-d302b93aad11": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.f6e6eac1-a526-3af2-a243-60cb2ff7d43e": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8907a6ad-2e83-3d12-a3f4-0acf1af39116": "false"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.f6e6eac1-a526-3af2-a243-60cb2ff7d43e": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 3,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.e75d0cc9-ad9b-3944-a2bc-d302b93aad11": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.f6e6eac1-a526-3af2-a243-60cb2ff7d43e": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8907a6ad-2e83-3d12-a3f4-0acf1af39116": "true"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8907a6ad-2e83-3d12-a3f4-0acf1af39116": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 4,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.e75d0cc9-ad9b-3944-a2bc-d302b93aad11": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.f6e6eac1-a526-3af2-a243-60cb2ff7d43e": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8907a6ad-2e83-3d12-a3f4-0acf1af39116": "false"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.e75d0cc9-ad9b-3944-a2bc-d302b93aad11": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.f6e6eac1-a526-3af2-a243-60cb2ff7d43e": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 5,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.e75d0cc9-ad9b-3944-a2bc-d302b93aad11": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.f6e6eac1-a526-3af2-a243-60cb2ff7d43e": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8907a6ad-2e83-3d12-a3f4-0acf1af39116": "true"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.e75d0cc9-ad9b-3944-a2bc-d302b93aad11": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8907a6ad-2e83-3d12-a3f4-0acf1af39116": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 6,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.e75d0cc9-ad9b-3944-a2bc-d302b93aad11": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.f6e6eac1-a526-3af2-a243-60cb2ff7d43e": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8907a6ad-2e83-3d12-a3f4-0acf1af39116": "true"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.f6e6eac1-a526-3af2-a243-60cb2ff7d43e": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8907a6ad-2e83-3d12-a3f4-0acf1af39116": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    }
+  ],
+  "gaps": []
+}

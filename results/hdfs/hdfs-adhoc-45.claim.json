@@ -1,0 +1,144 @@
+{
+  "schemaVersion": 1,
+  "kind": "CLAIM",
+  "anchor": "auto0/client0#epoch0/region/REGION.08181728-581c-34d3-a3b3-c56c8c745343/ctx:Anchor:baefcc79c51c90b3@HADOOP_IPC/test/idx:\u003corg.apache.hadoop.hdfs.server.namenode.FSEditLog: long rollEditLog(int)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSEditLog: void endCurrentLogSegment(boolean)\u003e@0",
+  "claim": {
+    "kind": "NO_SUPPORTED_WITNESS",
+    "valuationOrdinal": 0,
+    "movedRoots": {},
+    "polarityDecides": false,
+    "gaps": []
+  },
+  "solverRuns": 10,
+  "seedSessionId": "seed-result-34da5a24",
+  "valuations": [
+    {
+      "ordinal": 0,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.ed246b45-0633-3c1c-a49a-8ff2efbd0b74": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.0633ba45-5463-3d50-b021-2d4f8226405b": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.29583bbd-3680-36aa-aee9-c18fb1a9f653": "false"
+      },
+      "moved": {},
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 1,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.ed246b45-0633-3c1c-a49a-8ff2efbd0b74": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.0633ba45-5463-3d50-b021-2d4f8226405b": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.29583bbd-3680-36aa-aee9-c18fb1a9f653": "false"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.ed246b45-0633-3c1c-a49a-8ff2efbd0b74": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 2,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.ed246b45-0633-3c1c-a49a-8ff2efbd0b74": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.0633ba45-5463-3d50-b021-2d4f8226405b": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.29583bbd-3680-36aa-aee9-c18fb1a9f653": "false"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.0633ba45-5463-3d50-b021-2d4f8226405b": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 3,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.ed246b45-0633-3c1c-a49a-8ff2efbd0b74": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.0633ba45-5463-3d50-b021-2d4f8226405b": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.29583bbd-3680-36aa-aee9-c18fb1a9f653": "true"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.29583bbd-3680-36aa-aee9-c18fb1a9f653": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 4,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.ed246b45-0633-3c1c-a49a-8ff2efbd0b74": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.0633ba45-5463-3d50-b021-2d4f8226405b": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.29583bbd-3680-36aa-aee9-c18fb1a9f653": "false"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.ed246b45-0633-3c1c-a49a-8ff2efbd0b74": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.0633ba45-5463-3d50-b021-2d4f8226405b": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 5,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.ed246b45-0633-3c1c-a49a-8ff2efbd0b74": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.0633ba45-5463-3d50-b021-2d4f8226405b": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.29583bbd-3680-36aa-aee9-c18fb1a9f653": "true"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.ed246b45-0633-3c1c-a49a-8ff2efbd0b74": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.29583bbd-3680-36aa-aee9-c18fb1a9f653": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 6,
+      "status": "unsat",
+      "assignment": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.ed246b45-0633-3c1c-a49a-8ff2efbd0b74": "false",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.0633ba45-5463-3d50-b021-2d4f8226405b": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.29583bbd-3680-36aa-aee9-c18fb1a9f653": "true"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.0633ba45-5463-3d50-b021-2d4f8226405b": "true",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.29583bbd-3680-36aa-aee9-c18fb1a9f653": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    }
+  ],
+  "gaps": []
+}

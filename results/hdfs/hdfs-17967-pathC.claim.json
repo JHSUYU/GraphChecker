@@ -1,0 +1,1408 @@
+{
+  "schemaVersion": 1,
+  "kind": "CLAIM",
+  "anchor": "hdfs-17967/target-dn#epoch0/region/REGION.7c569c3f-b4d3-305a-bd9c-bebff1048122/ctx:Anchor:6956f56e9087f51b@HDFS_SASL/ec-reconstruct/idx:\u003corg.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferServer$SaslServerCallbackHandler: void handle(javax.security.auth.callback.Callback[])\u003e@0",
+  "claim": {
+    "kind": "MARKER_FLIPPED",
+    "valuationOrdinal": 1,
+    "movedRoots": {
+      "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.3371192b-cc87-3463-888b-543de80d10fb": "true"
+    },
+    "polarityDecides": true,
+    "gaps": [
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "a44bfa464e685be1-46ac6f59",
+        "detail": "this replay states NOT_ADMITTED for the obligation it ran (a44bfa464e685be1): this replay published no root mint row for [REGION.ba3902cd-9721-3876-bd7c-d4f7d2fc0284.in.ae0b7b57-745e-34e4-9628-029d4ed70c1c], so its session states nothing about the value it ran the root(s) the obligation moves at"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "a44bfa464e685be1-46ac6f59",
+        "detail": "this session reached the anchor and threw the target in a replay its own rows do not admit: no disjunct, and it drops no path (solr-adhoc-19 F2V4: such a replay made COMPOSE drop 63)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "61309a72f18b90e3",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "e8bcc74d5086fc31",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "c5618cf5e3d43425",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "c91cc3acb8527175",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ea5e693539b781aa",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "HDFS.BLOCK_KEY.SERIAL_NO",
+        "detail": "sessions of this corpus recorded this root at different values, so its domain is stated per path and not once"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@515fefae3780d345-8b620f8a",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@seed-result-f6afb5b4",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@bb4a5d7bc8b2e387-9d827abf",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@c45de7e1f69cc643-41a17fbf",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@fbece72b659fcb29-b973e65e",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.33f3a9f7-00b5-3a14-90ea-81a530950f7f",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.5f1316b5-feab-30e4-9d2b-7e11865ebd83",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8916d9a8-31e6-3c7a-8928-d817f502f104",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.e9e3b969-22de-356c-b039-dbf5097855fc",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.074f9e67-bf11-3cc3-a83a-cd67abb4b6bc.in.13990e6f-b45e-3ce3-91a2-8e2271f46420",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.2edcf422-b124-3b93-a9e0-6496f3f35c8f.in.21331c5d-d274-3992-ae02-d4dc6e63e69b",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.074f9e67-bf11-3cc3-a83a-cd67abb4b6bc.in.7fac7ca9-749d-313c-b098-4cd8fc299d43",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.2edcf422-b124-3b93-a9e0-6496f3f35c8f.in.cb8b3e01-43ce-34b9-aa85-70521109318f",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.074f9e67-bf11-3cc3-a83a-cd67abb4b6bc.in.dbf82385-dd6b-3ccc-8090-35d8d95afde9",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.2edcf422-b124-3b93-a9e0-6496f3f35c8f.in.97a3d39b-9c4e-3a4a-9d3a-db51f20cdc1e",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      }
+    ]
+  },
+  "solverRuns": 69,
+  "seedSessionId": "seed-result-f6afb5b4",
+  "valuations": [
+    {
+      "ordinal": 0,
+      "status": "unsat",
+      "assignment": {
+        "HDFS.BLOCK_KEY.SERIAL_NO": "119532",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.3371192b-cc87-3463-888b-543de80d10fb": "false"
+      },
+      "moved": {},
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 1,
+      "status": "sat",
+      "assignment": {
+        "HDFS.BLOCK_KEY.SERIAL_NO": "119532",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.3371192b-cc87-3463-888b-543de80d10fb": "true"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.3371192b-cc87-3463-888b-543de80d10fb": "true"
+      },
+      "selectedPathId": "b325bf3e4eda709c",
+      "selectedSessionId": "f87abb0f6fae56a7-1bd632c0",
+      "fatalObserved": true,
+      "selectedArms": [
+        {
+          "selector": "message_arm__6__9a6801e78cb7",
+          "family": "message_family__6__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "f87abb0f6fae56a7-1bd632c0",
+          "sessionIds": [
+            "f87abb0f6fae56a7-1bd632c0"
+          ],
+          "producerPathId": "5da48718fc89a7a1",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.7b7b16041655c467"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 2,
+      "status": "sat",
+      "assignment": {
+        "HDFS.BLOCK_KEY.SERIAL_NO": "119533",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.3371192b-cc87-3463-888b-543de80d10fb": "false"
+      },
+      "moved": {
+        "HDFS.BLOCK_KEY.SERIAL_NO": "119533"
+      },
+      "selectedPathId": "9ae14529eccfca4e",
+      "selectedSessionId": "seed-result-f6afb5b4",
+      "fatalObserved": false,
+      "selectedArms": [
+        {
+          "selector": "message_arm__1__8e2520de6c54",
+          "family": "message_family__1__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "seed-result-f6afb5b4",
+          "sessionIds": [
+            "seed-result-f6afb5b4"
+          ],
+          "producerPathId": "2346465bc5e52e49",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.47ea400fcd96efa0"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__1__380d28393c77",
+          "family": "message_family__1__fab5e13da4e7",
+          "groupId": "357fd6e64c623d4f|47bc6cf19345e906|532569a3a117b351|e6bdc5eececf14a5",
+          "attachEndpointIds": [
+            "47bc6cf19345e906",
+            "532569a3a117b351",
+            "e6bdc5eececf14a5",
+            "357fd6e64c623d4f"
+          ],
+          "sessionId": "seed-result-f6afb5b4",
+          "sessionIds": [
+            "seed-result-f6afb5b4"
+          ],
+          "producerPathId": "ca82272bec02ae2a",
+          "interactionIds": [
+            "de9422d75ea1da54",
+            "8ecbf4705840ff00",
+            "8a69caabdafd0122",
+            "80a6c0b5c4490dbe"
+          ],
+          "expressionRefs": [
+            "EXPR.696c2cfbe143a01e",
+            "EXPR.a6404cc149635746",
+            "EXPR.1e562bffed905a08",
+            "EXPR.a8f5ee49c66d71b2"
+          ],
+          "attested": true,
+          "roots": [
+            "HDFS.BLOCK_KEY.SERIAL_NO"
+          ]
+        },
+        {
+          "selector": "message_arm__3__8e2520de6c54",
+          "family": "message_family__3__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "seed-result-f6afb5b4",
+          "sessionIds": [
+            "seed-result-f6afb5b4"
+          ],
+          "producerPathId": "2346465bc5e52e49",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.47ea400fcd96efa0"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__380d28393c77",
+          "family": "message_family__3__fab5e13da4e7",
+          "groupId": "357fd6e64c623d4f|47bc6cf19345e906|532569a3a117b351|e6bdc5eececf14a5",
+          "attachEndpointIds": [
+            "47bc6cf19345e906",
+            "532569a3a117b351",
+            "e6bdc5eececf14a5",
+            "357fd6e64c623d4f"
+          ],
+          "sessionId": "seed-result-f6afb5b4",
+          "sessionIds": [
+            "seed-result-f6afb5b4"
+          ],
+          "producerPathId": "ca82272bec02ae2a",
+          "interactionIds": [
+            "de9422d75ea1da54",
+            "8ecbf4705840ff00",
+            "8a69caabdafd0122",
+            "80a6c0b5c4490dbe"
+          ],
+          "expressionRefs": [
+            "EXPR.696c2cfbe143a01e",
+            "EXPR.a6404cc149635746",
+            "EXPR.1e562bffed905a08",
+            "EXPR.a8f5ee49c66d71b2"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__7__c13fc8f3b639",
+          "family": "message_family__7__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "515fefae3780d345-8b620f8a",
+          "sessionIds": [
+            "515fefae3780d345-8b620f8a"
+          ],
+          "producerPathId": "bfb7e61b1e81375d",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.83dcdbbd9d5d2cbf"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__7__ca8175cf6585",
+          "family": "message_family__7__fab5e13da4e7",
+          "groupId": "357fd6e64c623d4f|47bc6cf19345e906|532569a3a117b351|e6bdc5eececf14a5",
+          "attachEndpointIds": [
+            "47bc6cf19345e906",
+            "532569a3a117b351",
+            "e6bdc5eececf14a5",
+            "357fd6e64c623d4f"
+          ],
+          "sessionId": "bb4a5d7bc8b2e387-9d827abf",
+          "sessionIds": [
+            "bb4a5d7bc8b2e387-9d827abf"
+          ],
+          "producerPathId": "76f2ae79346d66f7",
+          "interactionIds": [
+            "de9422d75ea1da54",
+            "8ecbf4705840ff00",
+            "8a69caabdafd0122",
+            "80a6c0b5c4490dbe"
+          ],
+          "expressionRefs": [
+            "EXPR.4d2a96620e505157",
+            "EXPR.b0bf9934cfe6276b",
+            "EXPR.4d4a473c69fe5730",
+            "EXPR.66af3fc0bb055400"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "writer_arm__7__46be727ba448",
+          "family": "writer_family__7__46be727ba448",
+          "groupId": "INITIAL|MAP/84#-3",
+          "attachEndpointIds": [],
+          "sessionId": "seed-result-f6afb5b4",
+          "sessionIds": [
+            "seed-result-f6afb5b4"
+          ],
+          "producerPathId": "",
+          "interactionIds": [
+            "a811b8dd69c301dc"
+          ],
+          "expressionRefs": [
+            "EXPR.2ce8802cf9e15503"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__8__137294469826",
+          "family": "message_family__8__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "039a30424e1a33e6-1f4a85a4",
+          "sessionIds": [
+            "039a30424e1a33e6-1f4a85a4"
+          ],
+          "producerPathId": "677edbb97bdc76e3",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.5cb3fddb82bc271e"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__8__c13fc8f3b639",
+          "family": "message_family__8__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "515fefae3780d345-8b620f8a",
+          "sessionIds": [
+            "515fefae3780d345-8b620f8a"
+          ],
+          "producerPathId": "bfb7e61b1e81375d",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.83dcdbbd9d5d2cbf"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__8__5825b0e146e9",
+          "family": "message_family__8__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "b0b1fea1a9ce4000-125a0ad1",
+          "sessionIds": [
+            "b0b1fea1a9ce4000-125a0ad1"
+          ],
+          "producerPathId": "68320e503806471b",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.e3c15c914747a7e4"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__8__af0fa5ab9012",
+          "family": "message_family__8__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "bb4a5d7bc8b2e387-9d827abf",
+          "sessionIds": [
+            "bb4a5d7bc8b2e387-9d827abf"
+          ],
+          "producerPathId": "b5716cfcc08922ac",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.cd4f9040e7557b93"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__8__ab096b7295b8",
+          "family": "message_family__8__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "c45de7e1f69cc643-41a17fbf",
+          "sessionIds": [
+            "c45de7e1f69cc643-41a17fbf"
+          ],
+          "producerPathId": "df37b799d6f75cd6",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.07daa17e6eaa3a38"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__8__68c0405b5cd2",
+          "family": "message_family__8__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "db10dd6a1cb7c788-2ff60514",
+          "sessionIds": [
+            "db10dd6a1cb7c788-2ff60514"
+          ],
+          "producerPathId": "f84692aa218512e8",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.19afa70da6c6be7a"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__8__8e2520de6c54",
+          "family": "message_family__8__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "seed-result-f6afb5b4",
+          "sessionIds": [
+            "seed-result-f6afb5b4"
+          ],
+          "producerPathId": "2346465bc5e52e49",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.47ea400fcd96efa0"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__8__b56ccd5ccbc4",
+          "family": "message_family__8__0eccd624260f",
+          "groupId": "2eb0c97e555a5a5d|357fd6e64c623d4f|47bc6cf19345e906|532569a3a117b351|e6bdc5eececf14a5",
+          "attachEndpointIds": [
+            "2eb0c97e555a5a5d",
+            "47bc6cf19345e906",
+            "532569a3a117b351",
+            "e6bdc5eececf14a5",
+            "357fd6e64c623d4f"
+          ],
+          "sessionId": "c45de7e1f69cc643-41a17fbf",
+          "sessionIds": [
+            "c45de7e1f69cc643-41a17fbf"
+          ],
+          "producerPathId": "b50eedeff2301e4e",
+          "interactionIds": [
+            "a1b136dc79d09dc2",
+            "de9422d75ea1da54",
+            "8ecbf4705840ff00",
+            "8a69caabdafd0122",
+            "80a6c0b5c4490dbe"
+          ],
+          "expressionRefs": [
+            "EXPR.1aeb4d97454c0976",
+            "EXPR.c82b26df1c0181b1",
+            "EXPR.618b9e0cbe1c5a31",
+            "EXPR.71fc6f7bdccb652f",
+            "EXPR.65cc35047128a796"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__8__39b6391afa8d",
+          "family": "message_family__8__0eccd624260f",
+          "groupId": "2eb0c97e555a5a5d|357fd6e64c623d4f|47bc6cf19345e906|532569a3a117b351|e6bdc5eececf14a5",
+          "attachEndpointIds": [
+            "2eb0c97e555a5a5d",
+            "47bc6cf19345e906",
+            "532569a3a117b351",
+            "e6bdc5eececf14a5",
+            "357fd6e64c623d4f"
+          ],
+          "sessionId": "seed-result-f6afb5b4",
+          "sessionIds": [
+            "seed-result-f6afb5b4"
+          ],
+          "producerPathId": "ca82272bec02ae2a",
+          "interactionIds": [
+            "a1b136dc79d09dc2",
+            "de9422d75ea1da54",
+            "8ecbf4705840ff00",
+            "8a69caabdafd0122",
+            "80a6c0b5c4490dbe"
+          ],
+          "expressionRefs": [
+            "EXPR.3714938b75a4b677",
+            "EXPR.696c2cfbe143a01e",
+            "EXPR.a6404cc149635746",
+            "EXPR.1e562bffed905a08",
+            "EXPR.a8f5ee49c66d71b2"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "message_arm__7__c13fc8f3b639",
+        "message_arm__7__ca8175cf6585",
+        "writer_arm__7__46be727ba448"
+      ],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 3,
+      "status": "sat",
+      "assignment": {
+        "HDFS.BLOCK_KEY.SERIAL_NO": "119534",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.3371192b-cc87-3463-888b-543de80d10fb": "false"
+      },
+      "moved": {
+        "HDFS.BLOCK_KEY.SERIAL_NO": "119534"
+      },
+      "selectedPathId": "e3c1c9364a0433b4",
+      "selectedSessionId": "515fefae3780d345-8b620f8a",
+      "fatalObserved": false,
+      "selectedArms": [
+        {
+          "selector": "message_arm__1__c13fc8f3b639",
+          "family": "message_family__1__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "515fefae3780d345-8b620f8a",
+          "sessionIds": [
+            "515fefae3780d345-8b620f8a"
+          ],
+          "producerPathId": "bfb7e61b1e81375d",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.83dcdbbd9d5d2cbf"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__1__2fe9e9966f72",
+          "family": "message_family__1__fab5e13da4e7",
+          "groupId": "357fd6e64c623d4f|47bc6cf19345e906|532569a3a117b351|e6bdc5eececf14a5",
+          "attachEndpointIds": [
+            "47bc6cf19345e906",
+            "532569a3a117b351",
+            "e6bdc5eececf14a5",
+            "357fd6e64c623d4f"
+          ],
+          "sessionId": "515fefae3780d345-8b620f8a",
+          "sessionIds": [
+            "515fefae3780d345-8b620f8a"
+          ],
+          "producerPathId": "d1d36b2ef3c6c39f",
+          "interactionIds": [
+            "de9422d75ea1da54",
+            "8ecbf4705840ff00",
+            "8a69caabdafd0122",
+            "80a6c0b5c4490dbe"
+          ],
+          "expressionRefs": [
+            "EXPR.058a94c0580ff8a3",
+            "EXPR.76813452de0ce075",
+            "EXPR.55917bea39b8defa",
+            "EXPR.ba761949b82aedb0"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "writer_arm__1__aedbc3e90204",
+          "family": "writer_family__1__aedbc3e90204",
+          "groupId": "INITIAL|MAP/84#-3",
+          "attachEndpointIds": [],
+          "sessionId": "515fefae3780d345-8b620f8a",
+          "sessionIds": [
+            "515fefae3780d345-8b620f8a"
+          ],
+          "producerPathId": "",
+          "interactionIds": [
+            "a811b8dd69c301dc"
+          ],
+          "expressionRefs": [
+            "EXPR.2ce8802cf9e15503"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "writer_arm__1__aedbc3e90204"
+      ],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 4,
+      "status": "sat",
+      "assignment": {
+        "HDFS.BLOCK_KEY.SERIAL_NO": "119535",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.3371192b-cc87-3463-888b-543de80d10fb": "false"
+      },
+      "moved": {
+        "HDFS.BLOCK_KEY.SERIAL_NO": "119535"
+      },
+      "selectedPathId": "9ae14529eccfca4e",
+      "selectedSessionId": "seed-result-f6afb5b4",
+      "fatalObserved": false,
+      "selectedArms": [
+        {
+          "selector": "message_arm__1__8e2520de6c54",
+          "family": "message_family__1__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "seed-result-f6afb5b4",
+          "sessionIds": [
+            "seed-result-f6afb5b4"
+          ],
+          "producerPathId": "2346465bc5e52e49",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.47ea400fcd96efa0"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__1__380d28393c77",
+          "family": "message_family__1__fab5e13da4e7",
+          "groupId": "357fd6e64c623d4f|47bc6cf19345e906|532569a3a117b351|e6bdc5eececf14a5",
+          "attachEndpointIds": [
+            "47bc6cf19345e906",
+            "532569a3a117b351",
+            "e6bdc5eececf14a5",
+            "357fd6e64c623d4f"
+          ],
+          "sessionId": "seed-result-f6afb5b4",
+          "sessionIds": [
+            "seed-result-f6afb5b4"
+          ],
+          "producerPathId": "ca82272bec02ae2a",
+          "interactionIds": [
+            "de9422d75ea1da54",
+            "8ecbf4705840ff00",
+            "8a69caabdafd0122",
+            "80a6c0b5c4490dbe"
+          ],
+          "expressionRefs": [
+            "EXPR.696c2cfbe143a01e",
+            "EXPR.a6404cc149635746",
+            "EXPR.1e562bffed905a08",
+            "EXPR.a8f5ee49c66d71b2"
+          ],
+          "attested": true,
+          "roots": [
+            "HDFS.BLOCK_KEY.SERIAL_NO"
+          ]
+        },
+        {
+          "selector": "message_arm__3__8e2520de6c54",
+          "family": "message_family__3__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "seed-result-f6afb5b4",
+          "sessionIds": [
+            "seed-result-f6afb5b4"
+          ],
+          "producerPathId": "2346465bc5e52e49",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.47ea400fcd96efa0"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__380d28393c77",
+          "family": "message_family__3__fab5e13da4e7",
+          "groupId": "357fd6e64c623d4f|47bc6cf19345e906|532569a3a117b351|e6bdc5eececf14a5",
+          "attachEndpointIds": [
+            "47bc6cf19345e906",
+            "532569a3a117b351",
+            "e6bdc5eececf14a5",
+            "357fd6e64c623d4f"
+          ],
+          "sessionId": "seed-result-f6afb5b4",
+          "sessionIds": [
+            "seed-result-f6afb5b4"
+          ],
+          "producerPathId": "ca82272bec02ae2a",
+          "interactionIds": [
+            "de9422d75ea1da54",
+            "8ecbf4705840ff00",
+            "8a69caabdafd0122",
+            "80a6c0b5c4490dbe"
+          ],
+          "expressionRefs": [
+            "EXPR.696c2cfbe143a01e",
+            "EXPR.a6404cc149635746",
+            "EXPR.1e562bffed905a08",
+            "EXPR.a8f5ee49c66d71b2"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__7__af0fa5ab9012",
+          "family": "message_family__7__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "bb4a5d7bc8b2e387-9d827abf",
+          "sessionIds": [
+            "bb4a5d7bc8b2e387-9d827abf"
+          ],
+          "producerPathId": "b5716cfcc08922ac",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.cd4f9040e7557b93"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__7__ca8175cf6585",
+          "family": "message_family__7__fab5e13da4e7",
+          "groupId": "357fd6e64c623d4f|47bc6cf19345e906|532569a3a117b351|e6bdc5eececf14a5",
+          "attachEndpointIds": [
+            "47bc6cf19345e906",
+            "532569a3a117b351",
+            "e6bdc5eececf14a5",
+            "357fd6e64c623d4f"
+          ],
+          "sessionId": "bb4a5d7bc8b2e387-9d827abf",
+          "sessionIds": [
+            "bb4a5d7bc8b2e387-9d827abf"
+          ],
+          "producerPathId": "76f2ae79346d66f7",
+          "interactionIds": [
+            "de9422d75ea1da54",
+            "8ecbf4705840ff00",
+            "8a69caabdafd0122",
+            "80a6c0b5c4490dbe"
+          ],
+          "expressionRefs": [
+            "EXPR.4d2a96620e505157",
+            "EXPR.b0bf9934cfe6276b",
+            "EXPR.4d4a473c69fe5730",
+            "EXPR.66af3fc0bb055400"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "writer_arm__7__46be727ba448",
+          "family": "writer_family__7__46be727ba448",
+          "groupId": "INITIAL|MAP/84#-3",
+          "attachEndpointIds": [],
+          "sessionId": "seed-result-f6afb5b4",
+          "sessionIds": [
+            "seed-result-f6afb5b4"
+          ],
+          "producerPathId": "",
+          "interactionIds": [
+            "a811b8dd69c301dc"
+          ],
+          "expressionRefs": [
+            "EXPR.2ce8802cf9e15503"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__8__137294469826",
+          "family": "message_family__8__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "039a30424e1a33e6-1f4a85a4",
+          "sessionIds": [
+            "039a30424e1a33e6-1f4a85a4"
+          ],
+          "producerPathId": "677edbb97bdc76e3",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.5cb3fddb82bc271e"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__8__c13fc8f3b639",
+          "family": "message_family__8__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "515fefae3780d345-8b620f8a",
+          "sessionIds": [
+            "515fefae3780d345-8b620f8a"
+          ],
+          "producerPathId": "bfb7e61b1e81375d",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.83dcdbbd9d5d2cbf"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__8__98f377163c8a",
+          "family": "message_family__8__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "a44bfa464e685be1-46ac6f59",
+          "sessionIds": [
+            "a44bfa464e685be1-46ac6f59"
+          ],
+          "producerPathId": "21f941151dd3733f",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.801947e1b24f114d"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__8__5825b0e146e9",
+          "family": "message_family__8__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "b0b1fea1a9ce4000-125a0ad1",
+          "sessionIds": [
+            "b0b1fea1a9ce4000-125a0ad1"
+          ],
+          "producerPathId": "68320e503806471b",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.e3c15c914747a7e4"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__8__af0fa5ab9012",
+          "family": "message_family__8__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "bb4a5d7bc8b2e387-9d827abf",
+          "sessionIds": [
+            "bb4a5d7bc8b2e387-9d827abf"
+          ],
+          "producerPathId": "b5716cfcc08922ac",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.cd4f9040e7557b93"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__8__ab096b7295b8",
+          "family": "message_family__8__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "c45de7e1f69cc643-41a17fbf",
+          "sessionIds": [
+            "c45de7e1f69cc643-41a17fbf"
+          ],
+          "producerPathId": "df37b799d6f75cd6",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.07daa17e6eaa3a38"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__8__68c0405b5cd2",
+          "family": "message_family__8__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "db10dd6a1cb7c788-2ff60514",
+          "sessionIds": [
+            "db10dd6a1cb7c788-2ff60514"
+          ],
+          "producerPathId": "f84692aa218512e8",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.19afa70da6c6be7a"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__8__8e2520de6c54",
+          "family": "message_family__8__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "seed-result-f6afb5b4",
+          "sessionIds": [
+            "seed-result-f6afb5b4"
+          ],
+          "producerPathId": "2346465bc5e52e49",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.47ea400fcd96efa0"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__8__b56ccd5ccbc4",
+          "family": "message_family__8__0eccd624260f",
+          "groupId": "2eb0c97e555a5a5d|357fd6e64c623d4f|47bc6cf19345e906|532569a3a117b351|e6bdc5eececf14a5",
+          "attachEndpointIds": [
+            "2eb0c97e555a5a5d",
+            "47bc6cf19345e906",
+            "532569a3a117b351",
+            "e6bdc5eececf14a5",
+            "357fd6e64c623d4f"
+          ],
+          "sessionId": "c45de7e1f69cc643-41a17fbf",
+          "sessionIds": [
+            "c45de7e1f69cc643-41a17fbf"
+          ],
+          "producerPathId": "b50eedeff2301e4e",
+          "interactionIds": [
+            "a1b136dc79d09dc2",
+            "de9422d75ea1da54",
+            "8ecbf4705840ff00",
+            "8a69caabdafd0122",
+            "80a6c0b5c4490dbe"
+          ],
+          "expressionRefs": [
+            "EXPR.1aeb4d97454c0976",
+            "EXPR.c82b26df1c0181b1",
+            "EXPR.618b9e0cbe1c5a31",
+            "EXPR.71fc6f7bdccb652f",
+            "EXPR.65cc35047128a796"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__8__39b6391afa8d",
+          "family": "message_family__8__0eccd624260f",
+          "groupId": "2eb0c97e555a5a5d|357fd6e64c623d4f|47bc6cf19345e906|532569a3a117b351|e6bdc5eececf14a5",
+          "attachEndpointIds": [
+            "2eb0c97e555a5a5d",
+            "47bc6cf19345e906",
+            "532569a3a117b351",
+            "e6bdc5eececf14a5",
+            "357fd6e64c623d4f"
+          ],
+          "sessionId": "seed-result-f6afb5b4",
+          "sessionIds": [
+            "seed-result-f6afb5b4"
+          ],
+          "producerPathId": "ca82272bec02ae2a",
+          "interactionIds": [
+            "a1b136dc79d09dc2",
+            "de9422d75ea1da54",
+            "8ecbf4705840ff00",
+            "8a69caabdafd0122",
+            "80a6c0b5c4490dbe"
+          ],
+          "expressionRefs": [
+            "EXPR.3714938b75a4b677",
+            "EXPR.696c2cfbe143a01e",
+            "EXPR.a6404cc149635746",
+            "EXPR.1e562bffed905a08",
+            "EXPR.a8f5ee49c66d71b2"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "message_arm__7__af0fa5ab9012",
+        "message_arm__7__ca8175cf6585",
+        "writer_arm__7__46be727ba448"
+      ],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 5,
+      "status": "sat",
+      "assignment": {
+        "HDFS.BLOCK_KEY.SERIAL_NO": "119533",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.3371192b-cc87-3463-888b-543de80d10fb": "true"
+      },
+      "moved": {
+        "HDFS.BLOCK_KEY.SERIAL_NO": "119533",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.3371192b-cc87-3463-888b-543de80d10fb": "true"
+      },
+      "selectedPathId": "b325bf3e4eda709c",
+      "selectedSessionId": "f87abb0f6fae56a7-1bd632c0",
+      "fatalObserved": true,
+      "selectedArms": [
+        {
+          "selector": "message_arm__6__9a6801e78cb7",
+          "family": "message_family__6__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "f87abb0f6fae56a7-1bd632c0",
+          "sessionIds": [
+            "f87abb0f6fae56a7-1bd632c0"
+          ],
+          "producerPathId": "5da48718fc89a7a1",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.7b7b16041655c467"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 6,
+      "status": "sat",
+      "assignment": {
+        "HDFS.BLOCK_KEY.SERIAL_NO": "119534",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.3371192b-cc87-3463-888b-543de80d10fb": "true"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.3371192b-cc87-3463-888b-543de80d10fb": "true",
+        "HDFS.BLOCK_KEY.SERIAL_NO": "119534"
+      },
+      "selectedPathId": "b325bf3e4eda709c",
+      "selectedSessionId": "f87abb0f6fae56a7-1bd632c0",
+      "fatalObserved": true,
+      "selectedArms": [
+        {
+          "selector": "message_arm__6__9a6801e78cb7",
+          "family": "message_family__6__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "f87abb0f6fae56a7-1bd632c0",
+          "sessionIds": [
+            "f87abb0f6fae56a7-1bd632c0"
+          ],
+          "producerPathId": "5da48718fc89a7a1",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.7b7b16041655c467"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 7,
+      "status": "sat",
+      "assignment": {
+        "HDFS.BLOCK_KEY.SERIAL_NO": "119535",
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.3371192b-cc87-3463-888b-543de80d10fb": "true"
+      },
+      "moved": {
+        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.3371192b-cc87-3463-888b-543de80d10fb": "true",
+        "HDFS.BLOCK_KEY.SERIAL_NO": "119535"
+      },
+      "selectedPathId": "b325bf3e4eda709c",
+      "selectedSessionId": "f87abb0f6fae56a7-1bd632c0",
+      "fatalObserved": true,
+      "selectedArms": [
+        {
+          "selector": "message_arm__6__9a6801e78cb7",
+          "family": "message_family__6__c7cc93032978",
+          "groupId": "95feddc848ff1300",
+          "attachEndpointIds": [
+            "95feddc848ff1300"
+          ],
+          "sessionId": "f87abb0f6fae56a7-1bd632c0",
+          "sessionIds": [
+            "f87abb0f6fae56a7-1bd632c0"
+          ],
+          "producerPathId": "5da48718fc89a7a1",
+          "interactionIds": [
+            "bf7ddc85414ff2b6"
+          ],
+          "expressionRefs": [
+            "EXPR.7b7b16041655c467"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [],
+      "unsatCore": []
+    }
+  ],
+  "gaps": [
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "a44bfa464e685be1-46ac6f59",
+      "detail": "this replay states NOT_ADMITTED for the obligation it ran (a44bfa464e685be1): this replay published no root mint row for [REGION.ba3902cd-9721-3876-bd7c-d4f7d2fc0284.in.ae0b7b57-745e-34e4-9628-029d4ed70c1c], so its session states nothing about the value it ran the root(s) the obligation moves at"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "a44bfa464e685be1-46ac6f59",
+      "detail": "this session reached the anchor and threw the target in a replay its own rows do not admit: no disjunct, and it drops no path (solr-adhoc-19 F2V4: such a replay made COMPOSE drop 63)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "61309a72f18b90e3",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "e8bcc74d5086fc31",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "c5618cf5e3d43425",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "c91cc3acb8527175",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ea5e693539b781aa",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "HDFS.BLOCK_KEY.SERIAL_NO",
+      "detail": "sessions of this corpus recorded this root at different values, so its domain is stated per path and not once"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@515fefae3780d345-8b620f8a",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@seed-result-f6afb5b4",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@bb4a5d7bc8b2e387-9d827abf",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@c45de7e1f69cc643-41a17fbf",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@fbece72b659fcb29-b973e65e",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.33f3a9f7-00b5-3a14-90ea-81a530950f7f",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.5f1316b5-feab-30e4-9d2b-7e11865ebd83",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.8916d9a8-31e6-3c7a-8928-d817f502f104",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.e9e3b969-22de-356c-b039-dbf5097855fc",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.074f9e67-bf11-3cc3-a83a-cd67abb4b6bc.in.13990e6f-b45e-3ce3-91a2-8e2271f46420",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.2edcf422-b124-3b93-a9e0-6496f3f35c8f.in.21331c5d-d274-3992-ae02-d4dc6e63e69b",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.074f9e67-bf11-3cc3-a83a-cd67abb4b6bc.in.7fac7ca9-749d-313c-b098-4cd8fc299d43",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.2edcf422-b124-3b93-a9e0-6496f3f35c8f.in.cb8b3e01-43ce-34b9-aa85-70521109318f",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.074f9e67-bf11-3cc3-a83a-cd67abb4b6bc.in.dbf82385-dd6b-3ccc-8090-35d8d95afde9",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.2edcf422-b124-3b93-a9e0-6496f3f35c8f.in.97a3d39b-9c4e-3a4a-9d3a-db51f20cdc1e",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    }
+  ]
+}

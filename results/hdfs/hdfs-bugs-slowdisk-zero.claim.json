@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "kind": "CLAIM",
+  "anchor": "slowdisk/dn0#epoch0/region/REGION.9dcddcc9-dd1c-3727-995c-79d87df58f2d/ctx:Root:DATA_XCEIVER#1/idx:\u003corg.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsVolumeList: org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeReference getNextVolume(org.apache.hadoop.fs.StorageType,java.lang.String,long)\u003e@0",
+  "claim": {
+    "kind": "STATE_PAIRING_FLIPPED",
+    "valuationOrdinal": 0,
+    "movedRoots": {},
+    "polarityDecides": true,
+    "gaps": [
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.2edcf422-b124-3b93-a9e0-6496f3f35c8f.in.1181df27-79ee-3885-bf08-953dedea4d52",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "CONFIG:dfs.datanode.round-robin-volume-choosing-policy.additional-available-space",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      }
+    ]
+  },
+  "solverRuns": 7,
+  "seedSessionId": "seed-result-b7fb087a",
+  "valuations": [
+    {
+      "ordinal": 0,
+      "status": "sat",
+      "assignment": {},
+      "moved": {},
+      "selectedPathId": "c8622250d3354f4a",
+      "selectedSessionId": "8f93c024cf055543-3a6b2dad",
+      "fatalObserved": true,
+      "selectedArms": [
+        {
+          "selector": "writer_arm__0__a545c3948fcc",
+          "family": "writer_family__0__a545c3948fcc",
+          "groupId": "585a37b0365b3cad",
+          "attachEndpointIds": [],
+          "sessionId": "8f93c024cf055543-3a6b2dad",
+          "sessionIds": [
+            "8f93c024cf055543-3a6b2dad"
+          ],
+          "producerPathId": "96408a63e801e5ef",
+          "interactionIds": [
+            "deb2dbe76b7a70f1",
+            "04ae1114453b4e84"
+          ],
+          "expressionRefs": [
+            "EXPR.224baf7d3a1d7370",
+            "EXPR.f56643dbbb3f4538"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "writer_arm__0__37e1f3d3dc2d",
+          "family": "writer_family__0__37e1f3d3dc2d",
+          "groupId": "INITIAL|INSTANCE/3#48",
+          "attachEndpointIds": [],
+          "sessionId": "8f93c024cf055543-3a6b2dad",
+          "sessionIds": [
+            "8f93c024cf055543-3a6b2dad"
+          ],
+          "producerPathId": "",
+          "interactionIds": [
+            "e7b73d6b0809cda9"
+          ],
+          "expressionRefs": [
+            "EXPR.c5820ce1c442a496"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "writer_arm__0__37e1f3d3dc2d"
+      ],
+      "unsatCore": []
+    }
+  ],
+  "gaps": [
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.2edcf422-b124-3b93-a9e0-6496f3f35c8f.in.1181df27-79ee-3885-bf08-953dedea4d52",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "CONFIG:dfs.datanode.round-robin-volume-choosing-policy.additional-available-space",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    }
+  ]
+}
