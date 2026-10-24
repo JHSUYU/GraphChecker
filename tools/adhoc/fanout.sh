@@ -83,7 +83,8 @@ while (( next < ${#commands[@]} )) || (( ${#pid_host[@]} > 0 )); do
         need=${BASH_REMATCH[2]}
         command=${BASH_REMATCH[3]}
       fi
-      campaign_host_try_start "${host}" "${need}" || break
+      campaign_host_try_start "${host}" "${need}" \
+        "${campaign_fanout_job_cores}" || break
       charge=${campaign_host_charge_id}
       if (( admit )); then
         campaign_host_release "${host}" "${charge}"

@@ -190,7 +190,11 @@ heap) and a `fanout.sh` job (its `NEED_MB`). A sweep's cases share the hosts
 replay charge (PIPELINE §7.7). A start goes only when both the host's live charges and its real use
 (`MemTotal` less `MemAvailable`), each with the start and a head's held room (its engine JVMs'
 measured peak times 1.25, the largest idle head's of the host), stay within
-`CAUSYNTH_HOST_MAX_USED_PCT` (70) percent of `MemTotal`; a charge lives by a lease its holder renews
+`CAUSYNTH_HOST_MAX_USED_PCT` (70) percent of `MemTotal`, and the cores its live charges keep busy, with
+the start's own (a replay its campaign's measured cores, a solve two, an engine JVM, a REPRODUCE run or a
+`fanout.sh` job one), stay within `CAUSYNTH_HOST_MAX_CORES_PCT` (100) percent of its `nproc` (a host whose
+charges keep no core busy takes any one start): memory binds on liftlab, cores on CloudLab. A charge,
+`<mb>.<cores>.<host>.<pid>.<time>.<rand>`, lives by a lease its holder renews
 (`$CAUSYNTH_HOST_LEDGER/<host>/charges/`, 120 s), so a killed run's charges lapse, and is released
 the moment what it ran returns. A running workload JVM that outgrows its
 charge is granted the excess, charged on the ledger, unless the host's real use (`MemTotal` less
