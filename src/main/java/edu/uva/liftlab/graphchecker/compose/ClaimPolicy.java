@@ -122,6 +122,8 @@ public final class ClaimPolicy {
 
     static final int OWN_RUN_SHARE = 6;
 
+    static final int WHOLE_FIRST_SHARE = 6;
+
     static Decision decide(Composer.Composition composition, Z3 solver,
                            long budgetMillis) {
         long deadline = System.nanoTime()
@@ -129,9 +131,18 @@ public final class ClaimPolicy {
         Z3 bounded = solver.until(deadline);
         Decision decision;
         try (Disjunction asks = new Disjunction(composition, bounded)) {
-            decision = closed(composition, asks, read(composition, asks,
+            Z3.Answer first = observed(composition) ? null : asks.whole(
+                    composition.free(0).assertions(),
+                    askedSymbols(composition),
+                    composition.assertsRefutations(),
+                    budgetMillis / WHOLE_FIRST_SHARE);
+            decision = first != null && first.unsat()
+                    ? unsatAtOnce(composition, asks, first,
+                    budgetMillis / SELF_CHECK_SHARE)
+                    : closed(composition, asks, read(composition, asks,
                     budgetMillis / SELF_CHECK_SHARE,
-                    budgetMillis / OWN_RUN_SHARE), deadline);
+                    budgetMillis / OWN_RUN_SHARE), deadline,
+                    first != null && first.decided() ? first : null);
         }
         if (bounded.pastDeadline()) {
             List<GapRow> gaps = new ArrayList<GapRow>(
@@ -171,9 +182,29 @@ public final class ClaimPolicy {
         return paths;
     }
 
+    private static boolean observed(Composer.Composition composition) {
+        if (composition.disjuncts().isEmpty()) return true;
+        for (Composer.Disjunct disjunct : composition.disjuncts()) {
+            if (disjunct.fatalObserved()) return true;
+        }
+        return false;
+    }
+
+    private static Decision unsatAtOnce(Composer.Composition composition,
+                                        Disjunction asks,
+                                        Z3.Answer formula,
+                                        long selfCheckCapMillis) {
+        List<GapRow> gaps = new ArrayList<GapRow>(composition.gaps());
+        selfContradictory(composition, asks, gaps, selfCheckCapMillis);
+        contradictions(composition, asks, gaps);
+        return new Decision(Claim.of(ClaimKind.NO_SUPPORTED_WITNESS, 0,
+                Collections.<String, String>emptyMap(), false, gaps),
+                new ArrayList<Outcome>(), formula);
+    }
+
     private static Decision closed(Composer.Composition composition,
                                    Disjunction asks, Decision decided,
-                                   long deadlineNanos) {
+                                   long deadlineNanos, Z3.Answer known) {
         Claim claim = decided.claim();
         if (claim.kind() != ClaimKind.NO_SUPPORTED_WITNESS
                 || composition.disjuncts().isEmpty()) {
@@ -182,8 +213,9 @@ public final class ClaimPolicy {
         List<GapRow> gaps = new ArrayList<GapRow>(claim.gaps());
         List<Outcome> outcomes = new ArrayList<Outcome>(decided.outcomes());
         Composer.Valuation everyRoot = composition.free(outcomes.size());
-        Z3.Answer whole = asks.whole(everyRoot.assertions(),
-                askedSymbols(composition), composition.assertsRefutations(),
+        Z3.Answer whole = known != null ? known : asks.whole(
+                everyRoot.assertions(), askedSymbols(composition),
+                composition.assertsRefutations(),
                 Math.max(1L, leftMillis(deadlineNanos) / 2L));
         Outcome free = whole.decided()
                 ? new Outcome(everyRoot, Collections.<String>emptyList(),

@@ -1162,6 +1162,61 @@ public class ComposerTest {
     }
 
     @Test
+    public void theFormulaIsAskedWholeFirstOnlyWhereNoRunObservedTheFatal()
+            throws Exception {
+        Path asked = folder.newFile("z3-whole-first.log").toPath();
+        Path oneShot = folder.newFile("z3-valuations-hang.sh").toPath();
+        Files.write(oneShot, Arrays.asList("#!/bin/bash", "q=$(cat)",
+                "if ps -o args= -p $PPID | grep -q -- -scoped; then"
+                        + " echo unknown; echo '(:reason-unknown \"timeout\")';"
+                        + " exit 0; fi",
+                "if [[ $q == *':named valuation__'* ]]; then sleep 75;"
+                        + " echo unknown; exit 0; fi",
+                "echo whole >> " + asked,
+                "printf '%s\\n' \"$q\" | " + z3() + " \"$@\""));
+        assertTrue(oneShot.toFile().setExecutable(true));
+        Path unsat = folder.newFolder("whole-first-unsat").toPath();
+        Session seed = new Session(unsat, "s0", false);
+        seed.marker("false");
+        seed.target("(and " + MARKER + " (not " + MARKER + "))", false, true);
+        seed.write();
+        ClaimPolicy.Decision closed = ClaimPolicy.decide(compose(unsat, 8),
+                new Z3(ScopedFixture.of(oneShot), 30000L, 8192), 60000L);
+        String name = "no run observed the fatal, every valuation ask hangs"
+                + " past the budget, the whole formula is unsat: "
+                + closed.claim().gaps();
+        assertEquals(name, ClaimKind.NO_SUPPORTED_WITNESS,
+                closed.claim().kind());
+        assertTrue(name, closed.formula() != null
+                && closed.formula().unsat());
+        assertFalse(name, blocking(closed.claim().gaps()));
+        Files.write(asked, new byte[0]);
+        Path witnessed = folder.newFolder("whole-first-witnessed").toPath();
+        for (String id : new String[] {"s0", "s1"}) {
+            boolean explored = id.equals("s1");
+            Session session = new Session(witnessed, id, explored);
+            session.marker(explored ? "true" : "false");
+            session.target(MARKER, explored, true);
+            session.write();
+        }
+        obligation(witnessed, "s1", Collections.singletonMap(MARKER_ROOT,
+                "true"));
+        Path plain = folder.newFile("z3-plain.sh").toPath();
+        Files.write(plain, Arrays.asList("#!/bin/bash", "q=$(cat)",
+                "if ! ps -o args= -p $PPID | grep -q -- -scoped"
+                        + " && [[ $q != *':named valuation__'* ]]; then"
+                        + " echo whole >> " + asked + "; fi",
+                "printf '%s\\n' \"$q\" | " + z3() + " \"$@\""));
+        assertTrue(plain.toFile().setExecutable(true));
+        ClaimPolicy.Decision claimed = ClaimPolicy.decide(compose(witnessed,
+                8), new Z3(ScopedFixture.of(plain), 30000L, 8192));
+        assertEquals("a run observed the fatal: " + claimed.claim().gaps(),
+                ClaimKind.MARKER_FLIPPED, claimed.claim().kind());
+        assertEquals("and the whole formula is not asked first", 0L,
+                Files.size(asked));
+    }
+
+    @Test
     public void theFormulaIsAskedWholeBeforePathByPath() throws Exception {
         Path oneShot = folder.newFile("z3-paths-undecided.sh").toPath();
         Files.write(oneShot, Arrays.asList("#!/bin/bash", "q=$(cat)",

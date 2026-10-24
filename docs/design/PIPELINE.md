@@ -3646,7 +3646,12 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
      `WHOLE_BUDGET_MS`; where refutations are asserted, `Z3#ask` runs the verdict untracked and
      its core only after an unsat, a core it cuts staying unknown, `restsOnRefutationsKnown`
      false, never the UNSAT), then, undecided, path by path with the rest, never the whole
-     formula again (hdfs-adhoc-52 F5: one path's scoped ask ran the remaining 1390 s while the
+     formula again. Where no session of the corpus observed the fatal (no path is a model of it),
+     this whole ask comes first, before the valuations, within a sixth of the
+     decide budget (`ClaimPolicy#WHOLE_FIRST_SHARE`): unsat, the claim is `NO_SUPPORTED_WITNESS` at
+     once, after the paths' self-check and its contradiction check as above; sat or undecided, the valuations are enumerated as
+     above and a decided answer is this rank's (hdfs-adhoc-52 F5: every valuation timed out, a
+     scoped path ask ran 1377-1390 s, and the decide budget was gone before this rank, while the
      exported file is unsat in 35 s under `tools/lib/z3-race.sh`); the enumeration of single and pair moves above only picks a witness's
      valuation. Unsat: `NO_SUPPORTED_WITNESS` (UNSAT_CLOSED). Undecided within the budget: BLOCKING
      (a defect, never a refutation). Sat: `FORMULA_SAT` at the first enumerated witness a replay can
