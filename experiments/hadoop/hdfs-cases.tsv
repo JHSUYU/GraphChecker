@@ -17,7 +17,7 @@ hdfs-adhoc-06	system/hdfs-cloudlab	14400	UNSAT_CLOSED	EX1-adhoc-06	635	7
 hdfs-adhoc-08	system/hdfs-cloudlab	14400	UNSAT_CLOSED	EX1-adhoc-08	2060	7
 hdfs-adhoc-09	system/hdfs-cloudlab	14400	UNSAT_CLOSED	EX1-adhoc-09	1929	7
 hdfs-adhoc-10	system/hdfs-cloudlab	14400	SAT_CANDIDATE	EX1-adhoc-10	783	11
-hdfs-adhoc-11	system/hdfs-cloudlab	14400	UNSAT_CLOSED	EX1-adhoc-11	1135	28
+hdfs-adhoc-11	system/hdfs-cloudlab	28800	UNSAT_CLOSED	EX1-adhoc-11	1135	28
 hdfs-adhoc-12	system/hdfs-cloudlab	14400	SAT_CANDIDATE	EX1-adhoc-12	693	10
 hdfs-adhoc-14	system/hdfs-cloudlab	14400	UNSAT_CLOSED	EX1-adhoc-14	1182	17
 hdfs-adhoc-15	system/hdfs-cloudlab	14400	UNSAT_CLOSED	EX1-adhoc-15	901	12
