@@ -1860,8 +1860,9 @@ larger of its live charges and its real use -- as the head's view of its ledger 
 (`campaign_host_roomier`, the one order every choice among hosts takes: the stream's, a head step's,
 a head's hold, `launch-round.sh`'s heads, `fanout.sh`'s hold, `offline-ab.sh`'s placement,
 `campaign_hosts_by_room`); ordered by memory alone, CloudLab's 251 GB nodes always differed by memory
-and never by cores, so L1-17897 put 85 of its 118 obligations on node2 and the C1/D rounds held node1 at load 94
-beside node2 at 13; the pool's order breaks ties, so a burst of equal starts goes one to
+and never by cores: L1-17897's 40 replays ran 16/4/4/4/12 on node0-4, L2-adhoc-10's 108 by free cores
+21/21/19/23/24 (its solves follow the warm solver's seats, not this order: 98 of 203 on node3, whose
+solver served first); the pool's order breaks ties, so a burst of equal starts goes one to
 each host in turn and every start after it to the host its charges left the most room; one
 round-robin cursor for every kind sat, after each solve the one warm solver took, on the host after
 it, and every replay's scan started there: SGF8-adhoc-07 rounds 7-11 put 17 of 19 replays on lift04,
