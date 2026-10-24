@@ -11,4 +11,4 @@ scope+=(
   hdfs:org/apache/hadoop/hdfs/server/balancer/Dispatcher
   hdfs:org/apache/hadoop/hdfs/server/balancer/Balancer
 )
-export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0
+export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=2
