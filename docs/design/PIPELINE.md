@@ -1853,9 +1853,16 @@ behind the flips of the target's own guards (`campaign_stream_enqueue`; hbase-ad
 REPLAYs as client door faults ahead of them); nothing is dropped, and the wait bound still starts the entry waiting
 longest -- while the exploration runs fewer than its share of a shared pool (below; a REPLAY
 counts like any start), on the host of `campaign_worker_hosts` (empty: this machine, no
-ssh) WITH THE MOST ROOM (`campaign_stream_admit_host`, `campaign_stream_by_room`: the ceiling less
-the room heads hold there and the larger of its live charges and its real use, as the head's view
-of its ledger holds them, the pool's order breaking ties, so a burst of equal starts goes one to
+ssh) WITH THE MOST ROOM (`campaign_stream_admit_host`, `campaign_stream_by_room`). A host's room
+orders by its free cores first -- its core limit less the cores every campaign's live charges keep
+busy there -- and its memory room breaks ties -- the ceiling less the room heads hold there and the
+larger of its live charges and its real use -- as the head's view of its ledger holds them
+(`campaign_host_roomier`, the one order every choice among hosts takes: the stream's, a head step's,
+a head's hold, `launch-round.sh`'s heads, `fanout.sh`'s hold, `offline-ab.sh`'s placement,
+`campaign_hosts_by_room`); ordered by memory alone, CloudLab's 251 GB nodes always differed by memory
+and never by cores: L1-17897's 40 replays ran 16/4/4/4/12 on node0-4, L2-adhoc-10's 108 by free cores
+21/21/19/23/24 (its solves follow the warm solver's seats, not this order: 98 of 203 on node3, whose
+solver served first); the pool's order breaks ties, so a burst of equal starts goes one to
 each host in turn and every start after it to the host its charges left the most room; one
 round-robin cursor for every kind sat, after each solve the one warm solver took, on the host after
 it, and every replay's scan started there: SGF8-adhoc-07 rounds 7-11 put 17 of 19 replays on lift04,
@@ -2048,7 +2055,8 @@ for a slot (HG4).
 HEAD STEPS. Every heavy step of a head (`do_campaign`) goes where there is room through one rule
 (`campaign_head_charged <need> <cores>`, `campaign_head_place`): the head's own host when it fits there
 (its own room is not held against it), else the first of the pool's hosts with its need's room under the
-ceiling (`campaign_host_room`), the most room first, whose ledger admits it with its cores (a host whose
+ceiling (`campaign_host_room`), the most room first (`campaign_hosts_by_room`: the most free cores, then
+the most memory room), whose ledger admits it with its cores (a host whose
 memory has room may have its cores charged), charged there while it runs and released when it returns;
 none admitting,
 it waits, saying so once -- but A STEP NO HOST CAN EVER HOLD never waits: past the most a pool host holds

@@ -72,22 +72,16 @@ ab_java() {
 ab_placed_host=""
 ab_placed_charge=""
 ab_place() {
-  local need=$1 host room best best_room
+  local need=$1 host
   while true; do
-    best=""
-    best_room=-1
-    for host in ${AB_HOSTS}; do
-      room=$(campaign_host_room "${host}") || continue
-      (( room >= need && room > best_room )) || continue
-      best=${host}
-      best_room=${room}
+    for host in $(campaign_hosts_by_room "${need}" ${AB_HOSTS}); do
+      if campaign_host_try_start "${host}" "${need}" \
+          "${campaign_engine_cores}"; then
+        ab_placed_host=${host}
+        ab_placed_charge=${campaign_host_charge_id}
+        return 0
+      fi
     done
-    if [[ -n "${best}" ]] && campaign_host_try_start "${best}" "${need}" \
-        "${campaign_engine_cores}"; then
-      ab_placed_host=${best}
-      ab_placed_charge=${campaign_host_charge_id}
-      return 0
-    fi
     sleep "${campaign_host_poll_s}"
   done
 }

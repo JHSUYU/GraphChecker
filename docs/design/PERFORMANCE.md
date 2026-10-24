@@ -66,7 +66,8 @@ running out of memory, and a single case alone takes the whole cluster.
   explorations whose entry in `$CAUSYNTH_HOST_LEDGER/explorations/` is fresh, re-read at every start. One case alone
   keeps all of it; ten keep a tenth each, and a share grows as others end. A named acceptance run shares nothing.
 - **Head steps** (PIPELINE §7.7 HEAD STEPS): every engine JVM of a head (static passes, planner, composer, CONFIRM's
-  main, GROW's planner) goes to the head's own host if it fits, else to the pool's host with the most room, charged
+  main, GROW's planner) goes to the head's own host if it fits, else to the pool's host with the most room (free cores
+  first, then memory), charged
   at the heap it starts at; a step that waits holds its need on the best host so that host drains. A head holds room
   for its next step: its measured step need (the largest engine JVM peak x1.25, at least 1 GB; 3.4-6.4 GB measured,
   HR1), never a fixed 8 GB; a host counts only its largest idle reservation. Every engine JVM (a head's, the served
