@@ -169,4 +169,7 @@ python3 tools/analysis/smt-legend.py --repo <the case's tree> <out>/<case>      
     the slice with its writer family (any non-INITIAL writer?) and whether COMPOSE could offer another writer, the
     moved roots, the BLOCKING codes, the named gap kinds and the verdict. A vacuous UNSAT is a NO-SYMBOL one (trap 10):
     not done without the written reason, or name the writer that is missing (an unplanned occurrence, state set
-    before the window) and fix the scope or the plan.
+    before the window) and fix the scope or the plan. Every literal-false path whose decider's open arm was asked
+    and closed by its flips (the last round's `openArms`, state UNSAT) is not vacuous: vacuity.py says the UNSAT rests
+    on those arms and their refuted worlds (hdfs-adhoc-39, 2026-10-24: `getBlockUCState()` #u2, one refuted world),
+    and each refutation is read against the code (traps 5, 18).

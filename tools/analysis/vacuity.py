@@ -380,6 +380,12 @@ def target_guards(camp):
     return guards
 
 
+def open_arms(camp):
+    rounds = sorted(glob.glob(os.path.join(camp, 'schedule', 'iteration-0000',
+                                           'obligations-*', 'explore_manifest.json')))
+    return load(rounds[-1]).get('openArms') or [] if rounds else []
+
+
 def analyze(camp, summary):
     final = os.path.join(camp, 'schedule', 'final')
     manifest = load(os.path.join(final, 'candidate_composition_manifest.json'))
@@ -392,6 +398,7 @@ def analyze(camp, summary):
            'paths': [], 'reads': {}, 'roots': collections.Counter(),
            'leaves': collections.Counter()}
     out['moved'] = sorted(claim.get('movedRoots') or {})
+    out['openArms'] = open_arms(camp)
     out['blocking'] = collections.Counter(
         g.get('code') for g in gaps.get('gaps') or [])
     out['named'] = named((gaps.get('gaps') or []) + (gaps.get('telemetryGaps') or []))
@@ -478,6 +485,14 @@ def verdict(c):
     literal = sum(1 for p in paths if p['literalFalse'])
     if literal == n:
         phis = collections.Counter(p['phi'] for p in paths)
+        closed = [a for a in c['openArms'] if a.get('state') == 'UNSAT']
+        if closed:
+            worlds = sum(len(a.get('refutedWorlds') or []) for a in closed)
+            return ('UNSAT rests on %d open arm(s) its flips closed (%s; %d refuted world(s)): '
+                    'every path\'s fatal arm is the decider\'s literal false (target phi %s); '
+                    'read each refutation against the code' % (
+                        len(closed), ','.join(a.get('siteId', '?').rsplit('>', 1)[-1]
+                                              for a in closed), worlds, pairs(phis))) + rest
         return ('UNSAT is vacuous because every path\'s fatal arm is literal false '
                 '(target phi %s)' % pairs(phis)) + rest
     open_paths = [p for p in paths if not p['literalFalse']]
