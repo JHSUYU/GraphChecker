@@ -296,7 +296,7 @@ public final class ClaimPolicy {
         Decision unasked = unasked(composition, gaps);
         if (unasked != null) return unasked;
         Reading reading = new Reading(composition, asks, gaps,
-                selfCheckCapMillis);
+                selfCheckCapMillis, ownRunCapMillis);
         reading.ownRunsUntil = System.currentTimeMillis() + ownRunCapMillis;
         Decision claimed = null;
         for (int faults = 0; claimed == null
@@ -361,10 +361,13 @@ public final class ClaimPolicy {
         private int faults;
         private long ownRunsUntil;
         private boolean ownRunsCut;
+        private boolean cut;
+        private final Outcome clockWorld;
         private final Set<String> partial = new LinkedHashSet<String>();
 
         Reading(Composer.Composition composition, Disjunction asks,
-                List<GapRow> gaps, long selfCheckCapMillis) {
+                List<GapRow> gaps, long selfCheckCapMillis,
+                long ownRunCapMillis) {
             this.composition = composition;
             this.asks = asks;
             this.gaps = gaps;
@@ -374,6 +377,15 @@ public final class ClaimPolicy {
                     Collections.<String>emptyList(), true);
             if (!recorded.answer().decided()) undecided(recorded, gaps);
             cells = composition.clockCells();
+            clockWorld = recorded.witness() ? ownRunAt(valuations.get(0),
+                    true, System.currentTimeMillis() + ownRunCapMillis) : null;
+            if (cut) {
+                gaps.add(GapRow.of(Composer.COMPOSITION,
+                        GapKind.SOLVER_TIMEOUT, GapClass.DIAGNOSTIC,
+                        "clock world", "the explored clock worlds' own runs "
+                                + "ran out of their share of the decide "
+                                + "budget: no clock world is a candidate"));
+            }
             List<String> pairings = composition.recordedPairings();
             asHappened = new ArrayList<String>(pins(composition, cells,
                     "clock_pinned__"));
@@ -449,8 +461,11 @@ public final class ClaimPolicy {
                         .isEmpty()) {
                     continue;
                 }
-                Outcome asked = ownRunAt(valuation, false);
-                if (asked == null) continue;
+                Outcome asked = ownRunAt(valuation, false, ownRunsUntil);
+                if (asked == null) {
+                    if (cut) ownRunsCut(valuation);
+                    continue;
+                }
                 outcomes.set(index, asked);
                 if (recordingDecides) outcomes.set(0, asRecorded);
                 return claimed(mechanism(composition, asks, asked,
@@ -460,18 +475,14 @@ public final class ClaimPolicy {
         }
 
         Decision ownClockWorld() {
-            Outcome free = outcomes.get(0);
-            if (faults != 0 || ownRunsCut || free.answer().unsat()) {
-                return null;
-            }
-            Outcome asked = ownRunAt(free.valuation(), true);
-            if (asked == null) return null;
-            outcomes.set(0, asked);
-            return claimed(ClaimKind.CLOCK_SKEW, asked);
+            if (faults != 0 || clockWorld == null) return null;
+            outcomes.set(0, clockWorld);
+            return claimed(ClaimKind.CLOCK_SKEW, clockWorld);
         }
 
         private Outcome ownRunAt(Composer.Valuation valuation,
-                                 boolean clocksOnly) {
+                                 boolean clocksOnly, long until) {
+            cut = false;
             for (Composer.Disjunct path : composition.disjuncts()) {
                 if (!path.fatalObserved() || path.path().sessionId
                         .equals(composition.seedSessionId())
@@ -479,20 +490,20 @@ public final class ClaimPolicy {
                         || clocksOnly && !composition.plantsAClock(path)) {
                     continue;
                 }
-                long left = ownRunsUntil - System.currentTimeMillis();
+                long left = until - System.currentTimeMillis();
                 if (left <= 0L) {
-                    ownRunsCut(valuation, path);
+                    cut = true;
                     return null;
                 }
-                if (clocksOnly && !recordingDecides) {
+                if (clocksOnly) {
                     if (!outcomeOn(composition, asks, valuation,
                             pins(composition, cells, "clock_read__"), false,
                             path.selector(), left).answer().unsat()) {
                         continue;
                     }
-                    left = ownRunsUntil - System.currentTimeMillis();
+                    left = until - System.currentTimeMillis();
                     if (left <= 0L) {
-                        ownRunsCut(valuation, path);
+                        cut = true;
                         return null;
                     }
                 }
@@ -523,16 +534,14 @@ public final class ClaimPolicy {
                     armsOf(composition, answer));
         }
 
-        private void ownRunsCut(Composer.Valuation valuation,
-                                Composer.Disjunct path) {
+        private void ownRunsCut(Composer.Valuation valuation) {
             if (ownRunsCut) return;
             ownRunsCut = true;
             gaps.add(GapRow.of(Composer.COMPOSITION, GapKind.SOLVER_TIMEOUT,
                     GapClass.DIAGNOSTIC, "own runs", "the explored sessions' "
                             + "own runs ran out of their share of the decide "
                             + "budget at valuation " + valuation.ordinal()
-                            + " on path " + path.path().pathId + ": the "
-                            + "ranking decides from there"));
+                            + ": the ranking decides from there"));
         }
 
         Decision movedRoot(boolean configuration) {

@@ -1119,7 +1119,7 @@ public class ComposerTest {
         }
         Path oneShot = folder.newFile("z3-no-as-happened.sh").toPath();
         Files.write(oneShot, Arrays.asList("#!/bin/bash", "q=$(cat)",
-                "if [[ $q == *clock_pinned__* ]]; then echo unknown;"
+                "if [[ $q == *clock_pinned__* ]]; then sleep 120; echo unknown;"
                         + " echo '(:reason-unknown \"timeout\")'; exit 0; fi",
                 "printf '%s\\n' \"$q\" | " + z3() + " \"$@\""));
         assertTrue(oneShot.toFile().setExecutable(true));
@@ -1143,9 +1143,9 @@ public class ComposerTest {
                 Collections.singletonMap(CLOCK_ROOT, "500"));
         ClaimPolicy.Decision decided = ClaimPolicy.decide(
                 compose(iteration, 8), new Z3(ScopedFixture.of(oneShot),
-                        30000L, 8192));
-        String name = "the whole formula's as-happened question undecided,"
-                + " the path's own at the readings decides: "
+                        30000L, 8192), 60000L);
+        String name = "the as-happened question undecided until the deadline,"
+                + " the clock world's early candidate is claimed: "
                 + decided.claim().gaps();
         assertEquals(name, ClaimKind.CLOCK_SKEW, decided.claim().kind());
         assertEquals(name, "1200",

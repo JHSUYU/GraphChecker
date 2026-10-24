@@ -3596,14 +3596,16 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    - an explored clock world in its own run (`ClaimPolicy.Reading#ownClockWorld`, at no fault): a
      fatal-observing explored path whose world moved no declared root and planted a clock skew on a
      cell of the composition (`Composition#plantsAClock`; a world that planted none is not asked) is
-     asked at the recorded valuation in its own run, its world's clocks held, within the own pass's
-     share, and claimed `CLOCK_SKEW` where the test of the own run holds. Its polarity is
-     `recordingDecides`, else that path's own question: its formula at the recorded valuation with
-     every cell at its reading (`clock_read__` pins, the world's clocks unplanted) unsat, so on that
-     path the clocks decide, which is all the claim of its own run rests on; every other rank keeps
-     the whole formula's (hdfs-11741 F1, offline on its final inputs: the as-happened ask over 170
-     paths stayed undecided within the decide budget, with or without four more z3 hosts). So the
-     order is: own runs of moved valuations at any fault count, then per count the
+     asked right after the recorded valuation, before the recording's own questions, within a sixth
+     of the decide budget, in its own run, its world's clocks held, and kept as a candidate that is
+     claimed `CLOCK_SKEW` at this rank where the test of the own run holds and no rank before it
+     claimed by the deadline. Its polarity is that path's own question: its formula at the recorded
+     valuation with every cell at its reading (`clock_read__` pins, the world's clocks unplanted)
+     unsat, so on that path the clocks decide, which is all the claim of its own run rests on; every
+     other rank keeps the whole formula's, whose as-happened question keeps the rest of the budget
+     (hdfs-11741 F1, offline on its final inputs: that question over 170 paths stayed undecided
+     until the deadline, with or without four more z3 hosts, and every rank after it came too late).
+     So the order is: own runs of moved valuations at any fault count, then per count the
      moved-root rule, at no fault the explored clock world, then the faultless mechanism below, then
      the configuration-only moved roots (hdfs-11741 F1: 5ce842be's world, nn0's and dn1's key
      clocks +20 h and the balancer's +30 h, observed the fatal and moved no declared root);
