@@ -83,8 +83,9 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
 - A launch must name its VM image (`CAUSYNTH_CUSTOM_JDK_HOME`; a sweep's `VM_IMAGE`): there is no
   default image.
 - `launch-round.sh` chooses each case's head host at launch from the hosts' room in the ledger
-  (`campaign_host_room`): the heaviest case first (its `engine_memory_mb`, `tools/lib/heads.sh`
-  `case_engine_heap_mb`), each to the host with the most room among those heading the fewest
+  (`campaign_host_room`: its memory room and its free cores): the heaviest case first (its `engine_memory_mb`, `tools/lib/heads.sh`
+  `case_engine_heap_mb`), each to the host with the most room (the most free cores, then the most memory room,
+  `campaign_host_roomier`) among those heading the fewest
   cases, so no host heads two before every host heads one; `lift11` heads nothing. A head only drives its campaign: every
   engine JVM, the seed and CONFIRM replays and REPRODUCE's runs go wherever there is room, its own
   host first (PIPELINE §7.7).
@@ -445,7 +446,7 @@ On this cluster:
 | what | where / how |
 | --- | --- |
 | hosts | `LIFTS="node0 node1 node2 node3 node4"`: all five are workers and heads (`GC_CONTROL_HOST` empty: node0 runs the sessions and serves /bulk, and NFS stays sub-millisecond under load). Builds and offline gates go to node1-4 by hand (`ssh node<k> 'cd <dir> && ...'`) or `tools/onlift.sh`. |
-| the limit | **cores, not memory**: 251 GB never binds; replays keep ~0.8-1.4 cores busy each (`workload_cores_x100`), and the old CPUs run a replay 2-3x slower than a lift. Every ledger charge states its cores beside its MB (`<mb>.<cores>.<host>...`, §4, PIPELINE §7.7), and a start goes only where every campaign's live charged cores plus its own stay within `CAUSYNTH_HOST_MAX_CORES_PCT` (100) percent of the node's 40; before that a campaign counted only its own starts' cores and campaigns side by side oversubscribed the CPUs (C1: load 70-93 on 40). A build older than the core charges writes rows read as no cores: its campaigns load a node uncounted, so judge a host by `/proc/loadavg` beside its charged cores. Development rounds run as sweeps (`tools/adhoc/sweep.sh`, shared pool), about ten campaigns at once; a case's final run goes alone (`tools/rounds/run-series.sh`). |
+| the limit | **cores, not memory**: 251 GB never binds; replays keep ~0.8-1.4 cores busy each (`workload_cores_x100`), and the old CPUs run a replay 2-3x slower than a lift. Every ledger charge states its cores beside its MB (`<mb>.<cores>.<host>...`, §4, PIPELINE §7.7), and a start goes only where every campaign's live charged cores plus its own stay within `CAUSYNTH_HOST_MAX_CORES_PCT` (100) percent of the node's 40; before that a campaign counted only its own starts' cores and campaigns side by side oversubscribed the CPUs (C1: load 70-93 on 40). A build older than the core charges writes rows read as no cores: its campaigns load a node uncounted, so judge a host by `/proc/loadavg` beside its charged cores. Every choice among hosts (a stream start, a head step, a head, a hold) takes the one with the most free cores, memory room breaking ties (PIPELINE §7.7, `campaign_host_roomier`): ordered by memory alone, L1-17897 put 85 of its 118 obligations on node2. Development rounds run as sweeps (`tools/adhoc/sweep.sh`, shared pool), about ten campaigns at once; a case's final run goes alone (`tools/rounds/run-series.sh`). |
 | shared storage | `/bulk` = `GC_BULK`: node0's `/dev/sdb` (ext4 at `/data`), `/data/bulk` exported over NFS 4.2 to the subnet and mounted at `/bulk` on every node (node0 by a bind mount). The home directory is local to each node: everything a run on another node reads lives on /bulk. |
 | local scratch | `/localtmp` on each node = its own `/dev/sdb` (`/data/localtmp`, a bind mount); replays' working directories go to `/localtmp/$USER/graphchecker/`. |
 | repositories | `/bulk/GraphChecker` (`GC_REPO`; worktrees by `tools/lib/worktree-add.sh`, sparse, serialized by a flock), `/bulk/hadoop` (the fork JHSUYU/hadoop; the trees are its worktrees) |
