@@ -505,6 +505,16 @@ public class ComposerTest {
                                    List<String> inherited,
                                    Map<String, String> pairings)
             throws IOException {
+        obligation(iteration, sessionId, roots, site, inherited, pairings,
+                Collections.<String, String>emptyMap());
+    }
+
+    private static void obligation(Path iteration, String sessionId,
+                                   Map<String, String> roots, String site,
+                                   List<String> inherited,
+                                   Map<String, String> pairings,
+                                   Map<String, String> clockDeltas)
+            throws IOException {
         Path worker = iteration.resolve("obligations-0000")
                 .resolve("ob-" + sessionId);
         Files.createDirectories(worker);
@@ -540,7 +550,11 @@ public class ComposerTest {
             assigned.addProperty(root.getKey(), root.getValue());
         }
         focus.add("rootAssignments", assigned);
-        focus.add("clockDeltas", new com.google.gson.JsonObject());
+        com.google.gson.JsonObject skewed = new com.google.gson.JsonObject();
+        for (Map.Entry<String, String> delta : clockDeltas.entrySet()) {
+            skewed.addProperty(delta.getKey(), delta.getValue());
+        }
+        focus.add("clockDeltas", skewed);
         focus.add("answers", new com.google.gson.JsonObject());
         com.google.gson.JsonObject paired = new com.google.gson.JsonObject();
         for (Map.Entry<String, String> pairing : pairings.entrySet()) {
@@ -1021,33 +1035,55 @@ public class ComposerTest {
     @Test
     public void anExploredSessionsOwnRunIsClaimedBeforeAFaultlessMechanism()
             throws Exception {
-        String phi = "(or (> " + CLOCK + " 1000) " + MARKER + ")";
+        String either = "(or (> " + CLOCK + " 1000) " + MARKER + ")";
+        String both = "(and (> " + CLOCK + " 1000) " + MARKER + ")";
         Object[][] table = {
             {"an explored replay ran the fault and observed the fatal",
-                    true, ClaimKind.MARKER_FLIPPED, "true"},
+                    either, true, "700", ClaimKind.MARKER_FLIPPED, "true",
+                    null},
             {"no explored replay observed it: fewest faults first",
-                    false, ClaimKind.CLOCK_SKEW, null},
+                    either, false, "700", ClaimKind.CLOCK_SKEW, null,
+                    "jumped"},
+            {"its replay planted a clock skew too: its own run holds it",
+                    both, true, "1200", ClaimKind.MARKER_FLIPPED, "true",
+                    "1200"},
         };
         for (Object[] row : table) {
-            boolean witnessed = (Boolean) row[1];
+            boolean witnessed = (Boolean) row[2];
             Path iteration = folder.newFolder().toPath();
             for (String id : witnessed ? new String[] {"s0", "s1"}
                     : new String[] {"s0"}) {
                 boolean explored = id.equals("s1");
+                String reading = explored ? (String) row[3] : "700";
                 Session session = new Session(iteration, id, explored);
                 session.marker(explored ? "true" : "false");
-                session.clock("700");
+                session.clock(reading);
                 session.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK
                         + " 1000) (not (> " + CLOCK + " 1000)))",
-                        CLOCK_ROOT, 700L);
-                session.target(phi, explored, true);
+                        CLOCK_ROOT, Long.parseLong(reading));
+                session.target((String) row[1], explored, true);
                 session.write();
+            }
+            if (witnessed) {
+                obligation(iteration, "s1", Collections.singletonMap(
+                        MARKER_ROOT, "true"), "nn#u1",
+                        Collections.<String>emptyList(),
+                        Collections.<String, String>emptyMap(),
+                        "700".equals(row[3])
+                                ? Collections.<String, String>emptyMap()
+                                : Collections.singletonMap(CLOCK_ROOT,
+                                Long.toString(Long.parseLong(
+                                        (String) row[3]) - 700L)));
             }
             ClaimPolicy.Decision decision = ClaimPolicy.decide(
                     compose(iteration, 8), solver());
-            assertEquals((String) row[0], row[2], decision.claim().kind());
-            assertEquals((String) row[0], row[3],
+            String name = row[0] + ": " + decision.claim().gaps();
+            assertEquals(name, row[4], decision.claim().kind());
+            assertEquals(name, row[5],
                     decision.claim().movedRoots().get(MARKER_ROOT));
+            String clock = decision.claim().movedRoots().get(CLOCK);
+            assertEquals(name, row[6], clock == null ? null
+                    : "jumped".equals(row[6]) ? "jumped" : clock.trim());
         }
     }
 
