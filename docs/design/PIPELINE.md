@@ -3531,8 +3531,13 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    its own run, whatever path or arms the valuation's own model chose: the valuation's pins, its own
    arms and observed writers (`Composition#ownRun`) and its world's clocks -- each cell its replay
    planted at that skew, every other running on from its reading (`Composition#worldClocks`) -- and
-   the answer is claimed where the test of the own run below holds (without `recordingDecides`,
-   only where `polarityDecides`); unsat or undecided, the order
+   the answer is claimed where it selects that path and the test of the own run below holds
+   (without `recordingDecides`, only where `polarityDecides`). Each path is asked once
+   (`Disjunction#askOwnRun`: its own run alone, never then free) and the pass has a sixth of the
+   decide budget (`ClaimPolicy#OWN_RUN_SHARE`); past it the ranking decides, named DIAGNOSTIC
+   `SOLVER_TIMEOUT` `own runs`. A world that planted equal skews on consecutive cells of one clock
+   moves only the first in `movedRoots` (the next jumps by nothing), so its own run fails the clock
+   test and the ranking decides it: a lost own claim, never a wrong one. Unsat or undecided, the order
    below decides as before (hdfs-17897 C1 0002: each of 15 fatal-observing explored paths was sat in
    its own run, while the valuation's whole model took another run's arm on it, so the pass judging
    that model claimed a re-pairing at the recorded valuation instead). A world a replay already ran

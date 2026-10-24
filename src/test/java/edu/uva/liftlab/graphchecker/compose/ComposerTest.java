@@ -1229,6 +1229,49 @@ public class ComposerTest {
     }
 
     @Test
+    public void anExploredRunIsAskedInItsOwnRunWhateverArmTheModelTook()
+            throws Exception {
+        Object[][] table = {
+            {"its own run reaches the fatal: claimed in it, whichever "
+                    + "delivery the valuation's model took", "true", "s1"},
+            {"its own run cannot: the ranking decides", "false", "s2"},
+        };
+        for (Object[] row : table) {
+            Path iteration = folder.newFolder().toPath();
+            for (String id : new String[] {"s0", "s1", "s2"}) {
+                boolean seed = id.equals("s0");
+                Session session = new Session(iteration, id, !seed);
+                session.activation(PRODUCER);
+                session.marker(seed ? "false" : "true");
+                String delivered = id.equals("s1") ? (String) row[1] : "true";
+                session.expression("EXPR.key", constant(delivered));
+                if (id.equals("s2")) {
+                    session.decision(PRODUCER, "nn#u1", "(or " + MARKER
+                            + " (not " + MARKER + "))");
+                }
+                session.export(SENT, "EXPR.key", ++session.seq, delivered);
+                session.attach(RECEIVED, "vh", delivered, SENT);
+                session.target("(and " + MARKER + " vh)", id.equals("s1"),
+                        true);
+                session.write();
+                if (!seed) {
+                    obligation(iteration, id, Collections.singletonMap(
+                            MARKER_ROOT, "true"));
+                }
+            }
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(
+                    compose(iteration, 8), solver());
+            String name = row[0] + ": " + decision.claim().gaps();
+            assertEquals(name, ClaimKind.MARKER_FLIPPED,
+                    decision.claim().kind());
+            ClaimPolicy.Outcome claimed = decision.outcomes().get(
+                    decision.claim().valuationOrdinal());
+            assertEquals(name, row[2],
+                    claimed.selected().path().sessionId);
+        }
+    }
+
+    @Test
     public void aWorldAnExploredReplayRanToTheFatalIsAValuation()
             throws Exception {
         Object[][] table = {

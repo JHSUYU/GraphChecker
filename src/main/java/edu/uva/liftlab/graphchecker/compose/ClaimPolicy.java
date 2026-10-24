@@ -120,6 +120,8 @@ public final class ClaimPolicy {
 
     static final int SELF_CHECK_SHARE = 3;
 
+    static final int OWN_RUN_SHARE = 6;
+
     static Decision decide(Composer.Composition composition, Z3 solver,
                            long budgetMillis) {
         Z3 bounded = solver.until(System.nanoTime()
@@ -127,7 +129,8 @@ public final class ClaimPolicy {
         Decision decision;
         try (Disjunction asks = new Disjunction(composition, bounded)) {
             decision = closed(composition, asks, read(composition, asks,
-                    budgetMillis / SELF_CHECK_SHARE));
+                    budgetMillis / SELF_CHECK_SHARE,
+                    budgetMillis / OWN_RUN_SHARE));
         }
         if (bounded.pastDeadline()) {
             List<GapRow> gaps = new ArrayList<GapRow>(
@@ -287,12 +290,14 @@ public final class ClaimPolicy {
     }
 
     private static Decision read(Composer.Composition composition,
-                                 Disjunction asks, long selfCheckCapMillis) {
+                                 Disjunction asks, long selfCheckCapMillis,
+                                 long ownRunCapMillis) {
         List<GapRow> gaps = new ArrayList<GapRow>(composition.gaps());
         Decision unasked = unasked(composition, gaps);
         if (unasked != null) return unasked;
         Reading reading = new Reading(composition, asks, gaps,
                 selfCheckCapMillis);
+        reading.ownRunsUntil = System.currentTimeMillis() + ownRunCapMillis;
         Decision claimed = null;
         for (int faults = 0; claimed == null
                 && faults <= reading.mostFaults(); faults++) {
@@ -353,6 +358,8 @@ public final class ClaimPolicy {
         private final boolean polarityDecides;
         private Outcome recorded;
         private int faults;
+        private long ownRunsUntil;
+        private boolean ownRunsCut;
         private final Set<String> partial = new LinkedHashSet<String>();
 
         Reading(Composer.Composition composition, Disjunction asks,
@@ -442,12 +449,16 @@ public final class ClaimPolicy {
                             valuation.moved())) {
                         continue;
                     }
-                    List<String> held = composition.ownRun(path.selector());
-                    held.addAll(composition.worldClocks(path));
-                    Outcome asked = outcomeOn(composition, asks, valuation,
-                            held, false, path.selector(), 0L);
+                    long left = ownRunsUntil - System.currentTimeMillis();
+                    if (left <= 0L) {
+                        ownRunsCut(valuation, path);
+                        return null;
+                    }
+                    Outcome asked = ownRunOf(valuation, path, left);
                     List<GapRow> named = new ArrayList<GapRow>();
-                    if (!asked.witness() || !ownRun(asked)
+                    if (!asked.witness() || !asked.selected().selector()
+                            .equals(path.selector())
+                            || !ownRun(asked)
                             || unattested(composition, asked, named)) {
                         continue;
                     }
@@ -459,6 +470,31 @@ public final class ClaimPolicy {
                 }
             }
             return null;
+        }
+
+        private Outcome ownRunOf(Composer.Valuation valuation,
+                                 Composer.Disjunct path, long budgetMillis) {
+            List<String> clocks = composition.worldClocks(path);
+            List<String> assertions =
+                    new ArrayList<String>(valuation.assertions());
+            assertions.addAll(clocks);
+            Z3.Answer answer = asks.askOwnRun(path.selector(), assertions,
+                    askedSymbols(composition), budgetMillis);
+            return new Outcome(valuation, clocks, answer,
+                    selectedOf(composition, answer),
+                    armsOf(composition, answer));
+        }
+
+        private void ownRunsCut(Composer.Valuation valuation,
+                                Composer.Disjunct path) {
+            if (ownRunsCut) return;
+            ownRunsCut = true;
+            gaps.add(GapRow.of(Composer.COMPOSITION, GapKind.SOLVER_TIMEOUT,
+                    GapClass.DIAGNOSTIC, "own runs", "the explored sessions' "
+                            + "own runs ran out of their share of the decide "
+                            + "budget at valuation " + valuation.ordinal()
+                            + " on path " + path.path().pathId + ": the "
+                            + "ranking decides from there"));
         }
 
         Decision movedRoot(boolean configuration) {
@@ -983,11 +1019,8 @@ public final class ClaimPolicy {
                 budgetMillis);
     }
 
-    private static Outcome outcomeOn(Composer.Composition composition,
-                                     Disjunction asks,
-                                     Composer.Valuation valuation,
-                                     List<String> pinned, boolean wantCore,
-                                     String selector, long budgetMillis) {
+    private static List<String> askedSymbols(
+            Composer.Composition composition) {
         List<String> asked = new ArrayList<String>(composition.selectors());
         asked.addAll(composition.armSelectors());
         asked.addAll(composition.stateSelectors());
@@ -998,6 +1031,15 @@ public final class ClaimPolicy {
             asked.add(SmtNames.legalSymbols(held));
         }
         asked.addAll(composition.rootSymbols());
+        return asked;
+    }
+
+    private static Outcome outcomeOn(Composer.Composition composition,
+                                     Disjunction asks,
+                                     Composer.Valuation valuation,
+                                     List<String> pinned, boolean wantCore,
+                                     String selector, long budgetMillis) {
+        List<String> asked = askedSymbols(composition);
         List<String> assertions =
                 new ArrayList<String>(valuation.assertions());
         assertions.addAll(pinned);
