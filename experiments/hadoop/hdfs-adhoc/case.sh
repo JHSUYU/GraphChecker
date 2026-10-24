@@ -13,6 +13,9 @@ fi
 if [[ "$1" == 16 ]]; then
   export CAUSYNTH_REGION_PATH_MAX_TASKS=128
 fi
+if [[ "$1" == 24 || "$1" == 26 || "$1" == 37 ]]; then
+  export CAUSYNTH_REPLAY_TIMEOUT_S=7200
+fi
 case "${window}" in
   up) ;;
   startup) recording_window=startup ;;
