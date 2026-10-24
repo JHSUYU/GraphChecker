@@ -19,3 +19,4 @@ scope=(
   hdfs:org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotManager
   hdfs:org/apache/hadoop/hdfs/util/ReadOnlyList
 )
+export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0

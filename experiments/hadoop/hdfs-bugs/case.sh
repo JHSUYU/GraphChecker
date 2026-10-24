@@ -15,3 +15,4 @@ case "${1:?usage: case.sh slowdisk-zero}" in
     return 2
     ;;
 esac
+export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0

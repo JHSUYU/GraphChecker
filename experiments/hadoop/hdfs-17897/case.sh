@@ -6,3 +6,4 @@ scope=("${blockkey_scope[@]}"
   client:org/apache/hadoop/hdfs/DFSClient
   client:org/apache/hadoop/hdfs/FileChecksumHelper
 )
+export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0

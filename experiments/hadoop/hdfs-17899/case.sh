@@ -35,3 +35,4 @@ case "${1:?usage: case.sh bug1|bug2|bug3}" in
     return 2
     ;;
 esac
+export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0

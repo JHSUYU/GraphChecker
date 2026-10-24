@@ -1,3 +1,4 @@
+export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0
 repo=${GC_TREES}/hadoop-hdfs-study-r7
 if [[ "$1" == 21 ]]; then
   repo=${GC_TREES}/hadoop-hdfs-21
