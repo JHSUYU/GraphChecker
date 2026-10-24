@@ -3441,10 +3441,17 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    after it stopped, a check still running cancelled), else undecided if any path was, else unsat with the union of
    the paths' cores. A path is asked in its own run first (`Disjunction#pathAsk`,
    `Composition#ownRun`): its own session's arm of each message the path received, of each message
-   an own arm was handed on (§8), and each state read's observed writer, selectors only (never the values its handoffs carried, which are on its
+   an own arm was handed on (§8; hdfs-17897 C1 0002: 119 such arms over 118 paths, one through a run
+   writer), and each state read's observed writer, selectors only (never the values its handoffs carried, which are on its
    own clock), within 10 minutes at most; a model there is a model of the question, and only where
    its own run is refuted or undecided is the path asked free (hdfs-11741 L1: two fatal-observing
-   paths sat in about 100 s in their own runs, undecided after 30 minutes free). A path unsat under some assertions is unsat under every set containing them,
+   paths sat in about 100 s in their own runs, undecided after 30 minutes free). A known limit: a
+   handed-on message is closed once per path, at the slots of the first arm that rests on it; where
+   the path's session attached that consumer from another producer than that arm's run, the message
+   has no arm of its session, the own run leaves its choice open and any arm taken there is a
+   re-pairing, so the own-witness pass refuses that run (ComposerTest: "its run attached another
+   producer than the run that closed the message first"; none in hdfs-17897 C3 0000 or C1 0002).
+   A path unsat under some assertions is unsat under every set containing them,
    so it is not asked again there: its refutation answers, core and all, one asked without a core
    only an ask that wants none, unless it was asked under no assertion at all where the body asserts
    no refuted claim (the self-check: its core can name no pin). hdfs-11741 i1: 155 of 157 paths

@@ -77,6 +77,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class ComposerTest {
@@ -1050,73 +1051,142 @@ public class ComposerTest {
         }
     }
 
+    private static final OccurrenceAddress DEEP = occurrence("case/nn2",
+            "REGION.deep", CausalContext.of(Role.of("KEY_MANAGER_TICK"), "",
+                    2), frame("KeyManager#roll#3", 0));
+    private static final Endpoint SENT = Endpoint.of(PRODUCER, "PORT.key",
+            at("export#1", 0), 0);
+    private static final Endpoint RECEIVED = Endpoint.of(ANCHOR, "PORT.key",
+            at("attach#1", 0), 0);
+    private static final Endpoint FROM_NEAR = Endpoint.of(PRODUCER,
+            "PORT.near", at("attach#2", 0), 0);
+    private static final Endpoint FROM_FAR = Endpoint.of(PRODUCER, "PORT.far",
+            at("attach#3", 0), 0);
+    private static final Endpoint FROM_ODD = Endpoint.of(PRODUCER, "PORT.odd",
+            at("attach#4", 0), 0);
+    private static final Endpoint FROM_DEEP = Endpoint.of(UPSTREAM,
+            "PORT.deep", at("attach#5", 0), 0);
+
+    private static Endpoint upstream(String port) {
+        return Endpoint.of(port.equals("deep") ? DEEP : UPSTREAM,
+                "PORT." + port, at("export#" + port, 0), 0);
+    }
+
+    private static void handed(Session session, Endpoint consumer,
+                               String symbol, String port, JsonObject value) {
+        String ref = "EXPR." + symbol + "." + port;
+        session.expression(ref, value);
+        session.export(upstream(port), ref, ++session.seq, "true");
+        session.attach(consumer, symbol, "true", upstream(port));
+    }
+
+    private static Session relay(Path iteration, String id) {
+        Session session = new Session(iteration, id, !id.equals("s0"));
+        session.activation(PRODUCER);
+        session.activation(UPSTREAM);
+        session.activation(DEEP);
+        return session;
+    }
+
+    private static void keyed(Session session, String symbol)
+            throws IOException {
+        session.expression("EXPR.key", symbol(symbol, "Z"));
+        session.export(SENT, "EXPR.key", ++session.seq, "true");
+        session.attach(RECEIVED, "vh", "true", SENT);
+        session.target("(not vh)", false, true);
+        session.write();
+    }
+
+    private Composer.Composition handedOn(String shape) throws IOException {
+        Path iteration = folder.newFolder("handed-" + shape).toPath();
+        for (String id : new String[] {"s0", "s1", "s2"}) {
+            Session session = relay(iteration, id);
+            if (shape.equals("one")) {
+                handed(session, FROM_NEAR, "v_near", "near",
+                        constant(id.equals("s1") ? "false" : "true"));
+                handed(session, FROM_FAR, "v_far", "far", constant("true"));
+                if (id.equals("s2")) {
+                    session.decision(PRODUCER, "nn#u1", "v_near");
+                }
+                keyed(session, id.equals("s1") ? "v_far" : "v_near");
+            } else if (shape.equals("reversed") && !id.equals("s2")) {
+                handed(session, FROM_DEEP, "v_deep", "deep",
+                        constant("true"));
+                handed(session, FROM_NEAR, "v_near", "near",
+                        symbol("v_deep", "Z"));
+                handed(session, FROM_FAR, "v_far", "far",
+                        symbol("v_deep", "Z"));
+                keyed(session, id.equals("s0") ? "v_far" : "v_near");
+            } else if (shape.equals("late") && !id.equals("s2")) {
+                handed(session, FROM_ODD, "v_odd", id.equals("s0") ? "odd"
+                        : "odd2", constant("true"));
+                keyed(session, "v_odd");
+            }
+        }
+        return compose(iteration, 8);
+    }
+
     @Test
     public void aDeliveryHandedOnIsTheOwnRunsOnlyUnderAnOwnArm()
             throws Exception {
-        Endpoint sent = Endpoint.of(PRODUCER, "PORT.key", at("export#1", 0),
-                0);
-        Endpoint received = Endpoint.of(ANCHOR, "PORT.key",
-                at("attach#1", 0), 0);
-        Endpoint near = Endpoint.of(UPSTREAM, "PORT.near", at("export#2", 0),
-                0);
-        Endpoint far = Endpoint.of(UPSTREAM, "PORT.far", at("export#3", 0), 0);
-        Endpoint fromNear = Endpoint.of(PRODUCER, "PORT.near",
-                at("attach#2", 0), 0);
-        Endpoint fromFar = Endpoint.of(PRODUCER, "PORT.far",
-                at("attach#3", 0), 0);
-        Path iteration = folder.newFolder("handed-on").toPath();
-        for (String id : new String[] {"s0", "s1"}) {
-            boolean seed = id.equals("s0");
-            Session session = new Session(iteration, id, !seed);
-            session.activation(PRODUCER);
-            session.activation(UPSTREAM);
-            session.expression("EXPR.near", constant(seed ? "true" : "false"));
-            session.expression("EXPR.far", constant("true"));
-            session.expression("EXPR.key", symbol(seed ? "v_near" : "v_far",
-                    "Z"));
-            session.export(near, "EXPR.near", 1L, seed ? "true" : "false");
-            session.export(far, "EXPR.far", 2L, "true");
-            session.attach(fromNear, "v_near", seed ? "true" : "false", near);
-            session.attach(fromFar, "v_far", "true", far);
-            session.export(sent, "EXPR.key", 3L, "true");
-            session.attach(received, "vh", "true", sent);
-            session.target("(not vh)", false, true);
-            session.write();
-        }
-        Composer.Composition composition = compose(iteration, 8);
-        String path = null;
-        for (Composer.Disjunct disjunct : composition.disjuncts()) {
-            if (disjunct.path().sessionId.equals("s0")) {
-                path = disjunct.selector();
-            }
-        }
-        assertNotNull("the seed's path is composed", path);
         Object[][] table = {
-            {"the path's own delivery", received, "s0", true},
-            {"handed on to its own arm: the delivery its run attached",
-                    fromNear, "s0", true},
-            {"handed on to its own arm: another run's delivery", fromNear,
-                    "s1", false},
-            {"handed on only to another run's arm", fromFar, "s0", false},
+            {"one", "s0", "its own delivery", RECEIVED, "s0", true},
+            {"one", "s0", "handed on to its own arm and another run's: the "
+                    + "delivery its run attached", FROM_NEAR, "s0", true},
+            {"one", "s0", "handed on to its own arm: another run's delivery",
+                    FROM_NEAR, "s1", false},
+            {"one", "s0", "handed on only to another run's arm, though its "
+                    + "run attached that delivery too", FROM_FAR, "s0", false},
+            {"reversed", "s1", "handed on to its own arm, the delivery an "
+                    + "earlier run's arm states too: that arm", FROM_NEAR,
+                    "s1", true},
+            {"reversed", "s1", "two hands down, closed before the arm it "
+                    + "rests on was owned", FROM_DEEP, "s1", true},
+            {"reversed", "s1", "handed on only to another run's arm",
+                    FROM_FAR, "s1", false},
+            {"late", "s1", "its run attached another producer than the run "
+                    + "that closed the message first: no arm of its own",
+                    FROM_ODD, "s1", null},
+            {"late", "s1", "and the other run's arm is not its own",
+                    FROM_ODD, "s0", false},
         };
+        Map<String, Composer.Composition> composed =
+                new LinkedHashMap<String, Composer.Composition>();
         for (Object[] row : table) {
+            String name = row[0] + ": " + row[2];
+            Composer.Composition composition = composed.get((String) row[0]);
+            if (composition == null) {
+                composition = handedOn((String) row[0]);
+                composed.put((String) row[0], composition);
+            }
+            String path = null;
+            for (Composer.Disjunct disjunct : composition.disjuncts()) {
+                if (disjunct.path().sessionId.equals(row[1])) {
+                    path = disjunct.selector();
+                }
+            }
+            assertNotNull(name + ": its path", path);
             String arm = null;
             for (String selector : composition.armSelectors()) {
                 ComposedFamilies.ArmChoice choice = composition.arm(selector);
                 if (Refutations.ordinal(selector).equals(
                         Refutations.ordinal(path))
                         && choice.attachEndpointIds().contains(
-                        ((Endpoint) row[1]).id())
-                        && choice.sessionIds().contains((String) row[2])) {
+                        ((Endpoint) row[3]).id())
+                        && choice.sessionIds().contains((String) row[4])) {
                     arm = selector;
                 }
             }
-            assertNotNull((String) row[0] + ": an arm", arm);
-            boolean own = (Boolean) row[3];
-            assertEquals((String) row[0] + ": " + composition.ownRun(path),
-                    own, composition.ownRun(path).contains("(assert " + arm
+            if (row[5] == null) {
+                assertNull(name, arm);
+                continue;
+            }
+            assertNotNull(name + ": an arm", arm);
+            boolean own = (Boolean) row[5];
+            assertEquals(name + ": " + composition.ownRun(path), own,
+                    composition.ownRun(path).contains("(assert " + arm
                             + ")"));
-            assertEquals((String) row[0] + ": taken, a re-pairing", !own,
+            assertEquals(name + ": taken, a re-pairing", !own,
                     !composition.repaired(path, Collections.singletonList(
                             arm)).isEmpty());
         }

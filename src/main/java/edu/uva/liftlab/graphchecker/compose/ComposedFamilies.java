@@ -328,9 +328,11 @@ final class ComposedFamilies {
     }
 
     private void ownThroughNeeders(Collection<String> runWriters) {
-        Set<String> owning = new LinkedHashSet<String>(runWriters);
-        owning.addAll(ownArms.getOrDefault(path,
-                Collections.<String>emptyList()));
+        Set<String> owning = new LinkedHashSet<String>(ownArms.getOrDefault(
+                path, Collections.<String>emptyList()));
+        for (String writer : runWriters) {
+            if (armChoices.containsKey(writer)) owning.add(writer);
+        }
         boolean grown = true;
         while (grown) {
             grown = false;
