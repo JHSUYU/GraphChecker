@@ -1033,6 +1033,76 @@ public class ComposerTest {
     }
 
     @Test
+    public void theRecordingIsAskedFirstAndAClockWorldIsClaimedInItsOwnRun()
+            throws Exception {
+        Path log = folder.newFile("z3-asked.log").toPath();
+        Path script = folder.newFile("z3-logging.sh").toPath();
+        Files.write(script, Arrays.asList("#!/bin/bash",
+                "exec " + z3() + " \"$@\" < <(tee -a " + log + ")"));
+        assertTrue(script.toFile().setExecutable(true));
+        Path ordered = folder.newFolder("recording-first").toPath();
+        Session seed = new Session(ordered, "s0", false);
+        seed.marker("false");
+        seed.clock("700");
+        seed.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK + " 1000) (not (> "
+                + CLOCK + " 1000)))", CLOCK_ROOT, 700L);
+        seed.target("(or (> " + CLOCK + " 1000) " + MARKER + ")", false, true);
+        seed.write();
+        ClaimPolicy.Decision first = ClaimPolicy.decide(compose(ordered, 8),
+                new Z3(script, 30000L, 8192));
+        String text = new String(Files.readAllBytes(log),
+                java.nio.charset.StandardCharsets.UTF_8);
+        int asHappened = text.indexOf("clock_pinned__");
+        int moved = text.indexOf("(= " + MARKER + " true) :named valuation__");
+        Object[][] table = {
+            {"the recording's as-happened question is asked before any other"
+                    + " valuation", asHappened >= 0 && moved > asHappened, null,
+                    null},
+            {"and the answers and the claim are the ones asked in any order",
+                    first.claim().kind() == ClaimKind.CLOCK_SKEW
+                    && first.outcomes().get(0).answer().sat()
+                    && first.outcomes().get(1).answer().sat(), null, null},
+            {"a world that moved no root and planted a clock skew is claimed"
+                    + " in its own run", null, "500", "1200"},
+            {"one whose clocks did not jump is not this pass's: the ranking"
+                    + " decides", null, null, null},
+        };
+        for (Object[] row : table) {
+            if (row[1] != null) {
+                assertTrue((String) row[0] + ": " + asHappened + " " + moved
+                        + " " + first.outcomes(), (Boolean) row[1]);
+                continue;
+            }
+            Path iteration = folder.newFolder().toPath();
+            for (String id : new String[] {"s0", "s1"}) {
+                boolean explored = id.equals("s1");
+                String reading = explored ? "1200" : "700";
+                Session session = new Session(iteration, id, explored);
+                session.clock(reading);
+                session.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK
+                        + " 1000) (not (> " + CLOCK + " 1000)))", CLOCK_ROOT,
+                        Long.parseLong(reading));
+                session.target("(> " + CLOCK + " 1000)", explored, true);
+                session.write();
+            }
+            obligation(iteration, "s1", Collections.<String, String>emptyMap(),
+                    "nn#u1", Collections.<String>emptyList(),
+                    Collections.<String, String>emptyMap(), row[2] == null
+                            ? Collections.<String, String>emptyMap()
+                            : Collections.singletonMap(CLOCK_ROOT,
+                            (String) row[2]));
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(
+                    compose(iteration, 8), solver());
+            String name = row[0] + ": " + decision.claim().gaps();
+            assertEquals(name, ClaimKind.CLOCK_SKEW, decision.claim().kind());
+            String clock = decision.claim().movedRoots().get(CLOCK);
+            assertNotNull(name, clock);
+            assertEquals(name, row[3] != null, row[3] != null
+                    && row[3].equals(clock.trim()));
+        }
+    }
+
+    @Test
     public void anExploredSessionsOwnRunIsClaimedBeforeAFaultlessMechanism()
             throws Exception {
         String either = "(or (> " + CLOCK + " 1000) " + MARKER + ")";

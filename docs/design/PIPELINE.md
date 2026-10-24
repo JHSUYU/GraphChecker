@@ -3369,7 +3369,12 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    run -- `PATH_SELF_CONTRADICTORY` DIAGNOSTIC, and BLOCKING for the composition, since the UNSAT rests
    on it; refuted by phi alone everywhere, no root of the corpus turns any path to the fatal arm,
    which is the claim's own answer (b20h BlockTokenSecretManager-511, a40s
-   BackupCmd-343: the null-checked read is pinned to the object the run read). Then every valuation is asked (4 at
+   BackupCmd-343: the null-checked read is pinned to the object the run read). Then the recorded
+   valuation is asked alone, and the recording's own questions right after it (3: as it happened,
+   its own pairings), before any other valuation, so the polarity every claim rule rests on is
+   decided first (hdfs-11741 F1: 128 valuations path by path over 170 paths spent the 30 minutes,
+   and the as-happened ask, made after them, was never answered, so the clock world valuation 0
+   had answered sat on its fatal-observing explored path was claimed by no rule). Then every other valuation is asked (4 at
    once; each question is written to its z3s from the one body the composition holds, never copied
    per ask or per arithmetic engine, `Composition#query`/`#scopeQuery`, `Z3#ask`) for the path
    selectors, arm selectors, the nested state selectors a state arm's stores are chosen among (§8),
@@ -3540,7 +3545,10 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    arms and observed writers (`Composition#ownRun`) and its world's clocks -- each cell its replay
    planted at that skew, every other running on from its reading (`Composition#worldClocks`) -- and
    the answer is claimed where it selects that path and the test of the own run below holds
-   (without `recordingDecides`, only where `polarityDecides`). Each path is asked once
+   (without `recordingDecides`, only where `polarityDecides`). The recorded valuation counts too: a
+   session whose world moved no declared root (only clocks) is asked there, and its own run is
+   claimed `CLOCK_SKEW` where its clocks jumped (`movedRoots` holds the cells); one whose clocks did
+   not jump is no claim of this pass. Each path is asked once
    (`Disjunction#askOwnRun`: its own run alone, never then free) and the pass has a sixth of the
    decide budget (`ClaimPolicy#OWN_RUN_SHARE`); past it the ranking decides, named DIAGNOSTIC
    `SOLVER_TIMEOUT` `own runs`. A world that planted equal skews on consecutive cells of one clock

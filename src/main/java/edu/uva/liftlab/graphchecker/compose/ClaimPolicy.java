@@ -368,17 +368,14 @@ public final class ClaimPolicy {
             this.asks = asks;
             this.gaps = gaps;
             selfContradictory(composition, asks, gaps, selfCheckCapMillis);
-            Disjunction together = asks.asking(Math.min(PARALLEL_ASKS,
-                    composition.valuations().size()));
-            outcomes = new ArrayList<Outcome>(inParallel(
-                    composition.valuations(), valuation -> outcome(
-                            composition, together, valuation,
-                            Collections.<String>emptyList(),
-                            valuation.ordinal() == 0)));
-            for (Outcome outcome : outcomes) {
-                if (!outcome.answer().decided()) undecided(outcome, gaps);
+            List<Composer.Valuation> valuations = composition.valuations();
+            Outcome first = valuations.isEmpty() ? null : outcome(composition,
+                    asks, valuations.get(0), Collections.<String>emptyList(),
+                    true);
+            if (first != null && !first.answer().decided()) {
+                undecided(first, gaps);
             }
-            recorded = outcomes.isEmpty() ? null : outcomes.get(0);
+            recorded = first;
             cells = composition.clockCells();
             List<String> pairings = composition.recordedPairings();
             asHappened = new ArrayList<String>(pins(composition, cells));
@@ -397,7 +394,19 @@ public final class ClaimPolicy {
             if (clockDriven) {
                 recorded = leastClocks(composition, asks, ownPairings, cells,
                         true, gaps);
-                outcomes.set(0, recorded);
+            }
+            List<Composer.Valuation> rest = valuations.isEmpty() ? valuations
+                    : valuations.subList(1, valuations.size());
+            Disjunction together = asks.asking(Math.max(1, Math.min(
+                    PARALLEL_ASKS, rest.size())));
+            outcomes = new ArrayList<Outcome>();
+            if (recorded != null) outcomes.add(recorded);
+            outcomes.addAll(inParallel(rest, valuation -> outcome(composition,
+                    together, valuation, Collections.<String>emptyList(),
+                    false)));
+            for (Outcome outcome : outcomes.subList(Math.min(1,
+                    outcomes.size()), outcomes.size())) {
+                if (!outcome.answer().decided()) undecided(outcome, gaps);
             }
             if (recorded != null && recorded.witness()
                     && !recorded.selected().fatalObserved()
@@ -435,7 +444,8 @@ public final class ClaimPolicy {
             for (int index = 0; index < outcomes.size(); index++) {
                 Outcome free = outcomes.get(index);
                 Composer.Valuation valuation = free.valuation();
-                if (valuation.ordinal() == 0 || free.answer().unsat()
+                boolean recordedRoots = valuation.ordinal() == 0;
+                if (free.answer().unsat()
                         || faultsOf(free) != faults
                         || !ranked(composition, free, configuration)
                         || !composition.unplanted(valuation.moved().keySet())
@@ -459,11 +469,16 @@ public final class ClaimPolicy {
                     if (!asked.witness() || !asked.selected().selector()
                             .equals(path.selector())
                             || !ownRun(asked)
+                            || recordedRoots && movedRoots(composition, asked)
+                            .isEmpty()
                             || unattested(composition, asked, named)) {
                         continue;
                     }
                     gaps.addAll(named);
                     outcomes.set(index, asked);
+                    if (recordedRoots) {
+                        return claimed(ClaimKind.CLOCK_SKEW, asked);
+                    }
                     if (recordingDecides) outcomes.set(0, asRecorded);
                     return claimed(mechanism(composition, asks, asked,
                             clockDriven), asked);
