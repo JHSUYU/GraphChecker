@@ -14,6 +14,9 @@ fi
 if [[ "$1" == 14 ]]; then
   export CAUSYNTH_REGION_PATH_MAX_TASKS=256
 fi
+if [[ "$1" == 11 ]]; then
+  export CAUSYNTH_REGION_PATH_MAX_WAVES=24
+fi
 if [[ "$1" == 24 || "$1" == 26 || "$1" == 37 ]]; then
   export CAUSYNTH_REPLAY_TIMEOUT_S=7200
 fi
