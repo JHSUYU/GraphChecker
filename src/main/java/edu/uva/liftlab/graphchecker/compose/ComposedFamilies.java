@@ -301,6 +301,7 @@ final class ComposedFamilies {
         final List<String> needers = new ArrayList<String>();
         String formula;
         List<String> selectors;
+        String observed;
 
         Closed(String name, boolean atPath) {
             this.name = name;
@@ -308,7 +309,8 @@ final class ComposedFamilies {
         }
     }
 
-    void commit() {
+    void commit(Collection<String> runWriters) {
+        ownThroughNeeders(runWriters);
         for (Closed message : closed.values()) {
             if (message.atPath) continue;
             String needed = VmTermLowering.or(message.needers);
@@ -323,6 +325,28 @@ final class ComposedFamilies {
         closed.clear();
         path = null;
         pathSession = null;
+    }
+
+    private void ownThroughNeeders(Collection<String> runWriters) {
+        Set<String> owning = new LinkedHashSet<String>(ownArms.getOrDefault(
+                path, Collections.<String>emptyList()));
+        for (String writer : runWriters) {
+            if (armChoices.containsKey(writer)) owning.add(writer);
+        }
+        boolean grown = true;
+        while (grown) {
+            grown = false;
+            for (Closed message : closed.values()) {
+                if (message.atPath || message.observed == null
+                        || owning.contains(message.observed)
+                        || Collections.disjoint(message.needers, owning)) {
+                    continue;
+                }
+                owning.add(message.observed);
+                own(message.observed);
+                grown = true;
+            }
+        }
     }
 
     void discard() {
@@ -650,8 +674,9 @@ final class ComposedFamilies {
             String same = body == null ? null : selectorOf.get(body);
             if (body == null || same != null) rollback(mark);
             if (body == null) continue;
-            if (family.atPath && session.equals(pathSession)) {
-                own(same != null ? same : selector);
+            if (session.equals(pathSession)) {
+                family.observed = same != null ? same : selector;
+                if (family.atPath) own(family.observed);
             }
             if (same != null) {
                 choose(same, armChoices.get(same).alsoBy(session));
