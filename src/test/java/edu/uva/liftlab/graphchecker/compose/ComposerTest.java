@@ -1032,6 +1032,217 @@ public class ComposerTest {
                         .get(SERIAL_ROOT)) > 5);
     }
 
+    private Path loggingSolver(Path log) throws IOException {
+        Path script = folder.newFile().toPath();
+        Files.write(script, Arrays.asList("#!/bin/bash",
+                "exec " + z3() + " \"$@\" < <(tee -a " + log + ")"));
+        assertTrue(script.toFile().setExecutable(true));
+        return script;
+    }
+
+    private Path clockWorld(String skew, boolean faulted, boolean serial,
+                            boolean delivered) throws IOException {
+        Path iteration = folder.newFolder().toPath();
+        String phi = "(or (> " + CLOCK + " 1000) " + MARKER
+                + (serial ? " (> " + SERIAL + " 5)" : "")
+                + (delivered ? " vh" : "") + ")";
+        for (String id : faulted || delivered ? new String[] {"s0", "s1", "s2"}
+                : new String[] {"s0", "s1"}) {
+            boolean explored = !id.equals("s0");
+            String reading = id.equals("s1") ? "1200" : "700";
+            Session session = new Session(iteration, id, explored);
+            session.marker(faulted && id.equals("s2") ? "true" : "false");
+            if (serial) session.serial("0", "0", "10");
+            session.clock(reading);
+            session.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK
+                    + " 1000) (not (> " + CLOCK + " 1000)))", CLOCK_ROOT,
+                    Long.parseLong(reading));
+            if (delivered) {
+                String value = id.equals("s2") ? "true" : "false";
+                session.activation(PRODUCER);
+                session.expression("EXPR.key", constant(value));
+                session.export(SENT, "EXPR.key", ++session.seq, value);
+                session.attach(RECEIVED, "vh", value, SENT);
+            }
+            session.target(phi, explored, true);
+            session.write();
+        }
+        obligation(iteration, "s1", Collections.<String, String>emptyMap(),
+                "nn#u1", Collections.<String>emptyList(),
+                Collections.<String, String>emptyMap(), skew == null
+                        ? Collections.<String, String>emptyMap()
+                        : Collections.singletonMap(CLOCK_ROOT, skew));
+        if (faulted) {
+            obligation(iteration, "s2", Collections.singletonMap(MARKER_ROOT,
+                    "true"));
+        }
+        return iteration;
+    }
+
+    @Test
+    public void theRecordingIsAskedFirstAndAClockWorldIsTheLastRank()
+            throws Exception {
+        Path log = folder.newFile("z3-asked.log").toPath();
+        Path ordered = folder.newFolder("recording-first").toPath();
+        Session seed = new Session(ordered, "s0", false);
+        seed.marker("false");
+        seed.clock("700");
+        seed.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK + " 1000) (not (> "
+                + CLOCK + " 1000)))", CLOCK_ROOT, 700L);
+        seed.target("(or (> " + CLOCK + " 1000) " + MARKER + ")", false, true);
+        seed.write();
+        ClaimPolicy.Decision first = ClaimPolicy.decide(compose(ordered, 8),
+                new Z3(loggingSolver(log), 30000L, 8192));
+        String text = new String(Files.readAllBytes(log),
+                StandardCharsets.UTF_8);
+        int asHappened = text.indexOf("clock_pinned__");
+        int moved = text.indexOf("(= " + MARKER + " true) :named valuation__");
+        Path unasked = folder.newFile("z3-unplanted.log").toPath();
+        ClaimPolicy.Decision unplanted = ClaimPolicy.decide(compose(
+                clockWorld(null, false, false, false), 8),
+                new Z3(loggingSolver(unasked), 30000L, 8192));
+        ClaimPolicy.Decision ranked = ClaimPolicy.decide(compose(
+                clockWorld("500", false, false, false), 8), solver());
+        ClaimPolicy.Decision faulted = ClaimPolicy.decide(compose(
+                clockWorld("500", true, false, false), 8), solver());
+        ClaimPolicy.Decision rooted = ClaimPolicy.decide(compose(
+                clockWorld("500", false, true, false), 8), solver());
+        ClaimPolicy.Decision delivered = ClaimPolicy.decide(compose(
+                clockWorld("500", false, false, true), 8), solver());
+        String rankedClock = ranked.claim().movedRoots().get(CLOCK);
+        String deliveredClock = delivered.claim().movedRoots().get(CLOCK);
+        Object[][] table = {
+            {"the recording's as-happened question is asked before any other"
+                    + " valuation", asHappened >= 0 && moved > asHappened},
+            {"and the answers and the claim are the ones asked in any order",
+                    first.claim().kind() == ClaimKind.CLOCK_SKEW
+                    && first.outcomes().get(0).answer().sat()
+                    && first.outcomes().get(1).answer().sat()},
+            {"a world that planted no clock is not asked",
+                    !new String(Files.readAllBytes(unasked),
+                            StandardCharsets.UTF_8).contains("clock_read__")
+                    && unplanted.claim().kind() == ClaimKind.CLOCK_SKEW},
+            {"the faultless mechanism's claim stays before the clock world",
+                    ranked.claim().kind() == ClaimKind.CLOCK_SKEW
+                    && rankedClock != null
+                    && !"1200".equals(rankedClock.trim())},
+            {"an explored fault world's own run ranks before it",
+                    faulted.claim().kind() == ClaimKind.MARKER_FLIPPED
+                    && "true".equals(faulted.claim().movedRoots()
+                    .get(MARKER_ROOT))},
+            {"the moved-root rule ranks before it",
+                    rooted.claim().kind() == ClaimKind.MARKER_FLIPPED
+                    && rooted.claim().movedRoots().containsKey(SERIAL_ROOT)},
+            {"its path reaching the fatal at the readings through another"
+                    + " run's delivery, the clock world is no claim",
+                    !(delivered.claim().kind() == ClaimKind.CLOCK_SKEW
+                    && deliveredClock != null
+                    && "1200".equals(deliveredClock.trim()))},
+        };
+        for (Object[] row : table) {
+            assertTrue(row[0] + ": " + first.claim() + " " + ranked.claim()
+                    + " " + faulted.claim() + " " + rooted.claim() + " "
+                    + delivered.claim(), (Boolean) row[1]);
+        }
+        Path oneShot = folder.newFile("z3-no-as-happened.sh").toPath();
+        Files.write(oneShot, Arrays.asList("#!/bin/bash", "q=$(cat)",
+                "if [[ $q == *clock_pinned__* ]]; then sleep 120; echo unknown;"
+                        + " echo '(:reason-unknown \"timeout\")'; exit 0; fi",
+                "printf '%s\\n' \"$q\" | " + z3() + " \"$@\""));
+        assertTrue(oneShot.toFile().setExecutable(true));
+        ClaimPolicy.Decision decided = ClaimPolicy.decide(compose(clockWorld(
+                "500", false, false, false), 8), new Z3(ScopedFixture.of(
+                oneShot), 30000L, 8192), 60000L);
+        String name = "the as-happened question undecided until the deadline,"
+                + " the clock world's early candidate is claimed: "
+                + decided.claim().gaps();
+        assertEquals(name, ClaimKind.CLOCK_SKEW, decided.claim().kind());
+        assertEquals(name, "1200",
+                decided.claim().movedRoots().get(CLOCK).trim());
+    }
+
+    @Test
+    public void theFormulaIsAskedWholeFirstOnlyWhereNoRunObservedTheFatal()
+            throws Exception {
+        Path asked = folder.newFile("z3-whole-first.log").toPath();
+        Path oneShot = folder.newFile("z3-valuations-hang.sh").toPath();
+        Files.write(oneShot, Arrays.asList("#!/bin/bash", "q=$(cat)",
+                "if ps -o args= -p $PPID | grep -q -- -scoped; then"
+                        + " echo unknown; echo '(:reason-unknown \"timeout\")';"
+                        + " exit 0; fi",
+                "if [[ $q == *':named valuation__'* ]]; then sleep 75;"
+                        + " echo unknown; exit 0; fi",
+                "echo whole >> " + asked,
+                "printf '%s\\n' \"$q\" | " + z3() + " \"$@\""));
+        assertTrue(oneShot.toFile().setExecutable(true));
+        Path unsat = folder.newFolder("whole-first-unsat").toPath();
+        Session seed = new Session(unsat, "s0", false);
+        seed.marker("false");
+        seed.target("(and " + MARKER + " (not " + MARKER + "))", false, true);
+        seed.write();
+        ClaimPolicy.Decision closed = ClaimPolicy.decide(compose(unsat, 8),
+                new Z3(ScopedFixture.of(oneShot), 30000L, 8192), 60000L);
+        String name = "no run observed the fatal, every valuation ask hangs"
+                + " past the budget, the whole formula is unsat: "
+                + closed.claim().gaps();
+        assertEquals(name, ClaimKind.NO_SUPPORTED_WITNESS,
+                closed.claim().kind());
+        assertTrue(name, closed.formula() != null
+                && closed.formula().unsat());
+        assertFalse(name, blocking(closed.claim().gaps()));
+        Files.write(asked, new byte[0]);
+        Path witnessed = folder.newFolder("whole-first-witnessed").toPath();
+        for (String id : new String[] {"s0", "s1"}) {
+            boolean explored = id.equals("s1");
+            Session session = new Session(witnessed, id, explored);
+            session.marker(explored ? "true" : "false");
+            session.target(MARKER, explored, true);
+            session.write();
+        }
+        obligation(witnessed, "s1", Collections.singletonMap(MARKER_ROOT,
+                "true"));
+        Path plain = folder.newFile("z3-plain.sh").toPath();
+        Files.write(plain, Arrays.asList("#!/bin/bash", "q=$(cat)",
+                "if ! ps -o args= -p $PPID | grep -q -- -scoped"
+                        + " && [[ $q != *':named valuation__'* ]]; then"
+                        + " echo whole >> " + asked + "; fi",
+                "printf '%s\\n' \"$q\" | " + z3() + " \"$@\""));
+        assertTrue(plain.toFile().setExecutable(true));
+        ClaimPolicy.Decision claimed = ClaimPolicy.decide(compose(witnessed,
+                8), new Z3(ScopedFixture.of(plain), 30000L, 8192));
+        assertEquals("a run observed the fatal: " + claimed.claim().gaps(),
+                ClaimKind.MARKER_FLIPPED, claimed.claim().kind());
+        assertEquals("and the whole formula is not asked first", 0L,
+                Files.size(asked));
+    }
+
+    @Test
+    public void theFormulaIsAskedWholeBeforePathByPath() throws Exception {
+        Path oneShot = folder.newFile("z3-paths-undecided.sh").toPath();
+        Files.write(oneShot, Arrays.asList("#!/bin/bash", "q=$(cat)",
+                "if ps -o args= -p $PPID | grep -q -- -scoped; then"
+                        + " echo unknown; echo '(:reason-unknown \"timeout\")';"
+                        + " exit 0; fi",
+                "if [[ $q == *':named valuation__'* ]]; then sleep 75;"
+                        + " echo unknown; exit 0; fi",
+                "printf '%s\\n' \"$q\" | " + z3() + " \"$@\""));
+        assertTrue(oneShot.toFile().setExecutable(true));
+        Path iteration = folder.newFolder("whole-first").toPath();
+        Session seed = new Session(iteration, "s0", false);
+        seed.marker("false");
+        seed.target("(and " + MARKER + " (not " + MARKER + "))", false, true);
+        seed.write();
+        ClaimPolicy.Decision decision = ClaimPolicy.decide(compose(iteration,
+                8), new Z3(ScopedFixture.of(oneShot), 30000L, 8192));
+        String name = "the path-by-path asks undecided, the whole one-shot "
+                + "unsat: " + decision.claim().gaps();
+        assertEquals(name, ClaimKind.NO_SUPPORTED_WITNESS,
+                decision.claim().kind());
+        assertTrue(name, decision.formula() != null
+                && decision.formula().unsat());
+        assertFalse(name, blocking(decision.claim().gaps()));
+    }
+
     @Test
     public void anExploredSessionsOwnRunIsClaimedBeforeAFaultlessMechanism()
             throws Exception {
