@@ -8,9 +8,6 @@ fi
 row=$(awk -F'\t' -v id="${1:?usage: case.sh <NN>}" '$1 == id' "${here}/checks.tsv")
 [[ -n "${row}" ]] || { echo "unknown HDFS ad hoc check: $1" >&2; return 2; }
 IFS=$'\t' read -r _ test_class test_method window target_occurrence classes <<<"${row}"
-if [[ "$1" == 07 ]]; then
-  export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=6
-fi
 if [[ "$1" == 14 ]]; then
   export CAUSYNTH_REGION_PATH_MAX_TASKS=256
 fi
