@@ -426,3 +426,27 @@ On this cluster:
 9. **Tree changes** go to an agent's `gc/hb-*` branch, then fast-forward/merge into `gc/hbase-checks` and push the fork:
    `git push fork gc/hbase-checks:graphchecker/hbase-checks` (allowed; apache never). Name each workaround in STATUS
    "Per-system surface".
+
+## 11. CloudLab (system/hdfs-cloudlab, 2026-10-24)
+
+`system/hdfs-cloudlab` runs on a CloudLab experiment of five Ubuntu 22.04 nodes, `node0`..`node4` (Clemson: 40 logical =
+20 physical cores of a Xeon E5-2660 v2 and 251 GB each, a 10 Gb/s private network 10.10.1.0/24, a second 931 GB disk
+`/dev/sdb`, passwordless ssh between them and to GitHub). Every section above applies with these values:
+
+| what | where / how |
+| --- | --- |
+| hosts | `LIFTS="node0 node1 node2 node3 node4"`: all five are workers and heads (`GC_CONTROL_HOST` empty: node0 runs the sessions and serves /bulk, and NFS stays sub-millisecond under load). Builds and offline gates go to node1-4 by hand (`ssh node<k> 'cd <dir> && ...'`) or `tools/onlift.sh`. |
+| the limit | **cores, not memory**: 251 GB never binds; replays keep ~0.8-1.4 cores busy each (`workload_cores_x100`), and the old CPUs run a replay 2-3x slower than a lift. The host ledger charges memory only and a campaign counts only its own starts' cores, so campaigns side by side oversubscribe the CPUs (C1: load 70-93 on 40); judge a host by `/proc/loadavg` too. Development rounds run as sweeps (`tools/adhoc/sweep.sh`, shared pool), about ten campaigns at once; a case's final run goes alone (`tools/rounds/run-series.sh`). |
+| shared storage | `/bulk` = `GC_BULK`: node0's `/dev/sdb` (ext4 at `/data`), `/data/bulk` exported over NFS 4.2 to the subnet and mounted at `/bulk` on every node (node0 by a bind mount). The home directory is local to each node: everything a run on another node reads lives on /bulk. |
+| local scratch | `/localtmp` on each node = its own `/dev/sdb` (`/data/localtmp`, a bind mount); replays' working directories go to `/localtmp/$USER/graphchecker/`. |
+| repositories | `/bulk/GraphChecker` (`GC_REPO`; worktrees by `tools/lib/worktree-add.sh`, sparse, serialized by a flock), `/bulk/hadoop` (the fork JHSUYU/hadoop; the trees are its worktrees) |
+| worktrees, trees | `GC_TREES=/bulk/wt`: `gc-hdfs-cloudlab` (the integration worktree of `system/hdfs-cloudlab`), agents' `gc-<branch>`, the four HDFS trees `hadoop-hdfs-study-r7`, `-r8`, `hadoop-hdfs-21`, `hadoop-hdfs-11741-r6`; Maven repositories `GC_M2=/bulk/m2/<tree>` |
+| snapshots | `/bulk/gc-run/<name>` (`worktree-add.sh <dir> <commit> --detach`, then `mvn -q -o package -DskipTests` on node1-4) |
+| outputs | `/bulk/gc-out/<dir>`; the ledger `/bulk/gc-out/hosts` |
+| Java, Maven, z3 | JDK 8 is every node's default java (`update-alternatives`; Ubuntu's `maven` package pulls in JDK 11); `~/.m2` -> `/bulk/m2/dot-m2` on every node; `Z3_BIN=/bulk/bin/z3` (4.14.1), also `/usr/local/bin/z3` (the unit tests call `z3` from PATH) |
+| VM image | `/bulk/vm/hbase/j2sdk-image` (system/hbase's VM sources, `SOURCE.txt` and `smoke.log` beside it): Ubuntu 22.04 has no gcc-6, so it is built in the sources' Ubuntu 18.04 image, `tools/vm/build-image-docker.sh <dir>` from a full (non-sparse) checkout, ~15 minutes on node0 |
+| making the cluster | `BULK_SUBNET=10.10.1.0/24 tools/cloudlab/setup-nodes.sh` from any node with the GraphChecker checkout (packages, disks, NFS, JDK 8, ~/.m2, z3); then clone the two repositories under /bulk ([../REPRODUCE.md](../REPRODUCE.md) §9) |
+
+Monitoring: `/bulk/analysis/hdfs-2026-10-24/watch.sh '<round glob>'` (a line per stage change, error and verdict, under
+a Monitor); `tools/rounds/round-status.sh`, `round-verify.sh`, `obl-times.py` as above. The session's briefs are
+`/bulk/analysis/hdfs-2026-10-24/` (COMMON.md, brief-*.md).

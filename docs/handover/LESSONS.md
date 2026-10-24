@@ -260,3 +260,40 @@ starved for an hour. Replays use all 14 hosts (`CAUSYNTH_CAMPAIGN_WORKER_HOSTS`)
 hosts (at most 2-3), detached in their own session: heads run from one shell on lift11 were all TERMed when another
 round's stop ended that shell's ssh clients (HZ14: 24 exit-255 kills; killed replays are now re-queued, at most twice).
 Concurrent `git worktree add` races on `.git/config`: take `/localtmp/vnr3ne/worktree-add.lock` (flock).
+
+## 10. HDFS on HBase's engine, on CloudLab (2026-10-24)
+
+**Porting a system back onto a newer body.** `system/solr`'s cleanup deleted, "system/hdfs keeps them", the Hadoop
+shim (LOC 2a, 980a64b43) and the door entry points only the shim called (LOC 2b, b68e720f0). Read the deletions of the
+line between the two bodies first (`git log --format='%h %s' system/hdfs1..system/hbase | grep -iE 'hdfs|shim|LOC'`):
+restoring those two was the whole API port; the case declarations under `experiments/hadoop` had only lost comments.
+A read-only investigator over the 1550 commits between found no other HDFS-only deletion; what changed under HDFS is
+shared behaviour: the VM image (enum compares state terms), per-loop bounds (0e9a4000d), hand-off claims of cached
+pools, the TIMED_WAIT doors, the named bounds, the claim order.
+
+**The workload's own test class is woven now** (26d252eb5: a lineage root `<test classes>#<class>`), so its random
+draws go through `runtime.Randoms`, one keyed draw each, interpreted in the VM: hdfs-adhoc-21's workload
+(`TestDFSInputStream#testSkipInner`, ~1.6 M `nextInt`s) ran its seed replay into the 2400 s bound long after its target.
+Look for draw-heavy loops in a workload's test class (`grep -c 'nextInt\|new Random'`) when a seed replay is slow;
+a jstack of the replay's main thread names it (`Randoms.seed`).
+
+**A pure re-pairing world has nothing but its orders.** b9dfcedc5 (HBase) leaves a turn-counted ORDER row out of the
+native plant; for hdfs-bugs-slowdisk-zero every row stood in the disk detector's WAKE turn, so REPRODUCE planted
+nothing and refused; kept for worlds that plant no root (c8d40a5d8), it reproduced 10/10 again.
+
+**World depth 0 is the rule** (RULES, owner 2026-10-19). Run at the engine's default 3, hdfs-17897 asked 993
+obligations over 68 rounds where EX1 asked 30 in 4, and its first claims were refuted re-pairings.
+
+**CloudLab is CPU-bound, not memory-bound.** node0-4: 251 GB and 40 logical (20 physical, Xeon E5-2660 v2, 2013) cores
+each. The host ledger was memory-only; liftlab's 30 GB hosts capped every start by memory, so the per-head core count
+never mattered. Here nine campaigns each filled every host to 40 cores on its own: load 70-93 on 40 CPUs, seed replays
+3-5x slower than EX1. Judge a host by its
+load as well as its memory; one uncapped campaign (`launch-round.sh`) can take the whole pool, so development rounds
+run as sweeps (`sweep.sh`, shared pool).
+
+**Cluster setup traps (tools/cloudlab/setup-nodes.sh does them right):** the home directory is local per node, so the
+repositories, worktrees, snapshots, trees, ~/.m2 and z3 must live on the shared /bulk; Ubuntu's `maven` pulls in JDK 11
+as the default java (set JDK 8 with update-alternatives); the unit tests call `z3` from PATH (a /usr/local/bin link);
+the shell test needs `jq`; Ubuntu 22.04 has no gcc-6 (build the VM in the sources' Ubuntu 18.04 image,
+`tools/vm/build-image-docker.sh`); four tree builds at once race on the shared Maven wrapper's download (run `./mvnw -v`
+once first); a surefire provider is fetched at the first online `mvn package`, so the first test run must not be `-o`.
