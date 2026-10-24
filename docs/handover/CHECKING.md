@@ -172,4 +172,5 @@ python3 tools/analysis/smt-legend.py --repo <the case's tree> <out>/<case>      
     before the window) and fix the scope or the plan. Every literal-false path whose decider's open arm was asked
     and closed by its flips (the last round's `openArms`, state UNSAT) is not vacuous: vacuity.py says the UNSAT rests
     on those arms and their refuted worlds (hdfs-adhoc-39, 2026-10-24: `getBlockUCState()` #u2, one refuted world),
-    and each refutation is read against the code (traps 5, 18).
+    and each refutation is read against the code (traps 5, 18); an arm counts once any path closed it, the paths that
+    never asked sharing that verdict (PIPELINE §7.1; hdfs-adhoc-40: 1 refuted world, 15 paths sharing it).
