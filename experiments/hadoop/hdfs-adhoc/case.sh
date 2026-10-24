@@ -10,6 +10,9 @@ IFS=$'\t' read -r _ test_class test_method window target_occurrence classes <<<"
 if [[ "$1" == 07 ]]; then
   export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=6
 fi
+if [[ "$1" == 16 ]]; then
+  export CAUSYNTH_REGION_PATH_MAX_TASKS=128
+fi
 case "${window}" in
   up) ;;
   startup) recording_window=startup ;;
