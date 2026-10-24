@@ -3993,7 +3993,12 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
   map; no native run ever ran a step under a poll WAKE, so that write's exit never came and 10 of 10
   runs that took the fatal at the anchor with the root planted reproduced nothing); `plant.log` names
   each such row and its context ("REPRODUCE leaves out ORDER"), the summary and `reproduce.json`
-  count them (`turnOrders`): a native reproduction did not enforce them, CONFIRM did. Nor is a row
+  count them (`turnOrders`): a native reproduction did not enforce them, CONFIRM did. That rule
+  applies only to a world that plants a root: in one that plants none (a pure re-pairing, a
+  STATE_PAIRING_FLIPPED claim) the orders are the whole counterfactual, and leaving them out would
+  make every native run repeat the recording (hdfs-bugs-slowdisk-zero C1: every ORDER row stood in
+  the disk detector's `Root:WAKE/DataNodeDiskMetrics$1.run#1`, so the plant was empty and REPRODUCE
+  refused it as NATIVE_PLANT_UNSUPPORTED, where `system/hdfs` reproduced it 10/10). Nor is a row
   whose order causality implies in every run (`ConfirmMain#implied`, over
   `contract.ClientProgramOrder`, the one reading of a client thread's happens-before COMPOSE is to
   share): its earlier end stands directly under a request R1 and ran in the turn that took R1 in (its

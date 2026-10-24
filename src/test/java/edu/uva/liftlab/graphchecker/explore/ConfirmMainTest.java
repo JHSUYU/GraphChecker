@@ -1274,6 +1274,48 @@ public class ConfirmMainTest {
     }
 
     @Test
+    public void aWorldThatPlantsNoRootKeepsItsTurnCountedOrder()
+            throws Exception {
+        Path iteration = iteration();
+        Path focus = iteration.resolve("obligations-0000").resolve("w1")
+                .resolve(ObligationDir.FOCUSED_TASK);
+        JsonObject world = RowCodec.readJsonl(focus).get(0);
+        world.add("rootAssignments", new JsonObject());
+        world.add("rootMints", new JsonObject());
+        world.add("clockDeltas", new JsonObject());
+        RowCodec.writeJsonl(focus, Collections.singletonList(world));
+        Files.write(iteration.resolve("execution_task_plan.jsonl"),
+                new byte[0]);
+        Endpoint polled = endpoint("hdfs/dn0#epoch0/region/REGION.08ab84c9/"
+                + "ctx:Root:WAKE/a.Detector.run#1/idx:<a.Detector: void run()>@0",
+                "a.Detector#run()#7:WRITE");
+        RowCodec.writeAll(SessionDir.of(iteration, "sel").writes(),
+                Collections.singletonList(WriteRow.of("sel", 10L, polled,
+                        CELL, 5L, "EXPR.w", "I")), RowCodec::writeWrite);
+        Path claim = claim("HDFS.SERIAL", "119981");
+        JsonObject document = ExploreCodec.readObject(claim);
+        document.getAsJsonObject("claim").add("movedRoots", new JsonObject());
+        JsonObject valuation = document.getAsJsonArray("valuations").get(1)
+                .getAsJsonObject();
+        valuation.add("moved", new JsonObject());
+        valuation.add("assignment", new JsonObject());
+        Files.write(claim, document.toString()
+                .getBytes(StandardCharsets.UTF_8));
+        chose(claim, polled, reader);
+        Path plant = folder.newFile().toPath();
+        JsonObject summary = ConfirmMain.writePlant(iteration, claim,
+                manifest(), targetScopeMap(),
+                iteration.resolve("sessions").resolve("sel"), plant);
+        assertEquals("a pure re-pairing's orders are its whole world", 0,
+                summary.get("turnOrders").getAsInt());
+        List<JsonObject> orders = ordersOf(RowCodec.readJsonl(plant));
+        assertEquals(1, orders.size());
+        assertEquals(Confirmation.activation(polled.occurrence(),
+                ExecutionIndex.empty()),
+                orders.get(0).get("before").getAsString());
+    }
+
+    @Test
     public void anOrderTheClientsRepliesImplyIsLeftOutOfTheNativePlant() {
         String client = "auto0/client0#epoch0|Root:CLIENT/test#1";
         List<ScheduleEvent> schedule = Arrays.asList(

@@ -438,6 +438,7 @@ public final class ConfirmMain {
         }
         Set<String> orders = new LinkedHashSet<String>();
         int placeholders = 0;
+        boolean plantsRoots = !rows.isEmpty();
         Set<String> stable = new HashSet<String>();
         stable.add(RealizedOrder.scope(witness.anchor));
         for (String rootId : world.assignments.keySet()) {
@@ -473,7 +474,7 @@ public final class ConfirmMain {
             }
             String order = optionalString(edge, "before") + "\n"
                     + optionalString(edge, "after");
-            String turned = RecordingPlant.ORDER.equals(kind)
+            String turned = RecordingPlant.ORDER.equals(kind) && plantsRoots
                     ? turnEnd(witness.orderEnds.get(order), stable) : "";
             if (!turned.isEmpty()) {
                 if (!witness.history.contains(order)) {
