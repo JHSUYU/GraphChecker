@@ -242,7 +242,13 @@ used:
    90th percentile rounded up to whole cores, cost nothing where memory bound first; on CloudLab it left a third of the
    CPUs idle: HDFS's final series' 768 replays averaged 1.63 cores (p50 1.50, p90 2.46) and were charged 2 or 3, so a
    node showed 40 cores charged under a load of 25-55. With 20-40 replays on a node their sum is their mean times their
-   number, so the mean is the charge.
+   number, so the mean is the charge. Where charges still overstate the cores, the load decides: a resident solver
+   keeps the 2.00 cores of the solve it took over for its life, idle, and each seated question charges 2.00 more, so
+   with 14 ZooKeeper and 9 HDFS campaigns at once (rounds Z1 and P1) node1 read 40 cores charged under a load of 13-16,
+   77 % idle. Cores oversubscribe gracefully where memory does not, so admission and every host order count a node
+   busy as the lesser of its charged cores and its load plus the cores charged in the last 120 s, which the 1-minute
+   load has not caught up with (`campaign_host_busy_cores`; the memory reading carries `/proc/loadavg`). A build
+   before it writes readings without the load, so while one runs beside it the charges stand.
 2. **One pool per round.** `tools/rounds/run-pool.sh <round> <cases.tsv> <branch>=<snapshot>... [case...]` replaces
    fixed lanes and the alone reruns: it starts the case with the longest expected wall first (`POOL_EXPECTED`, rows
    `case<TAB>seconds`, e.g. the results table's wall column; else the case budget), whenever 10 % of the cluster's cores
