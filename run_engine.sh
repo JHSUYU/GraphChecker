@@ -429,7 +429,8 @@ ceiling: its z3s run in the least, %s MB\n' "${main##*.}" "${heap}" \
 }
 
 campaign_compose_z3_least_room_mb=2048
-campaign_compose_z3_most_room_mb=18432
+# CloudLab: 376 GB nodes (liftlab: 18432 of a 31.5 GB lift).
+campaign_compose_z3_most_room_mb=65536
 campaign_z3_least_room_mb=256
 campaign_z3_room_mb() {
   local main=$1 heap=$2 room limit
@@ -478,7 +479,9 @@ campaign_z3_room_grant() {
 }
 
 campaign_compose_z3_pair_mb=2048
-campaign_compose_z3_host_most_mb=16384
+# CloudLab: a composer's z3 pairs take up to 64 GB of each other node, all
+# 128 valuations at once on four nodes (liftlab: 16384).
+campaign_compose_z3_host_most_mb=65536
 campaign_z3_hosts=""
 campaign_z3_hosts_grants=()
 campaign_z3_hosts_grant() {
@@ -2519,7 +2522,8 @@ campaign_solver_heap_mb() {
   printf '%s\n' "${heap}"
 }
 
-campaign_solver_max_heap_mb=16384
+# CloudLab: a solver may grow as far as the engine heap (liftlab: 16384).
+campaign_solver_max_heap_mb=65536
 campaign_solver_most_heap_mb() {
   local engine=${engine_memory_mb:-8192}
   printf '%s\n' "$(( engine < campaign_solver_max_heap_mb ? engine \
@@ -2588,8 +2592,14 @@ campaign_solver_two_lanes() {
 }
 
 campaign_solver_seats_most=8
+# A warm solver takes a seat per four of its host's cores, at least
+# campaign_solver_seats_most (16 on a 64-core CloudLab node); its solves are
+# charged two cores each on the ledger, so seats never oversubscribe a host.
 campaign_solver_seats() {
-  printf '%s\n' "${campaign_solver_seats_most}"
+  local cores seats=${campaign_solver_seats_most}
+  cores=$(nproc 2>/dev/null) || cores=0
+  (( cores / 4 <= seats )) || seats=$(( cores / 4 ))
+  printf '%s\n' "${seats}"
 }
 
 campaign_solver_dir() {
