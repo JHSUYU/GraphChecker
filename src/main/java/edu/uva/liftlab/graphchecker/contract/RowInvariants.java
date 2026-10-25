@@ -1,9 +1,6 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.primitiveString;
 
 import com.google.gson.JsonElement;
@@ -15,7 +12,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -838,46 +835,31 @@ public final class RowInvariants {
     private static List<String> unstated(JsonObject focus,
                                          SessionReader session,
                                          List<GapRow> gaps) {
-        Set<String> stated = new HashSet<String>();
+        Map<String, List<DecisionRow>> byOccurrence =
+                new HashMap<String, List<DecisionRow>>();
         for (DecisionRow row : session.decisions()) {
-            stated.add(flip(row.occurrence().id(), row.siteId(),
-                    row.ordinal(), row.outcome()));
+            byOccurrence.computeIfAbsent(row.occurrence().id(),
+                    id -> new ArrayList<DecisionRow>()).add(row);
         }
         List<String> unstated = new ArrayList<String>();
-        asked(primitiveString(focus, "focusedOccurrenceId"),
-                object(focus, "flip"), stated, session, unstated, gaps);
-        for (JsonElement inherited : array(focus, "inheritedFlips")) {
-            JsonObject flip = inherited.getAsJsonObject();
-            asked(primitiveString(flip, "focusedOccurrenceId"), flip, stated,
-                    session, unstated, gaps);
+        for (Flip flip : Flip.world(focus)) {
+            if (flip.pairing() || flip.taken(byOccurrence.getOrDefault(
+                    flip.focusedOccurrenceId,
+                    Collections.<DecisionRow>emptyList())) != null) {
+                continue;
+            }
+            unstated.add(flip.render());
+            gaps.add(violation(session, GapKind.ADMISSION_GAP,
+                    GapClass.DIAGNOSTIC, "decisions", 0L, "outcome",
+                    flip.siteId + "#" + flip.ordinal,
+                    "invariant 10 (CONTRACT-SPEC §2.6: a focused replay "
+                            + "states every flip of its world): its last "
+                            + "decision at that site and ordinal at occurrence "
+                            + flip.focusedOccurrenceId + " is none or not "
+                            + flip.outcome + "; the obligation's own result "
+                            + "row carries the verdict"));
         }
         return unstated;
-    }
-
-    private static void asked(String at, JsonObject flip, Set<String> stated,
-                              SessionReader session, List<String> unstated,
-                              List<GapRow> gaps) {
-        String site = primitiveString(flip, "siteId");
-        if (site.isEmpty() || Obligation.pairing(site)) return;
-        int ordinal = optionalInteger(flip, "ordinal", 1);
-        boolean outcome = optionalBool(flip, "outcome", false);
-        String held = flip(at, site, ordinal, outcome);
-        if (stated.contains(held)) return;
-        unstated.add(held);
-        gaps.add(violation(session, GapKind.ADMISSION_GAP,
-                GapClass.DIAGNOSTIC, "decisions", 0L, "outcome",
-                site + "#" + ordinal,
-                "invariant 10 (CONTRACT-SPEC §2.6: a focused replay states "
-                        + "every flip it was held to): this session states "
-                        + "no decision at that site and ordinal with outcome "
-                        + outcome + " at occurrence " + at + "; the "
-                        + "obligation's own result row carries the verdict"));
-    }
-
-    private static String flip(String at, String site, int ordinal,
-                               boolean outcome) {
-        return site + "#" + ordinal + " -> " + outcome + " at occurrence "
-                + at;
     }
 
 

@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.explore;
 
 import com.google.gson.JsonPrimitive;
 
+import edu.uva.liftlab.graphchecker.contract.Flip;
 import edu.uva.liftlab.graphchecker.compose.Independence;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering;
@@ -152,7 +153,7 @@ public final class ObligationFactory {
         public final String smt2;
         public final Map<String, String> clockDeltas;
         public final Map<String, String> rootMints;
-        public final List<Corpus.Flip> inheritedFlips;
+        public final List<Flip> inheritedFlips;
         public final Map<String, String> pairings;
         public final ConfirmMain.Holding holding;
         public final List<GapRow> gaps;
@@ -164,7 +165,7 @@ public final class ObligationFactory {
         Outcome(Obligation obligation, ObligationResult result,
                         String smt2, Map<String, String> clockDeltas,
                         Map<String, String> rootMints,
-                        List<Corpus.Flip> inheritedFlips,
+                        List<Flip> inheritedFlips,
                         Map<String, String> pairings,
                         ConfirmMain.Holding holding,
                         List<GapRow> gaps, String question,
@@ -213,7 +214,7 @@ public final class ObligationFactory {
                 verdict, "", detail), query,
                 Collections.<String, String>emptyMap(),
                 Collections.<String, String>emptyMap(),
-                Collections.<Corpus.Flip>emptyList(),
+                Collections.<Flip>emptyList(),
                 Collections.<String, String>emptyMap(), null, gaps, question,
                 settles, false, owed);
     }
@@ -281,7 +282,7 @@ public final class ObligationFactory {
     public static String worldDigest(Corpus.World world) {
         if (world == null || world.flips.isEmpty()) return "";
         List<String> held = new ArrayList<String>();
-        for (Corpus.Flip flip : world.flips) {
+        for (Flip flip : world.flips) {
             held.add(flip.focusedOccurrenceId + "|" + flip.siteId + "|"
                     + flip.ordinal + "|" + flip.outcome);
         }
@@ -295,7 +296,7 @@ public final class ObligationFactory {
                 .append(new TreeMap<String, String>(world.clockDeltas))
                 .append(new TreeMap<String, String>(world.answers))
                 .append(new TreeMap<String, String>(world.pairings));
-        for (Corpus.Flip flip : world.flips) {
+        for (Flip flip : world.flips) {
             text.append('\n').append(flip.focusedOccurrenceId).append('|')
                     .append(flip.siteId).append('#').append(flip.ordinal)
                     .append(" -> ").append(flip.outcome);
@@ -1014,8 +1015,8 @@ public final class ObligationFactory {
         Map<String, String> pairings =
                 overlay(inherited.pairings, planted.pairings);
         if (!refuted.isEmpty()) {
-            List<Corpus.Flip> flips = new ArrayList<Corpus.Flip>();
-            flips.add(new Corpus.Flip(candidate.task.focused().id(),
+            List<Flip> flips = new ArrayList<Flip>();
+            flips.add(new Flip(candidate.task.focused().id(),
                     decision.siteId(), decision.ordinal(),
                     candidate.flippedOutcome(), id));
             flips.addAll(inherited.flips);

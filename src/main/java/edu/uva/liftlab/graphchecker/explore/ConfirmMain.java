@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
+import edu.uva.liftlab.graphchecker.contract.Flip;
 import edu.uva.liftlab.graphchecker.compose.ComposeMain;
 import edu.uva.liftlab.graphchecker.compose.Refutations;
 import edu.uva.liftlab.graphchecker.compose.RestsOn;
@@ -206,7 +207,7 @@ public final class ConfirmMain {
                 Obligation.confirming(OBLIGATION_ID, OBLIGATION_ID,
                         witness.pathId, world.assignments, world.answers,
                         Collections.<String>emptyList()),
-                Collections.<Corpus.Flip>emptyList(), world.clockDeltas,
+                Collections.<Flip>emptyList(), world.clockDeltas,
                 world.mints, Collections.<String, String>emptyMap(), cut);
         ExploreCodec.writeFocusFile(out.resolve(ObligationDir.FOCUSED_TASK),
                 focus);

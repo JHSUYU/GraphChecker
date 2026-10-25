@@ -1027,17 +1027,22 @@ public class ContractTest {
     }
 
     @Test
-    public void aSessionStatesEveryFlipItWasHeldToAtItsOccurrence()
+    public void aSessionStatesEveryFlipOfItsWorldAtItsOccurrence()
             throws IOException {
         OccurrenceAddress other = OccurrenceAddress.of(DN0, REGION,
                 CausalContext.of(Role.of("DATA_XCEIVER"), "", 2),
                 index(frame(RUN, 0)));
-        String guard = "Guard#u8#1 -> true at occurrence ";
+        String own = "Guard#u8#1 -> true at occurrence OWN (obligation OBL)";
+        String carried = "Guard#u8#1 -> true at occurrence OTHER (obligation "
+                + "PARENT)";
         Object[][] worlds = {
-                {"own", "", ""},
-                {"other", "", guard + "OWN"},
-                {"own", "Guard#u8@other", guard + "OTHER"},
-                {"own", "PAIRING:reader@other", ""}};
+                {"own", "Guard#u8", false, "", ""},
+                {"other", "Guard#u8", false, "", own},
+                {"own", "Guard#u8", false, "Guard#u8@other", carried},
+                {"own", "Guard#u8", false, "PAIRING:reader@other", ""},
+                {"other", "PAIRING:reader", false, "", ""},
+                {"other", "Guard#u8", true, "", ""},
+                {"own,later", "Guard#u8", false, "", own}};
         for (Object[] world : worlds) {
             Rows rows = clean();
             rows.activations.add(ActivationRow.of("s-gate", other, "t",
@@ -1048,24 +1053,30 @@ public class ContractTest {
                         "Guard#u8", 1, true, "EXPR.0000000000000001",
                         Collections.<String, Long>emptyMap()));
             }
+            if (world[0].equals("own,later")) {
+                rows.decisions.add(DecisionRow.of("s-gate", 13L, rows.anchor,
+                        "Guard#u8", 1, false, "EXPR.0000000000000001",
+                        Collections.<String, Long>emptyMap()));
+            }
             JsonObject focus = new JsonObject();
+            focus.addProperty("obligationId", "OBL");
             focus.addProperty("focusedOccurrenceId", rows.anchor.id());
+            if ((Boolean) world[2]) focus.addProperty(Flip.RERUN, true);
             JsonObject flip = new JsonObject();
-            flip.addProperty("siteId", "Guard#u8");
+            flip.addProperty("siteId", (String) world[1]);
             flip.addProperty("ordinal", 1);
             flip.addProperty("outcome", true);
             focus.add("flip", flip);
             JsonArray inherited = new JsonArray();
-            String carried = (String) world[1];
-            if (!carried.isEmpty()) {
+            String parent = (String) world[3];
+            if (!parent.isEmpty()) {
                 JsonObject one = new JsonObject();
-                one.addProperty("focusedOccurrenceId",
-                        carried.endsWith("@other") ? other.id()
-                                : rows.anchor.id());
-                one.addProperty("siteId", carried.substring(0,
-                        carried.indexOf('@')));
+                one.addProperty("focusedOccurrenceId", other.id());
+                one.addProperty("siteId", parent.substring(0,
+                        parent.indexOf('@')));
                 one.addProperty("ordinal", 1);
                 one.addProperty("outcome", true);
+                one.addProperty("obligationId", "PARENT");
                 inherited.add(one);
             }
             focus.add("inheritedFlips", inherited);
@@ -1090,7 +1101,7 @@ public class ContractTest {
                     new String(Files.readAllBytes(ledger.resolve("s-gate"
                             + ImportGateMain.RECORD)), StandardCharsets.UTF_8))
                     .getAsJsonObject().getAsJsonArray("unstated");
-            String want = ((String) world[2]).replace("OWN",
+            String want = ((String) world[4]).replace("OWN",
                     rows.anchor.id()).replace("OTHER", other.id());
             List<String> said = new ArrayList<String>();
             for (int at = 0; at < recorded.size(); at++) {

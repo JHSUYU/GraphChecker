@@ -5834,14 +5834,8 @@ campaign_stream_move() {
 did not stage"
     mv -- "${staged}/${session}" "${sessions}/${session}"
     stream_landed=$((stream_landed + 1))
-    [[ -z "${stream_stop}" \
-       && "$(jq -r '.verdict // ""' "${worker}/obligation_result.jsonl")" \
-          == ADMITTED ]] || continue
-    campaign_rows "${sessions}/${session}/targets.jsonl.gz" \
-      | jq -e -s --argjson anchors "${stream_anchors}" \
-      'any(.[]; .observedFatal == true
-              and (.occurrence as $at | any($anchors[]; . == $at)))' \
-      >/dev/null 2>&1 || continue
+    [[ -z "${stream_stop}" ]] && campaign_stream_fatal \
+      "${worker}/obligation_result.jsonl" "${sessions}/${session}" || continue
     stream_witnesses+=("${session}")
   done
   stream_staged=()
@@ -6016,40 +6010,34 @@ campaign_stream_swap_jobs=16
 campaign_stream_swap() {
   local swap="" round="" id="" exposing="" status="" key="" worker=""
   local rerun="" session="" ids="" file="" verdict="" pid="" rests=""
-  local entry="" kind="" changed=0 unstated="" count=0
+  local entry="" kind="" changed=0 unstated="" why=""
   local -a due=() held=() withdrawing=() pids=() kept=() dropped=()
   local -A named=() swapping=() answered=() answer_session=()
   for swap in "${stream_swaps[@]}"; do
     read -r round id exposing status <<<"${swap}"
     key="${id} ${exposing}"
-    worker=$(dirname "$(dirname "${stream_reruns[${key}]}")")
+    rerun=${stream_reruns[${key}]}
+    session=""
+    why=""
     if [[ "${status}" -ne 0 ]]; then
-      printf '%s\n' "${round}" >>"${worker}/grow-dropped"
-      campaign_log "obligation ${id}: its re-run under the grown tree did \
-not finish (exit ${status}): dropped, ${exposing} stays in the corpus"
-      campaign_stream_rerun_done "${key}" dropped
-      changed=1
-      continue
+      why="did not finish (exit ${status})"
+    else
+      session=$(jq -r '.sessionId // ""' "${rerun}/obligation_result.jsonl")
     fi
-    session=$(jq -r '.sessionId // ""' \
-      "${stream_reruns[${key}]}/obligation_result.jsonl")
-    unstated=""
-    [[ -z "${session}" ]] || unstated=$(campaign_stream_unstated \
-      "${session}" "${exposing}") || campaign_fail EXPLORE CAMPAIGN \
-      "${iteration_dir}/import_gated" "obligation ${id}: the gate's ledger \
-states no unstated flips of ${exposing} or of its re-run's ${session}"
-    if [[ -n "${unstated}" ]]; then
-      printf '%s\n' "${round}" >>"${worker}/grow-dropped"
-      rm -f -- "${iteration_dir}/import_gated/${session}.json" \
-        "${iteration_dir}/import_gated/${session}.named.json.gz"
-      count=$(grep -c '' <<<"${unstated}")
-      campaign_stream_gap DIAGNOSTIC "${id} world-unstated=${count}" \
-        "its re-run under the grown tree, session ${session}, states no \
-decision at ${count} flip(s) of its world that ${exposing} states \
-($(paste -sd ';' <<<"${unstated}")): dropped, ${exposing} stays in the \
-corpus, the regions the re-run exposed stay uncaptured in that world, and no \
-flip on them is asked there"
-      campaign_stream_rerun_done "${key}" dropped
+    if [[ "${status}" -eq 0 && -z "${session}" ]]; then
+      why="published no session: $(jq -r '.detail // ""' \
+        "${rerun}/obligation_result.jsonl")"
+    elif [[ -n "${session}" ]] && ! campaign_stream_fatal \
+        "${rerun}/obligation_result.jsonl" "${rerun}/sessions/${session}"; then
+      unstated=$(campaign_stream_unstated "${session}" "${exposing}") \
+        || campaign_fail EXPLORE CAMPAIGN "${iteration_dir}/import_gated" \
+          "obligation ${id}: the gate's ledger states no unstated flips of \
+${exposing} or of its re-run's ${session}"
+      [[ -z "${unstated}" ]] || why="states no decision of a flip of its \
+world that ${exposing} states ($(paste -sd ';' <<<"${unstated}"))"
+    fi
+    if [[ -n "${why}" ]]; then
+      campaign_stream_rerun_drop "${round}" "${key}" "${session}" "${why}"
       changed=1
     elif campaign_stream_swap_due "${exposing}"; then
       due+=("${swap}")
@@ -6173,6 +6161,30 @@ campaign_stream_unstated() {
     --slurpfile rerun "${iteration_dir}/import_gated/${session}.json" \
     --slurpfile before "${iteration_dir}/import_gated/${exposing}.json" \
     '($rerun[0].unstated - $before[0].unstated)[]'
+}
+
+campaign_stream_rerun_drop() {
+  local round=$1 key=$2 session=$3 why=$4
+  local id=${2% *} exposing=${2#* }
+  printf '%s\n' "${round}" \
+    >>"$(dirname "$(dirname "${stream_reruns[${key}]}")")/grow-dropped"
+  [[ -z "${session}" ]] || rm -f -- \
+    "${iteration_dir}/import_gated/${session}.json" \
+    "${iteration_dir}/import_gated/${session}.named.json.gz"
+  campaign_stream_gap DIAGNOSTIC "${id} grow-rerun-dropped=0" "its re-run \
+under the grown tree${session:+, session ${session},} ${why}: dropped, \
+${exposing} stays in the corpus, the regions the re-run exposed stay \
+uncaptured in that world, and no flip on them is asked there"
+  campaign_stream_rerun_done "${key}" dropped
+}
+
+campaign_stream_fatal() {
+  [[ "$(jq -r '.verdict // ""' "$1")" == ADMITTED ]] || return 1
+  campaign_rows "$2/targets.jsonl.gz" \
+    | jq -e -s --argjson anchors "${stream_anchors}" \
+    'any(.[]; .observedFatal == true
+            and (.occurrence as $at | any($anchors[]; . == $at)))' \
+    >/dev/null 2>&1
 }
 
 campaign_swap_files=(replay.log concolic_region_results.jsonl
@@ -6343,7 +6355,7 @@ gaps.jsonl.gz | grep -F 'unplanned-input-max=' || true) \
     | rows("loop-body-bound") as $loops
     | rows("daemon-tick-bound") as $ticks
     | rows("ordered-map-unmodeled") as $sorted
-    | rows("world-unstated") as $unstated
+    | rows("grow-rerun-dropped") as $dropped
     | (rows("view-hold-max") + [$confirmHolds[] | bound("view-hold-max")])
       as $holds
     | ($rounds | last | .ceilingCut // 0) as $ceiling
@@ -6393,14 +6405,16 @@ gaps.jsonl.gz | grep -F 'unplanned-input-max=' || true) \
               + " run'"'"'s contents (" + ($sorted
               | map(.subject | sub(" ordered-map-unmodeled=.*"; "")) | unique
               | join(", ")) + ")")}),
-        (select(($unstated | length) > 0)
-         | {by: "grow_rerun_world_unstated",
-            detail: ("\($unstated | length) GROW re-run(s) stated no"
-              + " decision at a flip of their world their exposing session"
-              + " states, and were dropped: the regions they exposed stay"
-              + " uncaptured in those worlds and no flip on them is asked"
-              + " there (" + ($unstated | map(.subject
-              | sub(" world-unstated=.*"; "")) | unique | join(", ")) + ")")}),
+        (select(($dropped | length) > 0)
+         | {by: "grow_rerun_dropped",
+            detail: ("\($dropped | length) GROW re-run(s) dropped, their"
+              + " exposing session kept (one that did not finish, published"
+              + " no session, or stated no decision of a flip of its world"
+              + " its exposing session states): the regions they exposed"
+              + " stay uncaptured in those worlds and no flip on them is"
+              + " asked there (" + ($dropped | map(.subject
+              | sub(" grow-rerun-dropped=.*"; "")) | unique | join(", "))
+              + ")")}),
         (select(($holds | length) > 0)
          | {by: "view_hold_max",
             detail: ("\($holds | length) pairing hold(s) of a node'"'"'s view"

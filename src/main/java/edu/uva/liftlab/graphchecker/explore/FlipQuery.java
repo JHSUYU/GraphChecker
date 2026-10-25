@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.explore;
 
+import edu.uva.liftlab.graphchecker.contract.Flip;
 import edu.uva.liftlab.graphchecker.compose.JavaSmtSorts;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.compose.SmtNames;
@@ -16,7 +17,6 @@ import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
-import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
@@ -640,9 +640,9 @@ final class FlipQuery {
         }
 
         private Built inheritedFlips(DecisionRow flipped) {
-            for (Corpus.Flip inherited
+            for (Flip inherited
                     : corpus.world(path.sessionId).flips) {
-                if (Obligation.pairing(inherited.siteId)) continue;
+                if (inherited.pairing()) continue;
                 OccurrenceAddress at =
                         corpus.occurrence(inherited.focusedOccurrenceId);
                 if (at == null) {
@@ -650,14 +650,8 @@ final class FlipQuery {
                 }
                 List<DecisionRow> decisions =
                         corpus.decisionsOf(path.sessionId, at);
-                DecisionRow row = null;
-                for (DecisionRow candidate : decisions) {
-                    if (candidate.siteId().equals(inherited.siteId)
-                            && candidate.ordinal() == inherited.ordinal) {
-                        row = candidate;
-                    }
-                }
-                if (row == null || row.outcome() != inherited.outcome) {
+                DecisionRow row = inherited.taken(decisions);
+                if (row == null) {
                     return refuseInherited(inherited, flipped);
                 }
                 List<DecisionRow> taken = new ArrayList<DecisionRow>();
@@ -716,7 +710,7 @@ final class FlipQuery {
             return asked.text;
         }
 
-        private Built refuseInherited(Corpus.Flip inherited,
+        private Built refuseInherited(Flip inherited,
                                       DecisionRow flipped) {
             return refuse(GapKind.ADMISSION_GAP,
                     inherited.siteId + "#" + inherited.ordinal,
