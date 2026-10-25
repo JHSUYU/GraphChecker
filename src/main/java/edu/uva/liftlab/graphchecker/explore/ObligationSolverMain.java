@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.explore;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.contract.Flip;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.smt.Z3;
@@ -516,7 +517,7 @@ public final class ObligationSolverMain {
                 corpus.seedSessionId(), targetOccurrences(task), true, out);
         JsonObject focus = ExploreCodec.writeFocusRow(task.focused(),
                 declared, task.seedSessionId(), task.factor(), proposal,
-                Collections.<Corpus.Flip>emptyList(),
+                Collections.<Flip>emptyList(),
                 Collections.<String, String>emptyMap(),
                 Collections.<String, String>emptyMap(),
                 Collections.<String, String>emptyMap(), cut);
@@ -542,12 +543,12 @@ public final class ObligationSolverMain {
         JsonObject focus = ExploreCodec.writeFocusRow(task.focused(),
                 declaredTarget(obligations), task.seedSessionId(),
                 task.factor(), proposal,
-                Collections.<Corpus.Flip>emptyList(),
+                Collections.<Flip>emptyList(),
                 Collections.<String, String>emptyMap(),
                 Collections.<String, String>emptyMap(),
                 Collections.<String, String>emptyMap(), cut);
         focus.addProperty(PATH_SESSION, candidate.path.sessionId);
-        focus.addProperty(ExploreCodec.RERUN, true);
+        focus.addProperty(Flip.RERUN, true);
         JsonObject published = publish(out, proposal, ObligationResult.of(
                 proposal.obligationId(), Verdict.SAT_MODEL_READY, "",
                 PathReruns.RERUN + ": the world of path " + proposal.pathId()

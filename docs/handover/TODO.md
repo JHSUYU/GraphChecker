@@ -74,6 +74,8 @@ grace, and one that reaches no hook makes its replay's obligations admit nothing
 (`FocusedReplay#noteUnsettledPublication`), no new verdict; or (b) no nested path is cut from a session whose
 flipped activation published no rows. Today's corpora of 07 (CC7), 11741 (AW5), 29 30 40 (HF1) and 39 (WD3) hold
 no stranded activation, so either touches only perpetual bodies like 21's actor.
+A GROW re-run that strands its world's flip no longer replaces the replay that stated it (PIPELINE §7.8, branch
+`zk-fixtrunc`); a first replay that strands it (21's case) still leaves each flip cut from it refused, BLOCKING.
 
 
 ### 5. Defects found this session (STATUS "Open defects" has each with its fix)
@@ -976,8 +978,35 @@ which no ORDER holds". The cause is not CONFIRM's planning, as H3 read it from t
    "the session this path was cut from states no decision for the flip it inherited:
    `ZKDatabase.addCommittedProposal(Request)#u21#1 -> true` at occurrence 16109589cba8003a", so the claim is
    RUN_DEFECT. liftlab's F2B-trunc closed in 84 rounds without it; CloudLab's runs explore to 97-100 rounds (waves
-   9-11). Read the parent session's decisions at that occurrence (`sessions/<parent>/decisions.jsonl.gz`) and whether
-   the flip's site ran there under another address (an index shift, as 06).
+   9-11). Cause (branch `zk-fixtrunc`): no address shift. The flip ran at its exact address and was ADMITTED twice:
+   first replay (Z9 session `ea702b2e`, stated at `peer1#epoch2`), then its GROW re-run (`0ea6da09`, the follower's
+   second life now planned), whose test failed ("server 1 stopped before it synced") while life 3's
+   `runFromConfig` -- the declared and flipped occurrence -- still joined its peer: stranded at the run's end
+   (`TERMINAL_NEVER_REACHED`), it published no row, only mints, and the swap put the re-run's session in. The
+   `#u21#1 = true` rows the re-run states at `peer1#epoch1` are life 2's own replay, another occurrence. Every flip
+   cut from the re-run inherited an unstated flip and was refused, BLOCKING (79 obligations in Z9, most on life 2's
+   paths, its TRUNC-sync decisions among them). Fix (PIPELINE
+   §7.8): a re-run takes its exposing session's place only if it states every flip that session states (the gate's
+   ledger keeps each session's unstated flips, invariant 10); else it is dropped, the first replay stays, and the
+   drop is a named bound (`grow-rerun-dropped=0`, `grow_rerun_dropped`): life 2's flips in that world are asked
+   by no session, which this corpus no longer states. T2 (`/bulk/gc-out/zk-agenttr/accept-T2-bugs-trunc-sync`,
+   snapshot `/bulk/gc-run/zktr-2` = 64b440834, alone, 3505 s): the rule dropped two re-runs (257811a1c73f2c3f's,
+   stranded the same way, and 9bab8ac7fbe2d282's, NOT_ADMITTED: its test failed before the flip's occurrence ran),
+   their first replays stayed (uncaptured), the four flips cut from 257811a1c73f2c3f's first replay (life 3's
+   `Learner.readSyncPacket#u4` #1-#3, `createInputArchive#u9#1`) were ADMITTED; UNSAT_CLOSED at FIXED_POINT in 84
+   rounds, no BLOCKING gap, no defect, z3 unsat on the file, 17 paths, 135 leaves, vacuity.py substantive (1 of 17
+   paths free), BOUNDED by `region_path_max_world_depth` and the drops' bound. The world
+   {`#u21#1 -> true`} reaches no anchor in either replay, so it composes no path either way. Open: the gate batch
+   that admitted a re-run later dropped judged the cross-session invariants (1, 11, the epoch's roots) of the other
+   sessions it gated without the exposing session, which `<step>/replaced` named before the drop was known, and
+   the dropped session's own invariant rows (DIAGNOSTIC: a BLOCKING one fails IMPORT) stay in
+   `campaign_gaps.jsonl`; no later gate re-judges that batch. Re-gating it at the drop would close this.
+   T3 (`/bulk/gc-out/zk-agenttr/accept-T3-bugs-trunc-sync`, snapshot `/bulk/gc-run/zktr-3` = bf5d9dc85, tree set
+   `/bulk/trees/zk4`, alone, 3385 s): UNSAT_CLOSED at FIXED_POINT in 95 rounds, no BLOCKING gap, no defect, z3 unsat on
+   the file, 19 paths, 149 leaves, vacuity.py substantive (1 of 19 paths free), BOUNDED by
+   `region_path_max_world_depth` and `grow_rerun_dropped` (257811a1c73f2c3f's re-run, stranded as before, and
+   ee22557a70e24505's); the four flips cut from 257811a1c73f2c3f's kept first replay (life 3's
+   `Learner.readSyncPacket#u4` #1-#3, `createInputArchive#u9#1`) were ADMITTED.
 3. **The CPU-aware ledger and replay fidelity**: packing the CPUs fuller (PARALLEL §8) gives the order's watchdog less
    CPU per replay; watch the give-up counts (`round-status.sh`'s giveups, `of an order of ... given up`) against
    `cpu-<round>.txt` when the busy share rises.

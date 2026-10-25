@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.compose;
 
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.contract.Flip;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Term;
 
 import edu.uva.liftlab.graphchecker.contract.Arm;
@@ -750,7 +751,7 @@ final class ComposedFamilies {
 
     private Set<String> flips(String session) {
         Set<String> held = new LinkedHashSet<String>();
-        for (Corpus.Flip flip : corpus.world(session).flips) {
+        for (Flip flip : corpus.world(session).flips) {
             held.add(flip.focusedOccurrenceId + "|" + flip.siteId + "#"
                     + flip.ordinal + "=" + flip.outcome);
         }

@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import edu.uva.liftlab.graphchecker.contract.Flip;
 import edu.uva.liftlab.graphchecker.contract.Parallel;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
@@ -371,7 +372,7 @@ public class ExploreTest {
                                Map<String, String> clockDeltas)
             throws IOException {
         worker(iteration, wave, dir, obligationId, sessionId, focused, siteId,
-                roots, clockDeltas, Collections.<Corpus.Flip>emptyList());
+                roots, clockDeltas, Collections.<Flip>emptyList());
     }
 
     private static void worker(Path iteration, String wave, String dir,
@@ -379,7 +380,7 @@ public class ExploreTest {
                                OccurrenceAddress focused, String siteId,
                                Map<String, String> roots,
                                Map<String, String> clockDeltas,
-                               List<Corpus.Flip> inherited)
+                               List<Flip> inherited)
             throws IOException {
         Path at = iteration.resolve(wave).resolve(dir);
         Files.createDirectories(at);
@@ -410,7 +411,7 @@ public class ExploreTest {
         row.add("answers", new JsonObject());
         row.add("rootMints", new JsonObject());
         JsonArray carried = new JsonArray();
-        for (Corpus.Flip one : inherited) {
+        for (Flip one : inherited) {
             carried.add(ExploreCodec.writeFlip(one));
         }
         row.add("inheritedFlips", carried);

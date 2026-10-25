@@ -1380,7 +1380,7 @@ test_gated() {
   shift
   mkdir -p "${iteration}/import_gated"
   for session in "$@"; do
-    printf '{}\n' >"${iteration}/import_gated/${session}.json"
+    printf '{"unstated":[]}\n' >"${iteration}/import_gated/${session}.json"
   done
 }
 
@@ -2061,6 +2061,189 @@ obligations-0001 obligations-0002 SESSION.regrown -" ]] \
   || fail "GROW-LANDS: a re-run one flip deep did not hold the fixed point \
 until it landed and a round planned over it: ${gl_said}: \
 $(cat "${stream_dir}/explore.log")"
+
+while IFS='|' read -r gu_mode gu_want; do
+  stream_fixture "grow-drop-${gu_mode}"
+  mkdir -p "${campaign_host_gate_root}/$(hostname -s)"
+  printf '3\n' >"${campaign_host_gate_root}/$(hostname -s)/cores"
+  cat >"${stream_dir}/replay.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+verdict=ADMITTED
+fatal=false
+session=SESSION.regrown
+case "${GU_MODE}" in
+  notadmitted) verdict=NOT_ADMITTED ;;
+  fatal) fatal=true ;;
+  sessionless) verdict=NOT_ADMITTED; session="" ;;
+esac
+if [[ -n "${session}" ]]; then
+  mkdir -p "${CAUSYNTH_CONCOLIC_SESSIONS}/${session}"
+  jq -n -c --arg session "${session}" '{schemaVersion: 1,
+    kind: "SESSION_MANIFEST", sessionId: $session, role: "FOCUSED",
+    obligationIds: ["OB.x"]}' \
+    >"${CAUSYNTH_CONCOLIC_SESSIONS}/${session}/manifest.json"
+  jq -n -c --argjson fatal "${fatal}" \
+    '{occurrence: {node: "anchor"}, observedFatal: $fatal}' | gzip -c \
+    >"${CAUSYNTH_CONCOLIC_SESSIONS}/${session}/targets.jsonl.gz"
+fi
+jq -n -c --arg verdict "${verdict}" --arg session "${session}" \
+  '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: "OB.x",
+    verdict: $verdict, sessionId: $session, detail: "stub"}' \
+  >"${CAUSYNTH_CONCOLIC_WORKER_DIR}/replay_verdict.jsonl"
+EOF
+  chmod +x "${stream_dir}/replay.sh"
+  (
+    export GU_MODE=${gu_mode}
+    stream_stubs
+    concolic_replay_command="${stream_dir}/replay.sh"
+    replay_timeout_s=900
+    schedule_max_jobs=1
+    trace_test=T
+    custom_jdk_home=""
+    workload_work_dir="${stream_dir}"
+    test_gated() {
+      local iteration=$1 session flips
+      shift
+      mkdir -p "${iteration}/import_gated"
+      for session in "$@"; do
+        flips='[]'
+        if [[ "${session}" == SESSION.regrown && "${gu_mode}" != stated ]] \
+            || [[ "${session}" == SESSION.exposing && "${gu_mode}" \
+              == unstated ]]; then
+          flips='["S#u1#0 -> true at occurrence O1 (obligation OB.x)"]'
+        fi
+        printf '{"unstated":%s}\n' "${flips}" \
+          >"${iteration}/import_gated/${session}.json"
+      done
+    }
+    stream_round_plan() {
+      case "$1" in
+        0) stream_propose "$2" OB.x ;;
+        1) printf '%s\n' \
+'{"kind":"EXPOSED_REGION","regionId":"REGION.grown","node":"nn0","occurrence":"REGION.grown#1","sessionId":"SESSION.exposing","obligationId":"OB.x"}' \
+             >>"$2/growth.jsonl" ;;
+      esac
+    }
+    do_compose() {
+      printf '%s\n' attempted >>"${stream_dir}/witness-attempted"
+      stream_compose "${composition_manifest}" UNSAT_CLOSED
+    }
+    run_java_main() {
+      local args=" $* " output plan
+      plan=${args##* --plan }
+      plan=${plan%% *}
+      output=${args##* --output }
+      output=${output%% *}
+      { cat "${plan}"
+        printf '{"taskId":"TASK.grown","regionId":"REGION.grown","admissionBasis":"EXPOSED_BY"}\n'
+      } >"${output}"
+    }
+    campaign_instrument() {
+      mkdir -p "$2"
+      : >"$2/woven"
+      printf '%s\n' "$3" >"$(dirname "$2")/weave_key"
+    }
+    campaign_obligation_worker() {
+      local worker=$4
+      printf '%s\n' '{"taskId":"TASK.seed","flip":{"siteId":"S#u1","ordinal":0,"outcome":true},"inheritedFlips":[]}' \
+        >"${worker}/focused_task.jsonl"
+      stream_answer "${worker}" OB.x ADMITTED SESSION.exposing
+      jq -n -c '{occurrence: {node: "elsewhere"}, observedFatal: false}' \
+        | gzip -c >"${worker}/sessions/SESSION.exposing/targets.jsonl.gz"
+    }
+    campaign_explore "${stream_dir}" iteration-0000
+  ) >"${stream_dir}/explore.log" 2>&1 \
+    || fail "GROW-DROP ${gu_mode} did not finish: \
+$(cat "${stream_dir}/explore.log")"
+  gu_worker="${stream_dir}/obligations-0000/OB.x"
+  gu_said="$(jq -r '.stop' "${stream_dir}/exploration.json") \
+$(ls "${stream_dir}/sessions" | paste -sd '+' -) \
+$(cat "${stream_dir}/uncaptured_sessions.txt" 2>/dev/null || echo -) \
+$(cat "${gu_worker}/grow-dropped" 2>/dev/null || echo -) \
+$({ cat "${stream_dir}/campaign_gaps.jsonl" 2>/dev/null || true; } \
+  | jq -r 'select(.subject | endswith(" grow-rerun-dropped=0"))
+    | "\(.cls):\(.subject | sub(" "; ":"))"' | paste -sd '+' - \
+  | grep . || echo -) \
+$(ls "${stream_dir}/import_gated" | paste -sd '+' -) \
+$(jq -r '.sessionId' "${stream_dir}/obligation_results.jsonl" \
+  | paste -sd '+' -) \
+$([[ -s "${stream_dir}/witness-attempted" ]] && echo witness || echo -)"
+  [[ "${gu_said}" == "${gu_want}" ]] \
+    || fail "GROW-DROP ${gu_mode}: a re-run that does not state what its \
+exposing session states replaced it, or one that loses nothing or observed \
+the fatal was dropped: '${gu_said}', not '${gu_want}': \
+$(cat "${stream_dir}/explore.log")"
+done <<'EOF'
+stated|FIXED_POINT SESSION.regrown - - - SESSION.exposing.json+SESSION.regrown.json SESSION.regrown -
+unstated|FIXED_POINT SESSION.regrown - - - SESSION.exposing.json+SESSION.regrown.json SESSION.regrown -
+dropped|FIXED_POINT SESSION.exposing SESSION.exposing obligations-0001 DIAGNOSTIC:OB.x:grow-rerun-dropped=0 SESSION.exposing.json SESSION.exposing -
+notadmitted|FIXED_POINT SESSION.exposing SESSION.exposing obligations-0001 DIAGNOSTIC:OB.x:grow-rerun-dropped=0 SESSION.exposing.json SESSION.exposing -
+sessionless|FIXED_POINT SESSION.exposing SESSION.exposing obligations-0001 DIAGNOSTIC:OB.x:grow-rerun-dropped=0 SESSION.exposing.json SESSION.exposing -
+fatal|FIXED_POINT SESSION.regrown - - - SESSION.exposing.json+SESSION.regrown.json SESSION.regrown witness
+EOF
+
+held_said=$(
+  iteration_dir="${test_tmp}/swap-held/iteration-0000"
+  sessions="${iteration_dir}/sessions"
+  results="${iteration_dir}/obligation_results.jsonl"
+  iteration_id=iteration-0000
+  mkdir -p "${sessions}/S.exp" "${iteration_dir}/import_gated"
+  : >"${results}"
+  stream_loop_state
+  stream_anchors='[{"node":"anchor"}]'
+  campaign_log() { :; }
+  campaign_stream_swap_due() { return 1; }
+  printf '{"unstated":[]}\n' >"${iteration_dir}/import_gated/S.exp.json"
+  for held_case in kept dropped failed; do
+    held_rerun="${iteration_dir}/obligations-0000/OB.${held_case}"
+    held_rerun="${held_rerun}/grow-obligations-0001/OB.${held_case}"
+    mkdir -p "${held_rerun}/sessions/S.${held_case}"
+    jq -n -c --arg id "OB.${held_case}" --arg session "S.${held_case}" \
+      '{obligationId: $id, verdict: "ADMITTED", sessionId: $session}' \
+      >"${held_rerun}/obligation_result.jsonl"
+    held_flips='[]'
+    [[ "${held_case}" == kept ]] || held_flips='["S#u1#0 -> true"]'
+    [[ "${held_case}" == failed ]] || printf '{"unstated":%s}\n' \
+      "${held_flips}" >"${iteration_dir}/import_gated/S.${held_case}.json"
+    stream_reruns["OB.${held_case} S.exp"]=${held_rerun}
+    stream_hold=$((stream_hold + 1))
+  done
+  stream_swaps=("obligations-0001 OB.kept S.exp 0"
+    "obligations-0001 OB.dropped S.exp 0" "obligations-0001 OB.failed S.exp 1")
+  campaign_stream_swap
+  printf '%s|%s|%s|%s|%s|%s\n' "${stream_swaps[*]}" "${stream_hold}" \
+    "${stream_uncaptured[*]}" \
+    "$(cat "${iteration_dir}"/obligations-0000/OB.*/grow-dropped \
+      | paste -sd ' ' -)" \
+    "$(jq -r '.subject' "${iteration_dir}/campaign_gaps.jsonl" \
+      | paste -sd ' ' -)" \
+    "$(ls "${iteration_dir}/import_gated" | paste -sd ' ' -)"
+)
+[[ "${held_said}" == "obligations-0001 OB.kept S.exp 0|1|S.exp S.exp|\
+obligations-0001 obligations-0001|OB.dropped grow-rerun-dropped=0 \
+OB.failed grow-rerun-dropped=0|S.exp.json S.kept.json" ]] \
+  || fail "STREAM-SWAP-HELD: a re-run held for its swap that states what its \
+exposing session states was not kept held, or one that does not, or did not \
+finish, was not dropped and named while its swap was held: ${held_said}"
+
+bounds_said=$(
+  iteration_dir="${test_tmp}/bounds-dropped/iteration-0000"
+  campaign_final="${test_tmp}/bounds-dropped/final"
+  mkdir -p "${iteration_dir}/obligations-0000" "${campaign_final}"
+  printf '{}\n' >"${iteration_dir}/obligations-0000/explore_manifest.json"
+  : | gzip -c >"${iteration_dir}/obligations-0000/gaps.jsonl.gz"
+  jq -n -c '{gaps: [], telemetryGaps: [
+    {subject: "OB.a grow-rerun-dropped=0"},
+    {subject: "OB.b grow-rerun-dropped=0"}]}' >"${iteration_dir}/emit_gaps.json"
+  campaign_max_claims=8
+  campaign_bounds "${iteration_dir}"
+)
+[[ "$(jq -r '.by | join(" ")' <<<"${bounds_said}")" == grow_rerun_dropped \
+    && "$(jq -r '.detail' <<<"${bounds_said}")" == "2 GROW re-run(s) dropped"* \
+    && "$(jq -r '.detail' <<<"${bounds_said}")" == *"(OB.a, OB.b)" ]] \
+  || fail "BOUNDS-DROPPED: two dropped GROW re-runs did not bound the claim \
+by name: ${bounds_said}"
 
 stream_fixture grow-plan-only
 (

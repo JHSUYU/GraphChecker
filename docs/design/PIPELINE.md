@@ -2262,10 +2262,32 @@ its corpus runs as a task, whatever the plan holds), so its growth rows are IN F
 again (`campaign_stream_growth_new`) where the exposing session has a re-run owed or was withdrawn by
 one, or the subject (an occurrence, a task's `<symbol>#<k>`) was grown with the re-run of a session the
 round's corpus names (`stream_growing`: planned before that re-run's session landed); the round after
-the swap sees what a round always saw after it. A re-run that did not finish (failed, stalled, past its
-bound) is dropped: not swapped in, the exposing session stays (what it would have captured is no longer
-in flight), and its obligation is never re-run again (`<worker>/grow-dropped`; before 2026-10-15 it
-failed the campaign).
+the swap sees what a round always saw after it. A RE-RUN TAKES ITS EXPOSING SESSION'S PLACE ONLY IF
+IT STATES WHAT THAT SESSION STATES, OR OBSERVED THE FATAL (`campaign_stream_swap`). Every flip cut from a session asserts each flip of that session's world through
+its flipped decision as the session ran it (§7.5), so a session that states no decision of its world's flip
+parents nothing a query can hold to that world. The gate keeps in each session's ledger record the flips of its
+world -- `contract.Flip#world`, the world `ExploreCodec#readWorld` and FlipQuery read: the focus row's own flip
+unless the row is a path re-run's, and every inherited flip -- but pairings, whose last decision at the flip's
+occurrence with that site and ordinal is none or another arm (`Flip#taken`, FlipQuery's test too; `unstated`,
+invariant 10). A re-run is DROPPED, as one that did not finish always was, when it did not finish (failed,
+stalled, past its bound), published no session (a refusal, a stall before any flip, an in-worker
+`REPLAY_BOUNDED`), or left unstated a flip its exposing session states (`campaign_stream_unstated`) -- unless it
+was ADMITTED and observed the fatal at the anchor (`campaign_stream_fatal`, the test `campaign_stream_move`
+lands a witness by), which swaps in and goes to its witness attempt whatever it left unstated. A drop
+(`campaign_stream_rerun_drop`) keeps the exposing session in the corpus and its verdict row, never re-runs the
+obligation (`<worker>/grow-dropped`; before 2026-10-15 it failed the campaign), removes the re-run's ledger
+record, and is named: the exposing session is composed uncaptured (`uncaptured_sessions.txt`, below), and a
+DIAGNOSTIC `<obligation> grow-rerun-dropped=0` row bounds the claim (result.json `bounded`,
+`grow_rerun_dropped`): the regions the re-run exposed stay uncaptured in that world and no flip on them is
+asked there. The gate batch that admitted a dropped re-run judged the set without its exposing session
+(`<step>/replaced`, §7.9) and its rows stay in `campaign_gaps.jsonl` (TODO ZooKeeper on CloudLab 2).
+zk-bugs-trunc-sync Z4 and Z9: the re-run of `ZKDatabase.addCommittedProposal#u21#1 -> true` at the
+follower's third life's `runFromConfig` (the declared occurrence) planned its second life, failed its test
+("server 1 stopped before it synced") while that `runFromConfig` still joined its peer, published no row of
+the flip's occurrence (`TERMINAL_NEVER_REACHED`) and replaced the first replay, which stated it; each flip
+cut from it was refused, BLOCKING. T2 (`zk-fixtrunc` 64b440834): the first replay stays, the flips cut from
+it (life 3's TRUNC-sync FAULT `Learner.readSyncPacket#u4` #1-#3 among them) are asked and ADMITTED, and the
+claim is bounded for the flips on life 2 in that world, which no session states.
 
 EVERY RE-RUN HOLDS THE FIXED POINT, whatever its world's depth (`campaign_stream_idle`): the exploration
 is at its fixed point only once no re-run is queued, running, swapping or owed its gate, and a growth that

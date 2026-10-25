@@ -5,6 +5,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.contract.Flip;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
@@ -256,7 +257,7 @@ public final class KeyGate {
                         ObligationFactory.dependence(corpus, task, path,
                                 index));
                 Set<String> world = new LinkedHashSet<String>();
-                for (Corpus.Flip flip : corpus.world(path.sessionId).flips) {
+                for (Flip flip : corpus.world(path.sessionId).flips) {
                     world.add(flip.focusedOccurrenceId + "|" + flip.siteId
                             + "#" + flip.ordinal + "=" + flip.outcome);
                 }
@@ -287,7 +288,7 @@ public final class KeyGate {
             }
             String session = JsonFields.optionalString(held,
                     "selectedSessionId");
-            for (Corpus.Flip flip : corpus.world(session).flips) {
+            for (Flip flip : corpus.world(session).flips) {
                 if (!flip.obligationId.isEmpty()) chain.add(flip.obligationId);
             }
         }

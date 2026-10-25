@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.JvmNames;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
+import edu.uva.liftlab.graphchecker.contract.Flip;
 import edu.uva.liftlab.graphchecker.contract.FrozenSet;
 import edu.uva.liftlab.graphchecker.contract.Held;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
@@ -99,30 +100,6 @@ public final class Corpus implements Arms.Rows {
     }
 
     public enum SymbolKind { ROOT, HANDOFF, READ, UNKNOWN }
-
-    public static final class Flip {
-        public final String focusedOccurrenceId;
-        public final String siteId;
-        public final int ordinal;
-        public final boolean outcome;
-        public final String obligationId;
-
-        public Flip(String focusedOccurrenceId, String siteId, int ordinal,
-                    boolean outcome, String obligationId) {
-            this.focusedOccurrenceId = focusedOccurrenceId == null ? ""
-                    : focusedOccurrenceId;
-            this.siteId = siteId == null ? "" : siteId;
-            this.ordinal = ordinal;
-            this.outcome = outcome;
-            this.obligationId = obligationId == null ? "" : obligationId;
-        }
-
-        public String render() {
-            return siteId + "#" + ordinal + " -> " + outcome
-                    + " at occurrence " + focusedOccurrenceId
-                    + " (obligation " + obligationId + ")";
-        }
-    }
 
     public static final class World {
         public final Map<String, String> rootAssignments;

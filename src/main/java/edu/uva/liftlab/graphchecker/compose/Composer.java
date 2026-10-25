@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.compose;
 
+import edu.uva.liftlab.graphchecker.contract.Flip;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import com.google.gson.JsonElement;
@@ -990,7 +991,7 @@ public final class Composer {
                     }
                 }
             }
-            for (Corpus.Flip flip : corpus.world(session).flips) {
+            for (Flip flip : corpus.world(session).flips) {
                 if (!flip.focusedOccurrenceId.equals(reader.id())) continue;
                 ObligationResult ran = corpus.waveVerdict(session,
                         flip.obligationId);

@@ -1,8 +1,6 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.primitiveString;
 
 import com.google.gson.JsonElement;
@@ -14,6 +12,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -56,15 +55,22 @@ public final class RowInvariants {
         private final boolean seed;
         private final Map<String, String> roots;
         private final Map<String, String> named;
+        private final List<String> unstated;
 
         public Judged(String sessionId, boolean seed, Map<String, String> roots,
-                      Map<String, String> named) {
+                      Map<String, String> named, List<String> unstated) {
             this.sessionId = sessionId;
             this.seed = seed;
             this.roots = Collections.unmodifiableMap(
                     new LinkedHashMap<String, String>(roots));
             this.named = Collections.unmodifiableMap(
                     new LinkedHashMap<String, String>(named));
+            this.unstated = Collections.unmodifiableList(
+                    new ArrayList<String>(unstated));
+        }
+
+        public List<String> unstated() {
+            return unstated;
         }
 
         @Override
@@ -166,9 +172,12 @@ public final class RowInvariants {
             Map<String, String> named = named(session);
             attributed(session.sessionId(), firstRoots(session).keySet(),
                     named, roots, gaps);
-            for (JsonObject row : rows) gaps.addAll(flipped(row, session));
+            List<String> unstated = new ArrayList<String>();
+            for (JsonObject row : rows) {
+                unstated.addAll(unstated(row, session, gaps));
+            }
             judged.add(new Judged(session.sessionId(), session.seed(),
-                    firstRoots(session), named));
+                    firstRoots(session), named, unstated));
         }
         return new Checked(gaps, judged);
     }
@@ -823,29 +832,34 @@ public final class RowInvariants {
     }
 
 
-    public static List<GapRow> flipped(JsonObject flip,
-                                       SessionReader session) {
-        List<GapRow> gaps = new ArrayList<GapRow>();
-        JsonObject named = object(flip, "flip");
-        String site = primitiveString(named, "siteId");
-        if (site.isEmpty()) return gaps;
-        int ordinal = optionalInteger(named, "ordinal", 1);
-        boolean outcome = optionalBool(named, "outcome", false);
+    private static List<String> unstated(JsonObject focus,
+                                         SessionReader session,
+                                         List<GapRow> gaps) {
+        Map<String, List<DecisionRow>> byOccurrence =
+                new HashMap<String, List<DecisionRow>>();
         for (DecisionRow row : session.decisions()) {
-            if (!site.equals(row.siteId()) || row.ordinal() != ordinal) {
+            byOccurrence.computeIfAbsent(row.occurrence().id(),
+                    id -> new ArrayList<DecisionRow>()).add(row);
+        }
+        List<String> unstated = new ArrayList<String>();
+        for (Flip flip : Flip.world(focus)) {
+            if (flip.pairing() || flip.taken(byOccurrence.getOrDefault(
+                    flip.focusedOccurrenceId,
+                    Collections.<DecisionRow>emptyList())) != null) {
                 continue;
             }
-            if (row.outcome() == outcome) return gaps;
+            unstated.add(flip.render());
+            gaps.add(violation(session, GapKind.ADMISSION_GAP,
+                    GapClass.DIAGNOSTIC, "decisions", 0L, "outcome",
+                    flip.siteId + "#" + flip.ordinal,
+                    "invariant 10 (CONTRACT-SPEC §2.6: a focused replay "
+                            + "states every flip of its world): its last "
+                            + "decision at that site and ordinal at occurrence "
+                            + flip.focusedOccurrenceId + " is none or not "
+                            + flip.outcome + "; the obligation's own result "
+                            + "row carries the verdict"));
         }
-        gaps.add(violation(session, GapKind.ADMISSION_GAP,
-                GapClass.DIAGNOSTIC, "decisions", 0L, "outcome",
-                site + "#" + ordinal,
-                "invariant 10 (CONTRACT-SPEC §2.6: a focused replay is ADMITTED "
-                        + "when the flip took the other arm): this session "
-                        + "states no decision at that site and ordinal with "
-                        + "outcome " + outcome + "; the obligation's own "
-                        + "result row carries the verdict"));
-        return gaps;
+        return unstated;
     }
 
 

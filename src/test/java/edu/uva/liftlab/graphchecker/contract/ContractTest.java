@@ -1027,6 +1027,97 @@ public class ContractTest {
     }
 
     @Test
+    public void aSessionStatesEveryFlipOfItsWorldAtItsOccurrence()
+            throws IOException {
+        OccurrenceAddress other = OccurrenceAddress.of(DN0, REGION,
+                CausalContext.of(Role.of("DATA_XCEIVER"), "", 2),
+                index(frame(RUN, 0)));
+        String own = "Guard#u8#1 -> true at occurrence OWN (obligation OBL)";
+        String carried = "Guard#u8#1 -> true at occurrence OTHER (obligation "
+                + "PARENT)";
+        Object[][] worlds = {
+                {"own", "Guard#u8", false, "", ""},
+                {"other", "Guard#u8", false, "", own},
+                {"own", "Guard#u8", false, "Guard#u8@other", carried},
+                {"own", "Guard#u8", false, "PAIRING:reader@other", ""},
+                {"other", "PAIRING:reader", false, "", ""},
+                {"other", "Guard#u8", true, "", ""},
+                {"own,later", "Guard#u8", false, "", own}};
+        for (Object[] world : worlds) {
+            Rows rows = clean();
+            rows.activations.add(ActivationRow.of("s-gate", other, "t",
+                    false, true, "DataXceiver-8#42",
+                    ActivationRow.ClaimKind.NONE, null));
+            if (world[0].equals("other")) {
+                rows.decisions.set(0, DecisionRow.of("s-gate", 12L, other,
+                        "Guard#u8", 1, true, "EXPR.0000000000000001",
+                        Collections.<String, Long>emptyMap()));
+            }
+            if (world[0].equals("own,later")) {
+                rows.decisions.add(DecisionRow.of("s-gate", 13L, rows.anchor,
+                        "Guard#u8", 1, false, "EXPR.0000000000000001",
+                        Collections.<String, Long>emptyMap()));
+            }
+            JsonObject focus = new JsonObject();
+            focus.addProperty("obligationId", "OBL");
+            focus.addProperty("focusedOccurrenceId", rows.anchor.id());
+            if ((Boolean) world[2]) focus.addProperty(Flip.RERUN, true);
+            JsonObject flip = new JsonObject();
+            flip.addProperty("siteId", (String) world[1]);
+            flip.addProperty("ordinal", 1);
+            flip.addProperty("outcome", true);
+            focus.add("flip", flip);
+            JsonArray inherited = new JsonArray();
+            String parent = (String) world[3];
+            if (!parent.isEmpty()) {
+                JsonObject one = new JsonObject();
+                one.addProperty("focusedOccurrenceId", other.id());
+                one.addProperty("siteId", parent.substring(0,
+                        parent.indexOf('@')));
+                one.addProperty("ordinal", 1);
+                one.addProperty("outcome", true);
+                one.addProperty("obligationId", "PARENT");
+                inherited.add(one);
+            }
+            focus.add("inheritedFlips", inherited);
+            Path epoch = iteration.newFolder().toPath();
+            rows.read(epoch);
+            Path worker = epoch.resolve("obligations-0000").resolve("w");
+            Files.createDirectories(worker);
+            Files.write(worker.resolve(ObligationDir.FOCUSED_TASK),
+                    Collections.singletonList(focus.toString()));
+            Files.write(worker.resolve(ObligationDir.RESULT),
+                    Collections.singletonList(RowCodec.toLine(
+                            RowCodec.writeObligationResult(ObligationResult
+                                    .of("OBL.s-gate", Verdict.ADMITTED,
+                                            "s-gate", "fixture")))));
+            Path ledger = epoch.resolve("gated");
+            Path filed = epoch.resolve("gaps.jsonl");
+            ImportGateMain.gate(epoch, Collections.singletonList(
+                    new ImportGateMain.Gate(SessionDir.of(epoch, "s-gate")
+                            .dir(), Collections.singletonList(worker))),
+                    Collections.<String>emptySet(), ledger, filed, "e");
+            JsonArray recorded = com.google.gson.JsonParser.parseString(
+                    new String(Files.readAllBytes(ledger.resolve("s-gate"
+                            + ImportGateMain.RECORD)), StandardCharsets.UTF_8))
+                    .getAsJsonObject().getAsJsonArray("unstated");
+            String want = ((String) world[4]).replace("OWN",
+                    rows.anchor.id()).replace("OTHER", other.id());
+            List<String> said = new ArrayList<String>();
+            for (int at = 0; at < recorded.size(); at++) {
+                said.add(recorded.get(at).getAsString());
+            }
+            assertEquals(Arrays.toString(world), want.isEmpty()
+                    ? Collections.<String>emptyList()
+                    : Collections.singletonList(want), said);
+            long tenth = Files.exists(filed) ? Files.readAllLines(filed)
+                    .stream().filter(line -> line.contains("invariant 10"))
+                    .count() : 0L;
+            assertEquals(Arrays.toString(world), said.size(), tenth);
+        }
+    }
+
+    @Test
     public void aTimedWaitTurnIsNamedByItsFamily() {
         StableEventNames names = new StableEventNames();
         assertEquals(names.context("n0|Root:WAKE/peek#3|<A: void a()>@2"),

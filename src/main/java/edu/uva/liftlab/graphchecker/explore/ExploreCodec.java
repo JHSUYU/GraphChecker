@@ -6,6 +6,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import edu.uva.liftlab.graphchecker.contract.Flip;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
@@ -61,12 +62,11 @@ public final class ExploreCodec {
         json.add("answers", strings(obligation.answers()));
         json.add("unproducible", list(obligation.unproducible()));
         if (obligation.force()) json.addProperty(FORCE, true);
-        if (obligation.rerun()) json.addProperty(RERUN, true);
+        if (obligation.rerun()) json.addProperty(Flip.RERUN, true);
         return json;
     }
 
     static final String FORCE = "force";
-    static final String RERUN = "rerun";
     static final String WORLD = "world";
 
     public static Obligation readObligation(JsonObject json) {
@@ -75,7 +75,7 @@ public final class ExploreCodec {
                     optionalString(json, "taskId"),
                     optionalString(json, "pathId"));
         }
-        if (optionalBool(json, RERUN, false)) {
+        if (optionalBool(json, Flip.RERUN, false)) {
             return Obligation.rerunning(optionalString(json, "obligationId"),
                     optionalString(json, "taskId"),
                     optionalString(json, "pathId"),
@@ -105,7 +105,7 @@ public final class ExploreCodec {
                                     String seedSessionId,
                                     List<OccurrenceAddress> factor,
                                     Obligation obligation,
-                                    List<Corpus.Flip> inheritedFlips,
+                                    List<Flip> inheritedFlips,
                                     Map<String, String> clockDeltas,
                                     Map<String, String> rootMints,
                                     Map<String, String> pairings,
@@ -134,7 +134,7 @@ public final class ExploreCodec {
         }
         row.add("flip", flip);
         JsonArray inherited = new JsonArray();
-        for (Corpus.Flip carried : inheritedFlips) {
+        for (Flip carried : inheritedFlips) {
             inherited.add(writeFlip(carried));
         }
         row.add("inheritedFlips", inherited);
@@ -156,31 +156,13 @@ public final class ExploreCodec {
     }
 
     public static Corpus.World readWorld(JsonObject json) {
-        List<Corpus.Flip> flips = new ArrayList<Corpus.Flip>();
-        JsonObject own = object(json, "flip");
-        if (own.has("siteId") && !optionalBool(json, RERUN, false)) {
-            flips.add(readFlip(own, json));
-        }
-        for (JsonElement element : array(json, "inheritedFlips")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject flip = element.getAsJsonObject();
-            flips.add(readFlip(flip, flip));
-        }
         return new Corpus.World(map(object(json, "rootAssignments")),
                 map(object(json, "clockDeltas")),
                 map(object(json, "answers")),
-                map(object(json, "pairings")), flips);
+                map(object(json, "pairings")), Flip.world(json));
     }
 
-    private static Corpus.Flip readFlip(JsonObject flip, JsonObject owner) {
-        return new Corpus.Flip(optionalString(owner, "focusedOccurrenceId"),
-                optionalString(flip, "siteId"),
-                optionalInteger(flip, "ordinal", 0),
-                optionalBool(flip, "outcome", false),
-                optionalString(owner, "obligationId"));
-    }
-
-    public static JsonObject writeFlip(Corpus.Flip flip) {
+    public static JsonObject writeFlip(Flip flip) {
         JsonObject json = new JsonObject();
         json.addProperty("focusedOccurrenceId", flip.focusedOccurrenceId);
         json.addProperty("siteId", flip.siteId);
