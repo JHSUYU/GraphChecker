@@ -974,11 +974,18 @@ which no ORDER holds". The cause is not CONFIRM's planning, as H3 read it from t
    (`TERMINAL_NEVER_REACHED`), it published no row, only mints, and the swap put the re-run's session in. The
    `#u21#1 = true` rows the re-run states at `peer1#epoch1` are life 2's own replay, another occurrence. Every flip
    cut from the re-run inherited an unstated flip and was refused, BLOCKING (79 obligations in Z9, most on life 2's
-   paths, its TRUNC-sync decisions among them), and the world's life-3 target path left the formula. Fix (PIPELINE
+   paths, its TRUNC-sync decisions among them). Fix (PIPELINE
    §7.8): a re-run takes its exposing session's place only if it states every flip that session states (the gate's
    ledger keeps each session's unstated flips, invariant 10); else it is dropped, the first replay stays, and the
    drop is a named bound (`world-unstated=<n>`, `grow_rerun_world_unstated`): life 2's flips in that world are asked
-   by no session, which this corpus no longer states.
+   by no session, which this corpus no longer states. T2 (`/bulk/gc-out/zk-agenttr/accept-T2-bugs-trunc-sync`,
+   snapshot `/bulk/gc-run/zktr-2` = 64b440834, alone, 3505 s): the rule dropped two re-runs (257811a1c73f2c3f's,
+   stranded the same way, and 9bab8ac7fbe2d282's, NOT_ADMITTED: its test failed before the flip's occurrence ran),
+   their first replays stayed (uncaptured), the four flips cut from 257811a1c73f2c3f's first replay (life 3's
+   `Learner.readSyncPacket#u4` #1-#3, `createInputArchive#u9#1`) were ADMITTED; UNSAT_CLOSED at FIXED_POINT in 84
+   rounds, no BLOCKING gap, no defect, z3 unsat on the file, 17 paths, 135 leaves, vacuity.py substantive (1 of 17
+   paths free), BOUNDED by `region_path_max_world_depth` and `grow_rerun_world_unstated`. The world
+   {`#u21#1 -> true`} reaches no anchor in either replay, so it composes no path either way.
 3. **The CPU-aware ledger and replay fidelity**: packing the CPUs fuller (PARALLEL §8) gives the order's watchdog less
    CPU per replay; watch the give-up counts (`round-status.sh`'s giveups, `of an order of ... given up`) against
    `cpu-<round>.txt` when the busy share rises.

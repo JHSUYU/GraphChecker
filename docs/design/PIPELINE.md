@@ -2274,8 +2274,10 @@ withdrew the one that did. zk-bugs-trunc-sync Z4 and Z9: the re-run of `ZKDataba
 #u21#1 -> true` at the follower's third life's `runFromConfig` (the declared occurrence) planned its
 second life, failed its test ("server 1 stopped before it synced") while that `runFromConfig` still
 joined its peer, published no row of the flip's occurrence (`TERMINAL_NEVER_REACHED`) and replaced the
-first replay, which stated it; each flip cut from it was refused, BLOCKING, and the world's target path
-left the formula.
+first replay, which stated it; each flip cut from it was refused, BLOCKING. T2 (`zk-fixtrunc` 64b440834):
+the first replay stays, the flips cut from it (life 3's TRUNC-sync FAULT `Learner.readSyncPacket#u4` #1-#3
+among them) are asked and ADMITTED, and the claim is BOUNDED by `grow_rerun_world_unstated` for the flips
+on life 2 in that world, which no session states.
 
 EVERY RE-RUN HOLDS THE FIXED POINT, whatever its world's depth (`campaign_stream_idle`): the exploration
 is at its fixed point only once no re-run is queued, running, swapping or owed its gate, and a growth that
