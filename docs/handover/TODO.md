@@ -76,7 +76,7 @@ flipped activation published no rows. Today's corpora of 07 (CC7), 11741 (AW5), 
 no stranded activation, so either touches only perpetual bodies like 21's actor.
 (b) is in (branch `zk-fixtrunc`, PIPELINE §7.4 "cut from by no flip query"): a session whose world holds a flip at
 an occurrence it states no decision of offers no flip query (its pairing flips still), one DIAGNOSTIC
-`WORLD_UNSTATED` row a round, for zk-bugs-trunc-sync's BLOCKING row (TODO ZooKeeper on CloudLab 2). (a) stays
+`WORLD_UNSTATED` row a round; it removed zk-bugs-trunc-sync's BLOCKING row (T1, TODO ZooKeeper on CloudLab 2). (a) stays
 open: the nested worlds below such a session are not asked.
 
 
@@ -978,7 +978,10 @@ which no ORDER holds". The cause is not CONFIRM's planning, as H3 read it from t
    cut from the re-run then inherited an unstated flip (life 2's TRUNC-sync FAULT among them) and was
    refused, BLOCKING. Fix: TODO HDFS §4 (b), PIPELINE §7.4: such a session offers no flip query, DIAGNOSTIC
    `WORLD_UNSTATED`. What it leaves unasked is the second counterfactual on top of that world, which no session
-   could state.
+   could state. T1 (`/bulk/gc-out/zk-agenttr/accept-T1-bugs-trunc-sync`, snapshot `/bulk/gc-run/zktr-1` = c01b70c0c,
+   alone, 4284 s): the same obligation's re-run stranded the same way (session `ea4a3130`, WORLD_UNSTATED rounds
+   28-96), UNSAT_CLOSED at FIXED_POINT in 97 rounds, no BLOCKING gap, no defect, z3 unsat on the file, 19 paths and
+   148 leaves as Z9, vacuity.py substantive (1 of 19 paths free), BOUNDED by `region_path_max_world_depth` as Z9.
 3. **The CPU-aware ledger and replay fidelity**: packing the CPUs fuller (PARALLEL §8) gives the order's watchdog less
    CPU per replay; watch the give-up counts (`round-status.sh`'s giveups, `of an order of ... given up`) against
    `cpu-<round>.txt` when the busy share rises.
