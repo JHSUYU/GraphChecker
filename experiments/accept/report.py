@@ -62,6 +62,7 @@ EXPECTED_MECHANISM = {
     "hdfs-buggy-15590": {"kinds": ("MARKER_FLIPPED",),
                          "root": "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED",
                          "value": "false"},
+    "hdfs-buggy-17383": RPC_FAILURE,
     "hdfs-11741":      {"kinds": ("CLOCK_SKEW", "MARKER_FLIPPED")},
     "hdfs-17899-bug1": RPC_FAILURE,
     "hdfs-17899-bug2": RPC_FAILURE,
