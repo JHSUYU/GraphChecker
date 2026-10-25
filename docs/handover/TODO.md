@@ -966,7 +966,10 @@ which no ORDER holds". The cause is not CONFIRM's planning, as H3 read it from t
        13-15 rounds (578-626 obligation verdicts). COMPOSE then times out (z3 unknown on all 16 valuations), so the
        claim is RUN_DEFECT `formula:timeout`. The cost comes from one re-election world cut from the seed (flip
        `Learner.readSyncPacket#u4#3`), not from the rows answered by shape: z3 blows up elaborating chained
-       `assoc_remove` over AssocState (handled separately).
+       `assoc_remove` over AssocState, held in the query only by the Java int ranges of 127 MBean-name lengths
+       nothing else read. Fixed by 08580a83c (a length's range is the side condition of its use, PIPELINE §7.5):
+       A1's formula 1.2 MB to 167 KB, its 16 valuations unsat and its 10 paths' own runs sat offline. The removal
+       encoding stays (item 4).
    - zk-adhoc-12 runs the same workload; its closure (16 tasks, QuorumPeer) does not pass through the leader.
 2. **zk-bugs-trunc-sync's inherited flip** (Z4, 8247 s; Z9 alone, 4884 s): the formula decides UNSAT_CLOSED (5094 not
    detected, as on liftlab), but both runs name one BLOCKING ADMISSION_GAP on the same obligation 257811a1c73f2c3f:
@@ -978,6 +981,16 @@ which no ORDER holds". The cause is not CONFIRM's planning, as H3 read it from t
 3. **The CPU-aware ledger and replay fidelity**: packing the CPUs fuller (PARALLEL §8) gives the order's watchdog less
    CPU per replay; watch the give-up counts (`round-status.sh`'s giveups, `of an order of ... given up`) against
    `cpu-<round>.txt` when the busy share rises.
+4. **A map removal's encoding is exponential in z3 on a long chain that an order reader keeps** (not merged; branch
+   `zk-compose` 16aa8b027). `assoc_remove_if` writes the new order and position as two lambdas over the previous
+   state's arrays, and z3's first simplifier pass grows about threefold per removal (a put/remove pair chain: n=8
+   0.7 s, n=12 51 s, n=20 past 300 s; the 06 reduction's 42 removals not parsed in 120 s). 16aa8b027 writes a removal
+   over a chain from the empty map element by element (`ContainerStateModel#removed`, the chain's put keys carried
+   on the term): n=40 pairs in 8.9 s, A1's composition decided with or without 08580a83c. Not merged: once
+   08580a83c dropped the dead length ranges, no examined formula keeps such a chain under an order reader, and the
+   cells it passes grow unordered queries 0-20 %, which moved zk-bugs-container-reuse's valuation-0 witness to
+   another satisfying path (CONFIRM not re-run on it). Take it when a case's COMPOSE times out on a removal chain
+   (`grep -c assoc_remove` in its `candidate.smt2`); a chain over an opaque base keeps the lambdas there too.
 
 ## ZooKeeper (`system/zookeeper`; finished 2026-10-21 -- what is left; DRAFT)
 
