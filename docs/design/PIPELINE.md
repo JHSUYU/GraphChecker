@@ -2004,9 +2004,9 @@ peer with the ceilings): one file per live charge, `charges/<mb>.<cores x 100>.<
 both `Σ live charges + held + need ≤ L` and `MemTotal − MemAvailable + held + need ≤ L`, where `L`
 is `CAUSYNTH_HOST_MAX_USED_PCT` (70) percent of `MemTotal` and `held` the room a head holds there
 (below), AND either no live charge keeps a core busy or `busy + cores ≤ C`, where `busy` is the host's live
-charged cores, or, from a reading under 30 s old that carries the host's load, the load plus the cores charged in
-the last 120 s where that is fewer (`campaign_host_busy_cores`: an idle resident solver keeps its two cores
-charged; PARALLEL §8), and `C` is
+charged cores, or, from a reading under 30 s old that carries the host's load, the load plus what the live
+charges have yet to add to it, each charge's cores x e^(-age/60 s), the 1-minute load's own decay, where that is
+fewer (`campaign_host_busy_cores`: an idle resident solver keeps its two cores charged; PARALLEL §8), and `C` is
 `CAUSYNTH_HOST_MAX_CORES_PCT` (100) percent of the host's `nproc` (`campaign_host_core_limit`, the
 host's `cores` file), so a start larger than `C` still runs on a host whose charges keep no core busy
 (`campaign_host_fits`): no start leaves a host more than 70 % charged or used, or more cores charged
