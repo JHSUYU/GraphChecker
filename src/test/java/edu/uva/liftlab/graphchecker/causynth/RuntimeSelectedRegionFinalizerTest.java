@@ -2,12 +2,14 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import static org.junit.Assert.assertEquals;
 
+import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import org.junit.Test;
 
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
 
@@ -95,6 +97,35 @@ public class RuntimeSelectedRegionFinalizerTest {
                 gaps.add(subject.substring(subject.indexOf(' ') + 1));
             }
             assertEquals(label, row[3], gaps.toString());
+        }
+    }
+
+    @Test
+    public void aPlannedOccurrenceIsAloneInAContextTheRecordingOpenedItsRegionInOnce() {
+        String region = "auto0/peer2#epoch0/region/REGION.lead/ctx:";
+        String turn = region + "Root:CLIENT/test#1/idx:a.W#run#292@4";
+        String again = region + "Root:CLIENT/test#1/idx:a.W#run#292@5";
+        String other = region + "Root:CLIENT/test#2/idx:a.W#run#292@1";
+        Map<String, Map<String, Object>> instances = new LinkedHashMap<>();
+        for (String address : Arrays.asList(turn, again, other)) {
+            instances.put(address, new LinkedHashMap<String, Object>());
+        }
+        RuntimeSelectedRegionFinalizer.stateShapes(instances,
+                Arrays.asList(turn, other),
+                context -> ContextShape.of(context, producer -> null));
+        Object[][] table = {
+            {turn, false, ids(again, other)},
+            {other, true, ids(turn, again)},
+        };
+        for (Object[] row : table) {
+            Map<String, Object> planned = instances.get((String) row[0]);
+            assertEquals((String) row[0], row[1], planned.get(
+                    RuntimeSelectedRegionFinalizer.ALONE_IN_CONTEXT));
+            @SuppressWarnings("unchecked")
+            List<String> beside = (List<String>) planned.get(
+                    RuntimeSelectedRegionFinalizer.RECORDED_BESIDE);
+            assertEquals((String) row[0], row[2],
+                    new TreeSet<>(beside).toString());
         }
     }
 

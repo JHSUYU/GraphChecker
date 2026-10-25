@@ -200,7 +200,10 @@ final class ConcolicTaskPlan {
         return index != null && answeredByShape[index];
     }
 
-    private static boolean earlier(RuntimeTask task, RuntimeTask other) {
+    private static boolean before(RuntimeTask task, RuntimeTask other,
+                                  OccurrenceAddress observed) {
+        boolean own = task.plannedIn(observed);
+        if (own != other.plannedIn(observed)) return own;
         return task.recordedRootCall >= 0L && (other.recordedRootCall < 0L
                 || task.recordedRootCall < other.recordedRootCall);
     }
@@ -262,7 +265,7 @@ final class ConcolicTaskPlan {
                     continue;
                 }
                 if (shaped && (answering == null
-                        || earlier(task, answering))) {
+                        || before(task, answering, refused.observed))) {
                     if (answering != null) {
                         answering.noteUnaddressedCandidate(answered);
                     }
@@ -329,7 +332,8 @@ final class ConcolicTaskPlan {
                 if (!candidateLive[index]
                         && task.answers(refused.observed, shapes)
                         && (answering < 0
-                        || earlier(task, tasks.get(answering)))) {
+                        || before(task, tasks.get(answering),
+                        refused.observed))) {
                     if (answering >= 0) {
                         tasks.get(answering).noteUnaddressedCandidate(
                                 answered);
@@ -372,7 +376,7 @@ final class ConcolicTaskPlan {
                     activationSource));
             return false;
         }
-        if (occupies(rootHookGroupKey, answered.observed)
+        if (occupies(task, rootHookGroupKey, answered.observed)
                 || Identity.openedNone()) {
             task.noteUnaddressedCandidate(answered);
             return false;
@@ -407,15 +411,13 @@ final class ConcolicTaskPlan {
         return admitted;
     }
 
-    boolean occupies(String rootHookGroupKey, OccurrenceAddress address) {
+    private boolean occupies(RuntimeTask answering, String rootHookGroupKey,
+                             OccurrenceAddress address) {
         for (RuntimeTask task : tasks) {
-            if (task.address != null
-                    && task.rootHookGroup.equals(
-                    nonNull(rootHookGroupKey))
-                    && task.address.regionId().equals(address.regionId())
-                    && task.address.node().equals(address.node())
-                    && task.address.context().render().equals(
-                    address.context().render())) {
+            if (task.rootHookGroup.equals(nonNull(rootHookGroupKey))
+                    && task.plannedIn(address)
+                    && (task != answering || !task.aloneInContext
+                    || !task.countsAloneDiffer(address))) {
                 return true;
             }
         }
@@ -753,6 +755,7 @@ final class ConcolicTaskPlan {
         final OccurrenceAddress address;
         final List<String> shape;
         final Set<String> recordedBeside;
+        final boolean aloneInContext;
         final long recordedRootCall;
         final String rootMethod;
         final RootContextSelector rootContextSelector;
@@ -824,6 +827,8 @@ final class ConcolicTaskPlan {
                 recorded.add(id.getAsString());
             }
             this.recordedBeside = Collections.unmodifiableSet(recorded);
+            this.aloneInContext = optionalBool(task.json(),
+                    RuntimeSelectedRegionFinalizer.ALONE_IN_CONTEXT, false);
             this.recordedRootCall = optionalLongInteger(task.json(),
                     DeclaredSiteCapture.ROOT_CALL_ID, -1L);
             this.rootMethod = task.rootMethod();
@@ -981,6 +986,27 @@ final class ConcolicTaskPlan {
                     && observed.node().equals(address.node())
                     && ContextShape.answers(observed, address,
                     shapes.apply(observed.context()), shape);
+        }
+
+        boolean plannedIn(OccurrenceAddress observed) {
+            return address != null && observed != null
+                    && address.regionId().equals(observed.regionId())
+                    && address.node().equals(observed.node())
+                    && address.context().render().equals(
+                    observed.context().render());
+        }
+
+        boolean countsAloneDiffer(OccurrenceAddress observed) {
+            List<Frame> planned = address.index().frames();
+            List<Frame> ran = observed.index().frames();
+            if (planned.size() != ran.size()) return false;
+            for (int at = 0; at < planned.size(); at++) {
+                if (!planned.get(at).callSite().equals(
+                        ran.get(at).callSite())) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         boolean recorded(OccurrenceAddress observed) {

@@ -942,24 +942,32 @@ which no ORDER holds". The cause is not CONFIRM's planning, as H3 read it from t
 
 ## ZooKeeper on CloudLab (`system/zookeeper-cloudlab`, 2026-10-25)
 
-1. **zk-adhoc-06 does not replay its recorded election on CloudLab** (RUN_DEFECT at REPLAY in Z1, Z3, Z4, Z5-Z8: five
-   recordings, quiet nodes or busy, every seed replay gave up 239-319 of 514-573 slots and reached no TARGET_REACH).
+1. **zk-adhoc-06's recorded election did not replay on CloudLab -- REPLAY fixed on branch `zk-fix06` (not merged);
+   the case now stops at COMPOSE.** (RUN_DEFECT at REPLAY in Z1, Z3, Z4, Z5-Z8: no seed replay reached TARGET_REACH.)
    The leader's work is a hand-off continuation of the receiver turn that delivered the deciding notification, so
-   every leader-side occurrence's address names that turn: `FastLeaderElection$Messenger$WorkerReceiver.run#u292@k`
-   (IDENTITY's queue hand-off). How many notifications reach peer2 before it decides depends on the adapter's election
-   wakes (`CausynthNodes.electionWake`: on a peer's start and on each new quorum connection, a `CAUSYNTH_WAKE` queue
-   offer that resends the vote): queue offers from other threads that no order slot holds. CloudLab's recordings
-   (`recorded_schedule.jsonl`: both peers send twice before any connection) decide on turn 4, the replays on turn 3
-   (peer1's third `sendNotifications`, slot 89, never comes), and then every leader-side slot of 06's 58-task closure
-   (Leader, LearnerHandler, StateSummary: the request throttler, the prep processor, the learner handler) carries
-   `@3`, so half the order is given up and the target (peer2's `Leader#waitForEpochAck`) runs at an address the seed's
-   TARGET task refuses (OCCURRENCE_ANCHOR_UNMATCHED: "differs in frame 8 of 19 ... at iteration 3 and not the planned
-   4"). liftlab's seed decided on turn 2 and replayed it. zk-adhoc-12 runs the same workload, but its closure (16 tasks,
-   QuorumPeer) does not pass through the leader, and replays. Two ways, each a change for every quorum case and a full
-   round: order the wakes (a wake is the election's own work start, held by its slot), or name a taken queue item by
-   its producer's sends (sender, per-sender ordinal) rather than the consumer's turn count. The seed's TARGET task did
-   not take the turn-3 chain by shape although its `contextShape ['Root:CLIENT/test']` matched and nothing was
-   recorded beside it: read `ConcolicTaskPlan#select`/`answeredHere` too.
+   every leader-side address holds `FastLeaderElection$Messenger$WorkerReceiver.run#u292@k`. How many notifications
+   peer2 takes before it decides depends on the adapter's election wakes (`CausynthNodes.electionWake`, a
+   `CAUSYNTH_WAKE` offer that resends the vote), which no order slot holds: the recordings decide on turn 3 or 4, the
+   replays one or two turns earlier. Every leader-side occurrence (the target, LearnerHandler's
+   `Leader#waitForEpochAck`, included) then ran in its planned context with only that count different. The shape
+   rule took it (`RuntimeTask#answers`), and `ConcolicTaskPlan#occupies` refused it because it matched the answering
+   task itself, so in a task's own context an index whose counts alone differ was never answered.
+   - **Fix (98e4122e8 + review fixes):** PLAN states `aloneInContext` (the recording opened the region on its node
+     in that very context once, `RuntimeSelectedRegionFinalizer#stateShapes`). The answering task's own context
+     answers it only then, and only at an index of the planned frames' depth and call sites
+     (`RuntimeTask#countsAloneDiffer`). Another task's context still answers nothing (hdfs-11741 K2), and the task
+     planned in the activation's own context goes first (`ConcolicTaskPlan#before`). GROW-exposed tasks
+     (`ExposedRegionPlanMain#planRow`) carry no context shape, so this rule never reaches them.
+   - **Runs** (`/bulk/gc-out/zk-agent06/accept-A<n>-adhoc-06`, snapshot `/bulk/gc-run/zk06-1`):
+     - Seed only: A2 (recorded `@3`, replayed `@2`) and A3 (recorded `@4`, replayed `@2`) answer 25 leader-side
+       occurrences by shape, reach the target and pass IMPORT; the seed replay gives up 178-192 slots in 47-50
+       stalls.
+     - Full: A1 (recorded and replayed `@3`), A4 (`@4`/`@2`) and A5 (`@3`/`@2`) explore to FIXED_POINT in
+       13-15 rounds (578-626 obligation verdicts). COMPOSE then times out (z3 unknown on all 16 valuations), so the
+       claim is RUN_DEFECT `formula:timeout`. The cost comes from one re-election world cut from the seed (flip
+       `Learner.readSyncPacket#u4#3`), not from the rows answered by shape: z3 blows up elaborating chained
+       `assoc_remove` over AssocState (handled separately).
+   - zk-adhoc-12 runs the same workload; its closure (16 tasks, QuorumPeer) does not pass through the leader.
 2. **zk-bugs-trunc-sync's inherited flip** (Z4, 8247 s; Z9 alone, 4884 s): the formula decides UNSAT_CLOSED (5094 not
    detected, as on liftlab), but both runs name one BLOCKING ADMISSION_GAP on the same obligation 257811a1c73f2c3f:
    "the session this path was cut from states no decision for the flip it inherited:

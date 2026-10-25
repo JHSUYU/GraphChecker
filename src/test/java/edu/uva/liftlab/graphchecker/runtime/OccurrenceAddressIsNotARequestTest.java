@@ -9,6 +9,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
@@ -21,7 +22,10 @@ import edu.uva.liftlab.graphchecker.contract.Role;
 import java.io.InputStreamReader;
 import java.io.Reader;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 import java.util.Set;
 import org.junit.After;
 import org.junit.Before;
@@ -236,6 +240,176 @@ public class OccurrenceAddressIsNotARequestTest {
                 () -> RuntimeTraceContext.outboundHeader(nnc, partial),
                 "a partial scope holding only", "source=" + SPS + "#epoch0",
                 "!requestKey=");
+    }
+
+    @Test
+    public void aContextAnswersItsOwnOccurrenceWhoseCountsAloneDiffer() {
+        RecordingWindow.open();
+        Object client = new Object();
+        RuntimeTraceContext.registerSource(client,
+                new SourceRef("CLIENT", "client", CLIENT, 0L));
+        long call = RuntimeTraceContext.beginRequest(client, "failover");
+        try {
+            Identity.enterFrame("a.WorkerReceiver#run#292", client);
+            OccurrenceAddress ran = Identity.occurrence(CLIENT + "#epoch0",
+                    SNAPSHOT_REGION, false);
+            assertEquals(1, ran.index().frames().size());
+            Frame turn = ran.index().frames().get(0);
+            CausalContext other = elsewhere(ran);
+            assertEquals("another context of the same shape",
+                    ScheduleLog.shape(ran.context()),
+                    ScheduleLog.shape(other));
+            ConcolicTaskPlan.RuntimeTask own = shaped("TASK.own", ran,
+                    ran.context(), turn.iteration() + 1, 2L, true);
+            ConcolicTaskPlan alone = new ConcolicTaskPlan(null,
+                    singletonList(own));
+            assertEquals("the recording opened the region in this context"
+                    + " once: the turn it ran under is the planned one", own,
+                    alone.select(own.rootHookGroup, SNAPSHOT_ROOT, client,
+                            new Object[0]));
+            assertTrue(alone.answeredByShape(own));
+
+            ConcolicTaskPlan.RuntimeTask loop = shaped("TASK.loop", ran,
+                    ran.context(), turn.iteration() + 1, 2L, false);
+            assertNull("in a context the recording opened the region in"
+                    + " again, an invocation whose counts differ may be any"
+                    + " of them", new ConcolicTaskPlan(null,
+                    singletonList(loop)).select(loop.rootHookGroup,
+                    SNAPSHOT_ROOT, client, new Object[0]));
+
+            ConcolicTaskPlan.RuntimeTask strayed = shaped("TASK.strayed",
+                    ran, ran.context(), ExecutionIndex.of(singletonList(
+                            Frame.of("a.Retry#run#9", turn.iteration()))),
+                    2L, true);
+            ConcolicTaskPlan.RuntimeTask deeper = shaped("TASK.deeper", ran,
+                    ran.context(), at(ran, turn.iteration() + 1,
+                            Frame.of("a.B#f#3", 0)), 2L, true);
+            for (ConcolicTaskPlan.RuntimeTask path : Arrays.asList(strayed,
+                    deeper)) {
+                assertNull("an invocation reached by another path than the"
+                        + " planned one is not it: " + path.taskId,
+                        new ConcolicTaskPlan(null, singletonList(path))
+                                .select(path.rootHookGroup, SNAPSHOT_ROOT,
+                                        client, new Object[0]));
+            }
+
+            ConcolicTaskPlan.RuntimeTask first = shaped("TASK.first", ran,
+                    ran.context(), turn.iteration() + 1, 2L, true);
+            ConcolicTaskPlan.RuntimeTask second = shaped("TASK.second", ran,
+                    ran.context(), turn.iteration() + 2, 3L, true);
+            assertNull("two tasks of the context: neither is answered",
+                    new ConcolicTaskPlan(null, Arrays.asList(first, second))
+                            .select(first.rootHookGroup, SNAPSHOT_ROOT,
+                                    client, new Object[0]));
+
+            ConcolicTaskPlan.RuntimeTask elsewhere = shaped("TASK.elsewhere",
+                    ran, other, turn.iteration(), 1L, true);
+            ConcolicTaskPlan.RuntimeTask here = shaped("TASK.here", ran,
+                    ran.context(), turn.iteration() + 1, 2L, true);
+            ConcolicTaskPlan both = new ConcolicTaskPlan(null,
+                    Arrays.asList(elsewhere, here));
+            assertEquals("its own context's task, not the earlier task of"
+                    + " another context", here, both.select(
+                    here.rootHookGroup, SNAPSHOT_ROOT, client, new Object[0]));
+
+            ConcolicTaskPlan.RuntimeTask done = shaped("TASK.done", ran,
+                    ran.context(), turn.iteration() + 1, 2L, true);
+            done.reserveCompletedEvidence();
+            ConcolicTaskPlan.RuntimeTask open = shaped("TASK.open", ran,
+                    other, turn.iteration(), 1L, true);
+            assertNull("a context whose task is done answers no other task",
+                    new ConcolicTaskPlan(null, Arrays.asList(open, done))
+                            .select(open.rootHookGroup, SNAPSHOT_ROOT, client,
+                                    new Object[0]));
+            assertTrue(open.unansweredAddress(), open.unansweredAddress()
+                    .startsWith("1 compatible activation(s)"));
+        } finally {
+            RuntimeTraceContext.endRequest(call);
+        }
+    }
+
+    @Test
+    public void aLoopBodysOwnContextAnswersItBeforeAnEarlierTaskOfAnother()
+            throws Exception {
+        RecordingWindow.open();
+        Object nameNode = new Object();
+        RuntimeTraceContext.registerSource(nameNode,
+                new SourceRef("NAMENODE", "nn", NAMENODE, 0L));
+        long call = RuntimeTraceContext.beginRequest(nameNode, "heartbeat");
+        try {
+            Identity.enterFrame("a.Keys#updateKeys#7", nameNode);
+            ConcolicTaskPlan.RuntimeTask probe = runtime(row());
+            OccurrenceAddress ran = Identity.occurrence(NAMENODE + "#epoch0",
+                    probe.regionId, false);
+            int turn = ran.index().frames().get(0).iteration();
+            CausalContext other = elsewhere(ran);
+            assertEquals("another context of the same shape",
+                    ScheduleLog.shape(ran.context()),
+                    ScheduleLog.shape(other));
+            ConcolicTaskPlan.RuntimeTask earlier = loopShaped(
+                    "TASK.SEED.earlier", ran, other, turn, 1L);
+            ConcolicTaskPlan.RuntimeTask here = loopShaped("TASK.SEED.here",
+                    ran, ran.context(), turn + 1, 2L);
+            ConcolicTaskPlan.LoopRootAdmission admission =
+                    new ConcolicTaskPlan(null, Arrays.asList(earlier, here))
+                            .addressLoopRootInvocation(here.loopRootHookGroup,
+                                    here.rootMethod, null, new Object[0], 11L);
+            assertEquals(here, admission.answered);
+            assertEquals(Collections.singleton(here.taskId),
+                    admission.admitted);
+            assertEquals(11L, here.enclosingInvocationEvent());
+        } finally {
+            RuntimeTraceContext.endRequest(call);
+        }
+    }
+
+    private static CausalContext elsewhere(OccurrenceAddress ran) {
+        CausalContext.Root root = (CausalContext.Root) ran.context();
+        return CausalContext.of(root.role(), root.api(), 7);
+    }
+
+    private static ConcolicTaskPlan.RuntimeTask loopShaped(String taskId,
+            OccurrenceAddress ran, CausalContext context, int turn,
+            long rootCall) throws Exception {
+        JsonObject encoded = row();
+        encoded.addProperty("taskId", taskId);
+        encoded.addProperty("occurrenceId", OccurrenceAddress.of(ran.node(),
+                ran.regionId(), context, at(ran, turn)).render());
+        return runtime(stated(encoded, context, rootCall, true));
+    }
+
+    private static ConcolicTaskPlan.RuntimeTask shaped(String taskId,
+            OccurrenceAddress ran, CausalContext context, int turn,
+            long rootCall, boolean alone) {
+        return shaped(taskId, ran, context, at(ran, turn), rootCall, alone);
+    }
+
+    private static ConcolicTaskPlan.RuntimeTask shaped(String taskId,
+            OccurrenceAddress ran, CausalContext context, ExecutionIndex index,
+            long rootCall, boolean alone) {
+        return runtime(stated(encoded(taskId, CLIENT + "#epoch0",
+                SNAPSHOT_REGION, SNAPSHOT_ROOT, OccurrenceAddress.of(
+                        ran.node(), ran.regionId(), context, index).render(),
+                1), context, rootCall, alone));
+    }
+
+    private static JsonObject stated(JsonObject row, CausalContext context,
+                                     long rootCall, boolean alone) {
+        JsonArray shape = new JsonArray();
+        for (String hop : ScheduleLog.shape(context)) shape.add(hop);
+        row.add("contextShape", shape);
+        row.add("recordedBeside", new JsonArray());
+        row.addProperty("aloneInContext", alone);
+        row.addProperty("rootCallId", rootCall);
+        return row;
+    }
+
+    private static ExecutionIndex at(OccurrenceAddress ran, int turn,
+                                     Frame... below) {
+        List<Frame> frames = new ArrayList<Frame>();
+        frames.add(Frame.of(ran.index().frames().get(0).callSite(), turn));
+        frames.addAll(Arrays.asList(below));
+        return ExecutionIndex.of(frames);
     }
 
     private static void refuses(String why, Runnable send, String... says) {

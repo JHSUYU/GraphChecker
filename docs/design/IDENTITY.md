@@ -1090,18 +1090,28 @@ runs in the test's own scope, at the client in both passes, and a second rule th
 receiver's registration for where it ran refused it). Every planned occurrence is also answered by
 its shape. PLAN states on each plan row its context's shape over the recording's senders
 (`contextShape`, `causynth/RuntimeSelectedRegionFinalizer#stateShapes`, `RecordedMessages#shape`), its
-recorded root call (`rootCallId`) and the ids of the other occurrences the recording opened in its
-region on its node under that shape (`recordedBeside`). **The order rule:** an activation takes the
-task whose address it ran at; else the earliest task by recorded root call, of its root hook group,
-region and node, not yet live or done, whose shape its own context has hop for hop
-(`ConcolicTaskPlan#earlier`, `RuntimeTask#answers`), so a run's activations of one shape answer
+recorded root call (`rootCallId`), the ids of the other occurrences the recording opened in its
+region on its node under that shape (`recordedBeside`), and whether none of them is in its very
+context (`aloneInContext`). **The order rule:** an activation takes the
+task whose address it ran at; else, of the tasks of its root hook group, region and node, not yet
+live or done, whose shape its own context has hop for hop (`RuntimeTask#answers`), the one planned
+in its very context, else the earliest by recorded root call (`ConcolicTaskPlan#before`), so a run's
+activations of one shape answer
 the planned tasks of that shape one to one, in order, and never two tasks one activation nor one
 task two activations. An activation so answering must also pass three tests (`#answeredHere`): its
-context is one no task of that root plans an occurrence of the region in (`ConcolicTaskPlan#occupies`:
+context is one no other task of that root plans an occurrence of the region in (`ConcolicTaskPlan#occupies`:
 not its address, and not another invocation under the same anchor, which is the planned
 occurrence's; hdfs-11741 K2: the second `handle()` call of one balancer handshake, under the anchor
 of that handshake's planned first call, answered the declared second handshake, which then ran
-unplanned), its address is none the recording opened itself (`RuntimeTask#recorded`: an activation at
+unplanned), and the answering task's own context only where the recording opened the region there
+once, that occurrence (`aloneInContext`), and only at an index of the planned frames' depth and call
+sites, its counts alone differing (`RuntimeTask#countsAloneDiffer`): that invocation is the planned
+occurrence; one another path reached (an error's, a retry's) is not, and where the recording opened
+several it may be any of them (zk-adhoc-06 on CloudLab: the
+leader's work is a hand-off continuation of the election receiver's turn that delivered the deciding
+notification, `WorkerReceiver.run#u292@k`, the recordings decided on turn 4 and the replays on turn
+3, so every leader-side occurrence, the target's included, ran in its planned context at `@3` and
+none was answered), its address is none the recording opened itself (`RuntimeTask#recorded`: an activation at
 one of them is that occurrence, whatever it serves this run; accept-SB2: the Solr Overseer's first
 task, the collection's CREATE, took the address of the declared second, the REINDEX, whose own entry
 then ran unplanned), and its entry opened its own occurrence; its context, shaped over this run's
@@ -1112,8 +1122,9 @@ it, so every later stage reads the planned address as before, and a DIAGNOSTIC `
 row names the address the run computed (`RowRuntime#answered`). A task answered so is done: a later
 activation at that task's own recorded address runs unplanned, since the task took an earlier
 activation of its shape (the replay ran one more activation of that shape before it than the
-recording did). An occurrence a replay exposed (GROW) states no shape and is answered by its address
-alone. A planned loop body is asked where its occurrence opens, at its loop root's enclosing entry
+recording did); so in its own context too: a replay that opens the region there at `@3` and then at
+the planned `@4` answers the task with `@3`, and `@4` runs unplanned. An occurrence a replay exposed
+(GROW, `plan/ExposedRegionPlanMain#planRow`) states no shape and is answered by its address alone. A planned loop body is asked where its occurrence opens, at its loop root's enclosing entry
 (`ConcolicTaskPlan#addressLoopRootInvocation`, the same rule, `#answeredHere`), since no root entry
 admits a body: the entry binds the task (`RuntimeTask#claimsEnclosingInvocation`; a task bound to
 another entry answers no other), its bodies run under it, and the entry's occurrence takes the
