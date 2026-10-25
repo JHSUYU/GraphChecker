@@ -181,9 +181,9 @@ is written.
 
 Obligations of a campaign (each a solve, then its replay when the solver answers SAT, two starts),
 and GROW's re-runs, fan out over the hosts in
-`CAUSYNTH_CAMPAIGN_WORKER_HOSTS`, each to the host with the most room, as many on a host as its ledger admits, up to its
-cores. A head's own steps go to its host when it has room, else to the pool's host with the most
-room (`campaign_head_charged`, run there through `run_engine.sh --run-placed`). Every start on a
+`CAUSYNTH_CAMPAIGN_WORKER_HOSTS`, each to the host with the most room (the most free cores, then the most memory room),
+as many on a host as its ledger admits. A head's own steps go to its host when it has room, else to the pool's host
+with the most room (`campaign_head_charged`, run there through `run_engine.sh --run-placed`). Every start on a
 host is charged to the ledger first, at its measured need, for as long as it runs: the seed replay
 (twice the recording's measured peak at its start, its heap sized for seven times it, growing while its host has room), an obligation's solve (what a solver starts at), then
 every obligation's, re-run's and CONFIRM's replay
@@ -198,7 +198,11 @@ heap) and a `fanout.sh` job (its `NEED_MB`). A sweep's cases share the hosts
 replay charge (PIPELINE §7.7). A start goes only when both the host's live charges and its real use
 (`MemTotal` less `MemAvailable`), each with the start and a head's held room (its engine JVMs'
 measured peak times 1.25, the largest idle head's of the host), stay within
-`CAUSYNTH_HOST_MAX_USED_PCT` (70) percent of `MemTotal`; a charge lives by a lease its holder renews
+`CAUSYNTH_HOST_MAX_USED_PCT` (70) percent of `MemTotal`, and the cores its live charges keep busy, with
+the start's own (a replay its campaign's measured cores, a solve two, an engine JVM, a REPRODUCE run or a
+`fanout.sh` job one), stay within `CAUSYNTH_HOST_MAX_CORES_PCT` (100) percent of its `nproc` (a host whose
+charges keep no core busy takes any one start): memory binds on liftlab, cores on CloudLab. A charge,
+`<mb>.<cores>.<host>.<pid>.<time>.<rand>`, lives by a lease its holder renews
 (`$CAUSYNTH_HOST_LEDGER/<host>/charges/`, 120 s), so a killed run's charges lapse, and is released
 the moment what it ran returns. A running workload JVM that outgrows its
 charge is granted the excess, charged on the ledger, unless the host's real use (`MemTotal` less

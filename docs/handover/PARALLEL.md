@@ -13,8 +13,10 @@ the way there is that no work waits in series for anything but a real dependency
 | across cases | many campaigns, several rounds at once | `tools/adhoc/sweep.sh` (`heads-per-host`, a shared pool: each exploration takes its share of the slots and grows as others end); several sweeps side by side (one per purpose: a rerun group, the named-bug baseline, deep closures with a longer `CASE_TIMEOUT_SECONDS`); no case needs the cluster alone |
 | across development | up to 5 coding agents (owner 2026-10-18; 4 before), read-only diagnosis and review agents, the lead's rounds | each agent on its own branch, worktree, snapshot and `GC_OUT`, up to four live runs at once; offline gates and builds via `onlift.sh` on the least loaded lift ([AGENTS.md](AGENTS.md)) |
 
-The only limit is memory: no lift above 70 % (the ledger refuses a start past it, a running JVM past it is ended).
-Cores and load are not limits: 48 per lift.
+The limits are memory and cores, both through the ledger: no lift above 70 % of its memory (the ledger refuses a start
+past it, a running JVM past it is ended) and no lift with more cores charged than `CAUSYNTH_HOST_MAX_CORES_PCT` (100)
+percent of its `nproc`, summed over every campaign on it. On liftlab (30 GB, 48 cores a lift) memory binds first; on
+CloudLab (251 GB, 40 logical cores a node) cores do (round C1: nine campaigns, load 70-93, before cores were charged).
 
 ## 2. Isolation and sharing over NFS
 
@@ -145,7 +147,7 @@ every tool call starts a shell there.
   `LIFTS` (below).
 
 **2. Launching.** One command per batch of cases; heads are chosen by room, never lift11, every obligation spread over
-`LIFTS`, each start to the host with the most room (a replay ended for memory queued again at its full need, never a
+`LIFTS`, each start to the host with the most room, the most free cores first and memory room breaking ties (a replay ended for memory queued again at its full need, never a
 verdict; OPTIMIZATIONS 1.32):
 ```bash
 cd ~/gc-run/<snap> && env -u BASH_ENV \
@@ -191,7 +193,8 @@ and an unrelated undecidable conjunct no longer makes the flip unknown.
   peak times 1.5: charged at the largest, ledgers held 21-22 GB
   over 8-11 GB of real use and no host admitted a start (21: peaks p50 918, p90 1242, max 2234 MB, each charged 3456).
   After both: 18406 757 s (1000-1750 before), migrate 604 s, 18413 PASS, all native 10/10 (round LD2).
-- Judge a host by real use and live charges (`$CAUSYNTH_HOST_LEDGER/<lift>/charges/`, mtime < 120 s), not by load.
+- Judge a host by real use and live charges (`$CAUSYNTH_HOST_LEDGER/<lift>/charges/`, mtime < 120 s: their MB and
+  cores), and its load against its charged cores.
 
 **4. Agents and trees.** At most five coding agents (owner 2026-10-18; four before), each with its own branch, worktree (`tools/lib/worktree-add.sh`,
 a sha), frozen snapshots `~/gc-run/<prefix><n>`, `GC_OUT` and at most two live runs; read-only reviewers beside the
