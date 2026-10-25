@@ -257,12 +257,12 @@ used:
 2. **One pool per round.** `tools/rounds/run-pool.sh <round> <cases.tsv> <branch>=<snapshot>... [case...]` replaces
    fixed lanes and the alone reruns: it starts the case with the longest expected wall first (`POOL_EXPECTED`, rows
    `case<TAB>seconds`, e.g. the results table's wall column; else the case budget), whenever 10 % of the cluster's cores
-   are free both by the ledger and by `/proc/loadavg` (`POOL_FREE_CORES`, hundredths), at least `POOL_GAP_S` (30 s) after
+   are free by the ledger (CPU-aware, item 1; `POOL_FREE_CORES`, hundredths), at least `POOL_GAP_S` (30 s) after
    the last start (`POOL_MAX` caps the cases at once; 0, none), its head on the node heading the fewest of the pool's
    cases (ties: the most free cores, then memory room). A case's obligations still go to every node (level 1). A
    case's pool run is its record. `series-<round>.log` has START/END rows as `run-series.sh` writes them, and
-   `pool-<round>.tsv` a row per poll: time, cases running, the cluster's free cores, and per node load, free cores
-   (hundredths) and memory room (MB). Stop starting new cases: `touch $GC_OUT/series-<round>.STOP`. Run the pool from
+   `pool-<round>.tsv` a row per poll: time, cases running, the cluster's free cores, and per node its busy cores,
+   free cores (hundredths) and memory room (MB). Stop starting new cases: `touch $GC_OUT/series-<round>.STOP`. Run the pool from
    a snapshot, not a worktree you edit: bash reads its script as it runs.
 3. **Memory is spent, not rationed.** Heads keep their heaps for life and nothing else changes: a round of every case
    at once stays far under a node's 70 % ceiling (175 GB), so the only memory rule left is the ledger's.
