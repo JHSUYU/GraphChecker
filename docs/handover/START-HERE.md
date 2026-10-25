@@ -54,7 +54,7 @@ The CloudLab rounds Z1-Z9 (2026-10-25, `/bulk/gc-out/zk-final`; every case's tab
 | zk-bugs-container-reuse | **PASS**: SAT STATE_PAIRING_FLIPPED, native 10/10 (Z4, 1699 s) | PASS 10/10 |
 | zk-bugs-retry-seq-quota | **PASS**: SAT MARKER_FLIPPED, native 10/10 (Z4, 1659 s) | PASS 10/10 |
 | zk-bugs-observer-master | **PASS**: SAT STATE_PAIRING_FLIPPED, native 7/10 (Z4, 1282 s) | PASS 4/10 |
-| zk-bugs-trunc-sync | not detected: the formula UNSAT_CLOSED, as liftlab's; the run RUN_DEFECT by one BLOCKING gap, an inherited flip one session stated no decision for (Z4, 8247 s); Z9 reruns it alone | not detected, UNSAT_CLOSED |
+| zk-bugs-trunc-sync | not detected: the formula UNSAT_CLOSED, as liftlab's; the run RUN_DEFECT by one BLOCKING gap, an inherited flip one session stated no decision for (Z4, 8247 s; Z9 alone, 4884 s, the same gap on the same obligation: TODO ZooKeeper on CloudLab 2) | not detected, UNSAT_CLOSED |
 | zk-adhoc-01 | SAT_UNCONFIRMED: CONFIRM refused the claim (Z4, 3059 s) | the same |
 | zk-adhoc-02 | SAT_UNCONFIRMED: every claim refuted by CONFIRM (Z4, 8946 s) | the same |
 | zk-adhoc-03 | SAT CLOCK_SKEW, confirmed, native 4/10 (Z4, 1541 s) | the same, 4/10 |

@@ -960,7 +960,14 @@ which no ORDER holds". The cause is not CONFIRM's planning, as H3 read it from t
    its producer's sends (sender, per-sender ordinal) rather than the consumer's turn count. The seed's TARGET task did
    not take the turn-3 chain by shape although its `contextShape ['Root:CLIENT/test']` matched and nothing was
    recorded beside it: read `ConcolicTaskPlan#select`/`answeredHere` too.
-2. **The CPU-aware ledger and replay fidelity**: packing the CPUs fuller (PARALLEL §8) gives the order's watchdog less
+2. **zk-bugs-trunc-sync's inherited flip** (Z4, 8247 s; Z9 alone, 4884 s): the formula decides UNSAT_CLOSED (5094 not
+   detected, as on liftlab), but both runs name one BLOCKING ADMISSION_GAP on the same obligation 257811a1c73f2c3f:
+   "the session this path was cut from states no decision for the flip it inherited:
+   `ZKDatabase.addCommittedProposal(Request)#u21#1 -> true` at occurrence 16109589cba8003a", so the claim is
+   RUN_DEFECT. liftlab's F2B-trunc closed in 84 rounds without it; CloudLab's runs explore to 97-100 rounds (waves
+   9-11). Read the parent session's decisions at that occurrence (`sessions/<parent>/decisions.jsonl.gz`) and whether
+   the flip's site ran there under another address (an index shift, as 06).
+3. **The CPU-aware ledger and replay fidelity**: packing the CPUs fuller (PARALLEL §8) gives the order's watchdog less
    CPU per replay; watch the give-up counts (`round-status.sh`'s giveups, `of an order of ... given up`) against
    `cpu-<round>.txt` when the busy share rises.
 

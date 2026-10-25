@@ -49,7 +49,8 @@ refuted claims = the claims CONFIRM refuted before the last).
 by their mechanism, reproduced natively (quota-init, retry-seq-quota, container-reuse 10/10; election-offer 9/10;
 observer-master 7/10, liftlab 4/10); trunc-sync (ZOOKEEPER-5094) is not detected, as on liftlab: its formula is
 UNSAT_CLOSED, but Z4 marks the run RUN_DEFECT for one BLOCKING gap (an inherited flip, `ZKDatabase.addCommittedProposal
-#u21#1 -> true`, that one session stated no decision for), and Z9 reruns it alone. zk-adhoc-01 is
+#u21#1 -> true`, that one session stated no decision for); Z9, alone, 4884 s, ends the same, on the same obligation
+(257811a1c73f2c3f): a CloudLab-deterministic defect, TODO "ZooKeeper on CloudLab" 2. zk-adhoc-01 is
 SAT_UNCONFIRMED (CONFIRM refused its claim), 03 SAT CLOCK_SKEW (4/10 natively, Z1 8/10), 04, 07, 12 and 13 UNSAT
 substantive and 10 vacuous by construction (`tools/analysis/vacuity.py`), each as its liftlab reading below.
 

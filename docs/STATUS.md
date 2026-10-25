@@ -225,7 +225,7 @@ The 16 cases on CloudLab's node0-node4 in rounds Z1-Z8 (`/bulk/gc-out/zk-final`)
 native k/N, time breakdown and reading are `results/zookeeper/README.md` ("On CloudLab"). 15 of 16 reach their liftlab
 verdict: quota-init, election-offer, container-reuse, retry-seq-quota and observer-master PASS (SAT, confirmed in the
 VM, native 7-10/10), trunc-sync (ZOOKEEPER-5094) not detected (formula UNSAT_CLOSED; Z4's run RUN_DEFECT for one
-BLOCKING inherited-flip gap, Z9 reruns it), 01 SAT_UNCONFIRMED, 03 SAT CLOCK_SKEW (native 4/10),
+BLOCKING inherited-flip gap, the same alone in Z9), 01 SAT_UNCONFIRMED, 03 SAT CLOCK_SKEW (native 4/10),
 02 and 11 as on liftlab (results/zookeeper), 04, 07, 12, 13 UNSAT substantive, 10 vacuous by construction.
 zk-adhoc-06 does not replay its recorded election here (RUN_DEFECT at REPLAY, seven runs; TODO "ZooKeeper on
 CloudLab" 1). The fork's two CloudLab workarounds are rows of "Per-system surface" (QuorumBase's start order, the
