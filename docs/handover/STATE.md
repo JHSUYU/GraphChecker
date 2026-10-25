@@ -13,6 +13,14 @@ missing per requirement in [../STATUS.md](../STATUS.md).
 
 ## Z. ZooKeeper (finished 2026-10-22: the final series on integrations 12-13) -- read this first if you take over ZooKeeper
 
+**On CloudLab (2026-10-25, `system/zookeeper-cloudlab`):** [START-HERE.md](START-HERE.md) is the takeover file. Layout:
+GraphChecker `/bulk/GraphChecker`, worktree `/bulk/wt/gc-zk-cloudlab`; the fork `/bulk/zookeeper` (`gc/zk-cloudlab` =
+`graphchecker/zookeeper-checks` 889f0e96); tree sets `/bulk/trees/zk1` (51b21356), `zk2` (7aa086bb), `zk3` (889f0e96)
+with Maven repositories `/bulk/m2/zk<k>/zookeeper-checks`; VM image `/bulk/vm/zookeeper/j2sdk-image`; snapshots
+`/bulk/gc-run/zkF1`-`zkF5`; runs `/bulk/gc-out/zk-final` (rounds Z1-Z5, `series-<round>.log`, `pool-<round>.tsv`,
+`load-<round>.txt`, `cpu-<round>.txt`); the HDFS named cases beside them `/bulk/gc-out/hdfs-pool` (P1-P4). The
+liftlab account below stays as written.
+
 The 2026-10-21 session had two parts. The day session (a lead and the read-only agents Z1, Z2) prepared the checks. The
 evening session (a lead and five coding agents) built and ran them:
 - **A:** the tree, the client-level cases, ClaimPolicy own-run-first, the CONFIRM hold at the first instrumented serve.

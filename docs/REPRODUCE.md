@@ -363,3 +363,26 @@ final series' `.smt`, claims and time table: [`results/zookeeper/`](../results/z
    `out/<case>/schedule/final/candidate.smt2` compares with `results/zookeeper/<case>.smt2.gz`;
    `tools/analysis/smt-legend.py <run>/out/<case>` names every symbol. Replays race, so wall times vary run to run, and
    a native reproduction is a count (observer-master and 03 reproduced 4 of 10 natively, the others 10 of 10).
+
+6. **On CloudLab** (branch `system/zookeeper-cloudlab`, five nodes, OPERATIONS §11). Make the cluster with
+   `BULK_SUBNET=10.10.1.0/24 tools/cloudlab/setup-nodes.sh` (packages, disks, NFS `/bulk`, JDK 8, `~/.m2`, z3), then:
+
+   ```bash
+   git clone -q git@github.com:JHSUYU/GraphChecker.git /bulk/GraphChecker
+   git -C /bulk/GraphChecker worktree add /bulk/wt/gc-zk-cloudlab system/zookeeper-cloudlab   # full: the VM sources
+   (cd /bulk/wt/gc-zk-cloudlab && mvn -q package -DskipTests)
+   ssh node4 'cd /bulk/wt/gc-zk-cloudlab && tools/vm/build-image-docker.sh /bulk/vm/zookeeper'   # ~4 min, smoke suite
+   git clone -q -b graphchecker/zookeeper-checks git@github.com:JHSUYU/zookeeper.git /bulk/zookeeper
+   git -C /bulk/zookeeper worktree add --detach /bulk/trees/zk3/zookeeper-checks graphchecker/zookeeper-checks
+   ssh node2 'cd /bulk/wt/gc-zk-cloudlab && env PATH=/usr/lib/maven/bin:$PATH GC_TREES=/bulk/trees/zk3 \
+     ZOOKEEPER_MAVEN_REPO=/bulk/m2/zk3/zookeeper-checks bash experiments/zookeeper/prepare-trees.sh'   # 16 PASSED
+   bash /bulk/wt/gc-zk-cloudlab/tools/lib/worktree-add.sh /bulk/gc-run/zk $(git -C /bulk/wt/gc-zk-cloudlab rev-parse HEAD) --detach
+   ssh node1 'cd /bulk/gc-run/zk && mvn -q -o package -DskipTests'
+   cd /bulk/gc-run/zk && (setsid nohup env GC_OUT=/bulk/gc-out/zk GC_TREES=/bulk/trees/zk3 \
+     CAUSYNTH_CUSTOM_JDK_HOME=/bulk/vm/zookeeper/j2sdk-image PRUNE=0 tools/rounds/run-pool.sh Z1 \
+     experiments/zookeeper/zookeeper-cases.tsv system/zookeeper=/bulk/gc-run/zk > /bulk/gc-out/zk-pool.out 2>&1 < /dev/null &)
+   ```
+
+   `run-pool.sh` runs every case at once over the five nodes as their cores allow (PARALLEL §8); read the round with
+   `results/zookeeper/final-stats.py --order Z1 --cases experiments/zookeeper/zookeeper-cases.tsv --out /bulk/gc-out/zk`.
+   The final CloudLab rounds and their table are `results/zookeeper/README.md`.

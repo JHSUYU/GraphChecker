@@ -940,6 +940,30 @@ which no ORDER holds". The cause is not CONFIRM's planning, as H3 read it from t
   exclusive series does). Not built: checking the read's observed writer instead of holding; it cannot confirm a
   read that saw the wrong version, and with stable steps nothing needs it.
 
+## ZooKeeper on CloudLab (`system/zookeeper-cloudlab`, 2026-10-25)
+
+1. **zk-adhoc-06 does not replay its recorded election on CloudLab** (RUN_DEFECT at REPLAY in Z1, Z3, Z4, Z5-Z8: five
+   recordings, quiet nodes or busy, every seed replay gave up 239-319 of 514-573 slots and reached no TARGET_REACH).
+   The leader's work is a hand-off continuation of the receiver turn that delivered the deciding notification, so
+   every leader-side occurrence's address names that turn: `FastLeaderElection$Messenger$WorkerReceiver.run#u292@k`
+   (IDENTITY's queue hand-off). How many notifications reach peer2 before it decides depends on the adapter's election
+   wakes (`CausynthNodes.electionWake`: on a peer's start and on each new quorum connection, a `CAUSYNTH_WAKE` queue
+   offer that resends the vote): queue offers from other threads that no order slot holds. CloudLab's recordings
+   (`recorded_schedule.jsonl`: both peers send twice before any connection) decide on turn 4, the replays on turn 3
+   (peer1's third `sendNotifications`, slot 89, never comes), and then every leader-side slot of 06's 58-task closure
+   (Leader, LearnerHandler, StateSummary: the request throttler, the prep processor, the learner handler) carries
+   `@3`, so half the order is given up and the target (peer2's `Leader#waitForEpochAck`) runs at an address the seed's
+   TARGET task refuses (OCCURRENCE_ANCHOR_UNMATCHED: "differs in frame 8 of 19 ... at iteration 3 and not the planned
+   4"). liftlab's seed decided on turn 2 and replayed it. zk-adhoc-12 runs the same workload, but its closure (16 tasks,
+   QuorumPeer) does not pass through the leader, and replays. Two ways, each a change for every quorum case and a full
+   round: order the wakes (a wake is the election's own work start, held by its slot), or name a taken queue item by
+   its producer's sends (sender, per-sender ordinal) rather than the consumer's turn count. The seed's TARGET task did
+   not take the turn-3 chain by shape although its `contextShape ['Root:CLIENT/test']` matched and nothing was
+   recorded beside it: read `ConcolicTaskPlan#select`/`answeredHere` too.
+2. **The CPU-aware ledger and replay fidelity**: packing the CPUs fuller (PARALLEL §8) gives the order's watchdog less
+   CPU per replay; watch the give-up counts (`round-status.sh`'s giveups, `of an order of ... given up`) against
+   `cpu-<round>.txt` when the busy share rises.
+
 ## ZooKeeper (`system/zookeeper`; finished 2026-10-21 -- what is left; DRAFT)
 
 The 16 cases ran in the final series; `results/zookeeper/README.md` has each verdict and START-HERE.md the takeover.

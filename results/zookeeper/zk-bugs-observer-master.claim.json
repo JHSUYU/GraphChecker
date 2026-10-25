@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "kind": "CLAIM",
-  "anchor": "auto0/peer4#epoch1/region/REGION.140fb26c-dd61-31ad-a4df-3417de43228b/ctx:Anchor:1eac5d496fc49eb7@ZK_QUORUM/test/idx:\u003corg.apache.zookeeper.server.ZooKeeperServer: void startup()\u003e@0/\u003corg.apache.zookeeper.server.quorum.CommitProcessor: void start()\u003e#u22:ACK@0/\u003corg.apache.zookeeper.server.quorum.CommitProcessor: void run()\u003e@0",
+  "anchor": "auto0/peer4#epoch1/region/REGION.140fb26c-dd61-31ad-a4df-3417de43228b/ctx:Anchor:71a5c504b386872d@ZK_QUORUM/test/idx:\u003corg.apache.zookeeper.server.ZooKeeperServer: void startup()\u003e@0/\u003corg.apache.zookeeper.server.quorum.CommitProcessor: void start()\u003e#u22:ACK@0/\u003corg.apache.zookeeper.server.quorum.CommitProcessor: void run()\u003e@0",
   "claim": {
     "kind": "STATE_PAIRING_FLIPPED",
     "valuationOrdinal": 0,
@@ -12,36 +12,57 @@
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "seed-result-4b738b14",
+        "subject": "0e58eca4b9301767-3c1374be",
         "detail": "this session ran the occurrence and did not reach the anchor"
       },
       {
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "a5d7c8ecbd55752d of 5b8998ea47acd01c-05222fcd",
-        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 3903), where the path throws: no producer for this path"
+        "subject": "seed-result-ca39bfa0",
+        "detail": "this session ran the occurrence and did not reach the anchor"
       },
       {
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "a5d7c8ecbd55752d of 8ecdec9a23bc80a9-a430f590",
-        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 3889), where the path throws: no producer for this path"
+        "subject": "36300c096719672d of 8a700e6a11f627d3-59edc76d",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 4332), where the path throws: no producer for this path"
       },
       {
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "b3261a09573e8bbe of seed-result-4b738b14",
-        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 3810), where the path throws: no producer for this path"
+        "subject": "f86a55c140cd1f4d of c4c1f701b9e422ff-1cc8b61f",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 3715), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "c4c1f701b9e422ff-1cc8b61f",
+        "kind": "UNPRODUCIBLE_ANSWER",
+        "cls": "DIAGNOSTIC",
+        "subject": "zkq-53",
+        "detail": "none of the 1 session(s) eligible to have sent this message ran in a world compatible with this path\u0027s, so no delivery this path could have received binds what it read"
+      },
+      {
+        "sessionId": "seed-result-ca39bfa0",
+        "kind": "UNPRODUCIBLE_ANSWER",
+        "cls": "DIAGNOSTIC",
+        "subject": "zkq-65",
+        "detail": "every session whose world is compatible with this path\u0027s (1 of the 2 eligible) rests on a value the recording does not state, so nothing binds what this path read from it"
       },
       {
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "a5d7c8ecbd55752d of a3e0c1b825ed3a3a-6cdcc2ed",
-        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 3818), where the path throws: no producer for this path"
+        "subject": "adc68a7637e8e0a5 of seed-result-ca39bfa0",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 3730), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "36300c096719672d of f7ce0b46956871bd-49d569b7",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 3743), where the path throws: no producer for this path"
       },
       {
         "sessionId": "composition",
@@ -75,28 +96,63 @@
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "aaf4d67ad14f0ce4",
+        "subject": "0f82dc2b94e2af48",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "320e58d84480e9c0",
+        "subject": "5d0d6fb26cb3ba6a",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "0d7bfdcf918116a0",
+        "subject": "e4b91aebf142973f",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "c2c3dea1c099d6c1",
+        "subject": "dca59b8e41207e44",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "bd6628368a6029ff",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "394dea57121960e8",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "183f0767ecc0c44a",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "74e4bcff1c5cf383",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "1cf7ad5c901169d4",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
@@ -131,14 +187,14 @@
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "17bca3928e3a0d72",
+        "subject": "cc23d9484506960e",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "d09c9404cf19c6ad",
+        "subject": "297da9a76f08877d",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
@@ -159,112 +215,189 @@
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "8ed90b51edb78b56",
+        "subject": "62270857fef570f2",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "137c30fcb96bbf79",
+        "subject": "ca1888a57b6c8e85",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "33bcdbb439f04d80",
+        "subject": "058745b548ad784c",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "d43445d53d176089",
+        "subject": "0c8b6a891a560c3f",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "66abb626f218e9cb",
+        "subject": "707288a758526e8e",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "996344aa6a4bd3d5",
+        "subject": "9f4e9a144bba2f01",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "6ae5607826b99e13",
+        "subject": "260560b76e2f315f",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "1a4dc5e13cfd7938",
+        "subject": "d1463678d5bda1e4",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "f138b8b52c0b1f26",
+        "subject": "6dbe7018e97b973e",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "ce2b2fc114989967",
+        "subject": "15a999e257f48abe",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "d04f5b5b09b1d05d",
+        "subject": "44ef0a8258d147ce",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "8995634fc13cb265",
+        "subject": "7f206e445acdb009",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "04cf6f7f6e74eece",
+        "subject": "07b1dc7c2269408d",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "b3c76bbc6fe6c5c8",
+        "subject": "7baf4ee817ecc25b",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "399981c627111960",
+        "subject": "cc391f02cdf16354",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "3ae0b4949daa388b",
+        "subject": "b7bfd035efb1b868",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "d116f0b47a844067",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "c21866c9176c4206",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "d60d66ea5af208eb",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "bf23137ea97143f7",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "624697f02f3dec5a",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "f1ec4df83a151d18",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "f850f9d29aa08c93",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "59cb9fa0c7e05895",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "27b2da964338bd11",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "a18e968394fdcd29",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "565ad1c88d73d414",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
@@ -303,23 +436,23 @@
         "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
       },
       {
-        "sessionId": "5b8998ea47acd01c-05222fcd",
+        "sessionId": "8a700e6a11f627d3-59edc76d",
         "kind": "FORMULA_SAT_AT_RECORDED_VALUATION",
         "cls": "DIAGNOSTIC",
-        "subject": "a witness moving [CONFIG:zookeeper.test.allowDiscontinuousProposals]",
-        "detail": "the formula shows a witness moving [CONFIG:zookeeper.test.allowDiscontinuousProposals], and it is satisfiable with every declared root at its recorded value too, so the recording does not decide the arm"
+        "subject": "a witness moving [CONFIG:readonlymode.enabled]",
+        "detail": "the formula shows a witness moving [CONFIG:readonlymode.enabled], and it is satisfiable with every declared root at its recorded value too, so the recording does not decide the arm"
       },
       {
-        "sessionId": "8ecdec9a23bc80a9-a430f590",
+        "sessionId": "8a700e6a11f627d3-59edc76d",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "49d543e1cf11e5e8",
-        "detail": "world-pairing claim: each pairing on the fatal path by {552bce573b14b80f\u003dFLIP}"
+        "subject": "e72d4b1a67f79ff3",
+        "detail": "world-pairing claim: each pairing on the fatal path by {bb13cc0c04e1e8ef\u003dCONE}"
       }
     ]
   },
-  "solverRuns": 70,
-  "seedSessionId": "seed-result-4b738b14",
+  "solverRuns": 63,
+  "seedSessionId": "seed-result-ca39bfa0",
   "valuations": [
     {
       "ordinal": 0,
@@ -334,12 +467,42 @@
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c82929f6-e908-3f38-be3c-6aa0756ba079": "false"
       },
       "moved": {},
-      "selectedPathId": "49d543e1cf11e5e8",
-      "selectedSessionId": "8ecdec9a23bc80a9-a430f590",
+      "selectedPathId": "e72d4b1a67f79ff3",
+      "selectedSessionId": "8a700e6a11f627d3-59edc76d",
       "fatalObserved": true,
-      "selectedArms": [],
+      "selectedArms": [
+        {
+          "selector": "message_arm__0__bcef094c9cdc",
+          "family": "message_family__0__7b7a85fd38f4",
+          "groupId": "9579b07cb6369081|e8c57c563072dcb1|ea9014ef1778991d|ec87a7ece092e144|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "9579b07cb6369081",
+            "ec87a7ece092e144"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "d2998daecc94e224",
+          "interactionIds": [
+            "d4de7e5f79a45ef2",
+            "c026e05182891157",
+            "01275c3615275201",
+            "8ed90b51edb78b56",
+            "137c30fcb96bbf79"
+          ],
+          "expressionRefs": [
+            "EXPR.e06731a15827f76b",
+            "EXPR.5bd672cc75445a0e"
+          ],
+          "attested": true
+        }
+      ],
       "repairedArms": [
-        "PAIRING:552bce573b14b80f\u003d91e5dd31946b7386"
+        "PAIRING:bb13cc0c04e1e8ef\u003d91e5dd31946b7386"
       ],
       "unsatCore": []
     },
@@ -358,11 +521,65 @@
       "moved": {
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.e9707442-b80a-3c99-8d85-996393297c14": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
+      "selectedPathId": "e72d4b1a67f79ff3",
+      "selectedSessionId": "8a700e6a11f627d3-59edc76d",
       "fatalObserved": true,
-      "selectedArms": [],
-      "repairedArms": [],
+      "selectedArms": [
+        {
+          "selector": "message_arm__0__bcef094c9cdc",
+          "family": "message_family__0__7b7a85fd38f4",
+          "groupId": "9579b07cb6369081|e8c57c563072dcb1|ea9014ef1778991d|ec87a7ece092e144|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "9579b07cb6369081",
+            "ec87a7ece092e144"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "d2998daecc94e224",
+          "interactionIds": [
+            "d4de7e5f79a45ef2",
+            "c026e05182891157",
+            "01275c3615275201",
+            "8ed90b51edb78b56",
+            "137c30fcb96bbf79"
+          ],
+          "expressionRefs": [
+            "EXPR.e06731a15827f76b",
+            "EXPR.5bd672cc75445a0e"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__09d8f20d32e6",
+          "family": "message_family__3__f0112f613d95",
+          "groupId": "814ca96b9dbc1209|f8d71316556aac14",
+          "attachEndpointIds": [
+            "f8d71316556aac14",
+            "814ca96b9dbc1209"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "656fabe4b80ed1da",
+          "interactionIds": [
+            "aaf4d67ad14f0ce4",
+            "84e82ada63ccc3ed"
+          ],
+          "expressionRefs": [
+            "EXPR.8af5c503d2278da8"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "PAIRING:bb13cc0c04e1e8ef\u003d91e5dd31946b7386"
+      ],
       "unsatCore": []
     },
     {
@@ -380,11 +597,65 @@
       "moved": {
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c939d538-92b2-38dd-b4a1-1ee73fca453a": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
+      "selectedPathId": "e72d4b1a67f79ff3",
+      "selectedSessionId": "8a700e6a11f627d3-59edc76d",
       "fatalObserved": true,
-      "selectedArms": [],
-      "repairedArms": [],
+      "selectedArms": [
+        {
+          "selector": "message_arm__0__bcef094c9cdc",
+          "family": "message_family__0__7b7a85fd38f4",
+          "groupId": "9579b07cb6369081|e8c57c563072dcb1|ea9014ef1778991d|ec87a7ece092e144|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "9579b07cb6369081",
+            "ec87a7ece092e144"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "d2998daecc94e224",
+          "interactionIds": [
+            "d4de7e5f79a45ef2",
+            "c026e05182891157",
+            "01275c3615275201",
+            "8ed90b51edb78b56",
+            "137c30fcb96bbf79"
+          ],
+          "expressionRefs": [
+            "EXPR.e06731a15827f76b",
+            "EXPR.5bd672cc75445a0e"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__09d8f20d32e6",
+          "family": "message_family__3__f0112f613d95",
+          "groupId": "814ca96b9dbc1209|f8d71316556aac14",
+          "attachEndpointIds": [
+            "f8d71316556aac14",
+            "814ca96b9dbc1209"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "656fabe4b80ed1da",
+          "interactionIds": [
+            "aaf4d67ad14f0ce4",
+            "84e82ada63ccc3ed"
+          ],
+          "expressionRefs": [
+            "EXPR.8af5c503d2278da8"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "PAIRING:bb13cc0c04e1e8ef\u003d91e5dd31946b7386"
+      ],
       "unsatCore": []
     },
     {
@@ -402,11 +673,65 @@
       "moved": {
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.854be31a-0cc5-36df-9d31-58e96739205b": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
+      "selectedPathId": "e72d4b1a67f79ff3",
+      "selectedSessionId": "8a700e6a11f627d3-59edc76d",
       "fatalObserved": true,
-      "selectedArms": [],
-      "repairedArms": [],
+      "selectedArms": [
+        {
+          "selector": "message_arm__0__bcef094c9cdc",
+          "family": "message_family__0__7b7a85fd38f4",
+          "groupId": "9579b07cb6369081|e8c57c563072dcb1|ea9014ef1778991d|ec87a7ece092e144|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "9579b07cb6369081",
+            "ec87a7ece092e144"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "d2998daecc94e224",
+          "interactionIds": [
+            "d4de7e5f79a45ef2",
+            "c026e05182891157",
+            "01275c3615275201",
+            "8ed90b51edb78b56",
+            "137c30fcb96bbf79"
+          ],
+          "expressionRefs": [
+            "EXPR.e06731a15827f76b",
+            "EXPR.5bd672cc75445a0e"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__09d8f20d32e6",
+          "family": "message_family__3__f0112f613d95",
+          "groupId": "814ca96b9dbc1209|f8d71316556aac14",
+          "attachEndpointIds": [
+            "f8d71316556aac14",
+            "814ca96b9dbc1209"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "656fabe4b80ed1da",
+          "interactionIds": [
+            "aaf4d67ad14f0ce4",
+            "84e82ada63ccc3ed"
+          ],
+          "expressionRefs": [
+            "EXPR.8af5c503d2278da8"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "PAIRING:bb13cc0c04e1e8ef\u003d91e5dd31946b7386"
+      ],
       "unsatCore": []
     },
     {
@@ -424,11 +749,65 @@
       "moved": {
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.771cd1e9-b54d-3c81-941c-2daf8dccd1fb": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
+      "selectedPathId": "e72d4b1a67f79ff3",
+      "selectedSessionId": "8a700e6a11f627d3-59edc76d",
       "fatalObserved": true,
-      "selectedArms": [],
-      "repairedArms": [],
+      "selectedArms": [
+        {
+          "selector": "message_arm__0__bcef094c9cdc",
+          "family": "message_family__0__7b7a85fd38f4",
+          "groupId": "9579b07cb6369081|e8c57c563072dcb1|ea9014ef1778991d|ec87a7ece092e144|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "9579b07cb6369081",
+            "ec87a7ece092e144"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "d2998daecc94e224",
+          "interactionIds": [
+            "d4de7e5f79a45ef2",
+            "c026e05182891157",
+            "01275c3615275201",
+            "8ed90b51edb78b56",
+            "137c30fcb96bbf79"
+          ],
+          "expressionRefs": [
+            "EXPR.e06731a15827f76b",
+            "EXPR.5bd672cc75445a0e"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__09d8f20d32e6",
+          "family": "message_family__3__f0112f613d95",
+          "groupId": "814ca96b9dbc1209|f8d71316556aac14",
+          "attachEndpointIds": [
+            "f8d71316556aac14",
+            "814ca96b9dbc1209"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "656fabe4b80ed1da",
+          "interactionIds": [
+            "aaf4d67ad14f0ce4",
+            "84e82ada63ccc3ed"
+          ],
+          "expressionRefs": [
+            "EXPR.8af5c503d2278da8"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "PAIRING:bb13cc0c04e1e8ef\u003d91e5dd31946b7386"
+      ],
       "unsatCore": []
     },
     {
@@ -446,16 +825,70 @@
       "moved": {
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c82929f6-e908-3f38-be3c-6aa0756ba079": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
+      "selectedPathId": "e72d4b1a67f79ff3",
+      "selectedSessionId": "8a700e6a11f627d3-59edc76d",
       "fatalObserved": true,
-      "selectedArms": [],
-      "repairedArms": [],
+      "selectedArms": [
+        {
+          "selector": "message_arm__0__bcef094c9cdc",
+          "family": "message_family__0__7b7a85fd38f4",
+          "groupId": "9579b07cb6369081|e8c57c563072dcb1|ea9014ef1778991d|ec87a7ece092e144|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "9579b07cb6369081",
+            "ec87a7ece092e144"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "d2998daecc94e224",
+          "interactionIds": [
+            "d4de7e5f79a45ef2",
+            "c026e05182891157",
+            "01275c3615275201",
+            "8ed90b51edb78b56",
+            "137c30fcb96bbf79"
+          ],
+          "expressionRefs": [
+            "EXPR.e06731a15827f76b",
+            "EXPR.5bd672cc75445a0e"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__09d8f20d32e6",
+          "family": "message_family__3__f0112f613d95",
+          "groupId": "814ca96b9dbc1209|f8d71316556aac14",
+          "attachEndpointIds": [
+            "f8d71316556aac14",
+            "814ca96b9dbc1209"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "656fabe4b80ed1da",
+          "interactionIds": [
+            "aaf4d67ad14f0ce4",
+            "84e82ada63ccc3ed"
+          ],
+          "expressionRefs": [
+            "EXPR.8af5c503d2278da8"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "PAIRING:bb13cc0c04e1e8ef\u003d91e5dd31946b7386"
+      ],
       "unsatCore": []
     },
     {
       "ordinal": 6,
-      "status": "sat",
+      "status": "unsat",
       "assignment": {
         "CONFIG:zookeeper.test.allowDiscontinuousProposals": "true",
         "CONFIG:readonlymode.enabled": "false",
@@ -468,9 +901,9 @@
       "moved": {
         "CONFIG:zookeeper.test.allowDiscontinuousProposals": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
-      "fatalObserved": true,
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
       "selectedArms": [],
       "repairedArms": [],
       "unsatCore": []
@@ -490,11 +923,94 @@
       "moved": {
         "CONFIG:readonlymode.enabled": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
+      "selectedPathId": "e72d4b1a67f79ff3",
+      "selectedSessionId": "8a700e6a11f627d3-59edc76d",
       "fatalObserved": true,
-      "selectedArms": [],
-      "repairedArms": [],
+      "selectedArms": [
+        {
+          "selector": "message_arm__0__bcef094c9cdc",
+          "family": "message_family__0__7b7a85fd38f4",
+          "groupId": "9579b07cb6369081|e8c57c563072dcb1|ea9014ef1778991d|ec87a7ece092e144|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "9579b07cb6369081",
+            "ec87a7ece092e144"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "d2998daecc94e224",
+          "interactionIds": [
+            "d4de7e5f79a45ef2",
+            "c026e05182891157",
+            "01275c3615275201",
+            "8ed90b51edb78b56",
+            "137c30fcb96bbf79"
+          ],
+          "expressionRefs": [
+            "EXPR.e06731a15827f76b",
+            "EXPR.5bd672cc75445a0e"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__09d8f20d32e6",
+          "family": "message_family__3__f0112f613d95",
+          "groupId": "814ca96b9dbc1209|f8d71316556aac14",
+          "attachEndpointIds": [
+            "f8d71316556aac14",
+            "814ca96b9dbc1209"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "656fabe4b80ed1da",
+          "interactionIds": [
+            "aaf4d67ad14f0ce4",
+            "84e82ada63ccc3ed"
+          ],
+          "expressionRefs": [
+            "EXPR.8af5c503d2278da8"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__a7344a1dc807",
+          "family": "message_family__3__70387414a3a4",
+          "groupId": "58c5d2895fadafcd|8f5a923a8e41b83b|e8c57c563072dcb1|ea9014ef1778991d|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "58c5d2895fadafcd",
+            "8f5a923a8e41b83b"
+          ],
+          "sessionId": "f7ce0b46956871bd-49d569b7",
+          "sessionIds": [
+            "f7ce0b46956871bd-49d569b7"
+          ],
+          "producerPathId": "38bea1d31dc877a1",
+          "interactionIds": [
+            "a9792c576c4b06a5",
+            "ba6b445dd84092d3",
+            "0168974f6ccc4f3f",
+            "ae1216060af6b314",
+            "30f3f1c4ac7cc1d5"
+          ],
+          "expressionRefs": [
+            "EXPR.1938d6e8bf493110",
+            "EXPR.f5e993067cf9e209"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "PAIRING:bb13cc0c04e1e8ef\u003d91e5dd31946b7386"
+      ],
       "unsatCore": []
     },
     {
@@ -513,11 +1029,65 @@
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.e9707442-b80a-3c99-8d85-996393297c14": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c939d538-92b2-38dd-b4a1-1ee73fca453a": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
+      "selectedPathId": "e72d4b1a67f79ff3",
+      "selectedSessionId": "8a700e6a11f627d3-59edc76d",
       "fatalObserved": true,
-      "selectedArms": [],
-      "repairedArms": [],
+      "selectedArms": [
+        {
+          "selector": "message_arm__0__bcef094c9cdc",
+          "family": "message_family__0__7b7a85fd38f4",
+          "groupId": "9579b07cb6369081|e8c57c563072dcb1|ea9014ef1778991d|ec87a7ece092e144|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "9579b07cb6369081",
+            "ec87a7ece092e144"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "d2998daecc94e224",
+          "interactionIds": [
+            "d4de7e5f79a45ef2",
+            "c026e05182891157",
+            "01275c3615275201",
+            "8ed90b51edb78b56",
+            "137c30fcb96bbf79"
+          ],
+          "expressionRefs": [
+            "EXPR.e06731a15827f76b",
+            "EXPR.5bd672cc75445a0e"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__09d8f20d32e6",
+          "family": "message_family__3__f0112f613d95",
+          "groupId": "814ca96b9dbc1209|f8d71316556aac14",
+          "attachEndpointIds": [
+            "f8d71316556aac14",
+            "814ca96b9dbc1209"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "656fabe4b80ed1da",
+          "interactionIds": [
+            "aaf4d67ad14f0ce4",
+            "84e82ada63ccc3ed"
+          ],
+          "expressionRefs": [
+            "EXPR.8af5c503d2278da8"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "PAIRING:bb13cc0c04e1e8ef\u003d91e5dd31946b7386"
+      ],
       "unsatCore": []
     },
     {
@@ -536,11 +1106,65 @@
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.e9707442-b80a-3c99-8d85-996393297c14": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.854be31a-0cc5-36df-9d31-58e96739205b": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
+      "selectedPathId": "e72d4b1a67f79ff3",
+      "selectedSessionId": "8a700e6a11f627d3-59edc76d",
       "fatalObserved": true,
-      "selectedArms": [],
-      "repairedArms": [],
+      "selectedArms": [
+        {
+          "selector": "message_arm__0__bcef094c9cdc",
+          "family": "message_family__0__7b7a85fd38f4",
+          "groupId": "9579b07cb6369081|e8c57c563072dcb1|ea9014ef1778991d|ec87a7ece092e144|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "9579b07cb6369081",
+            "ec87a7ece092e144"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "d2998daecc94e224",
+          "interactionIds": [
+            "d4de7e5f79a45ef2",
+            "c026e05182891157",
+            "01275c3615275201",
+            "8ed90b51edb78b56",
+            "137c30fcb96bbf79"
+          ],
+          "expressionRefs": [
+            "EXPR.e06731a15827f76b",
+            "EXPR.5bd672cc75445a0e"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__09d8f20d32e6",
+          "family": "message_family__3__f0112f613d95",
+          "groupId": "814ca96b9dbc1209|f8d71316556aac14",
+          "attachEndpointIds": [
+            "f8d71316556aac14",
+            "814ca96b9dbc1209"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "656fabe4b80ed1da",
+          "interactionIds": [
+            "aaf4d67ad14f0ce4",
+            "84e82ada63ccc3ed"
+          ],
+          "expressionRefs": [
+            "EXPR.8af5c503d2278da8"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "PAIRING:bb13cc0c04e1e8ef\u003d91e5dd31946b7386"
+      ],
       "unsatCore": []
     },
     {
@@ -559,11 +1183,65 @@
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.e9707442-b80a-3c99-8d85-996393297c14": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.771cd1e9-b54d-3c81-941c-2daf8dccd1fb": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
+      "selectedPathId": "e72d4b1a67f79ff3",
+      "selectedSessionId": "8a700e6a11f627d3-59edc76d",
       "fatalObserved": true,
-      "selectedArms": [],
-      "repairedArms": [],
+      "selectedArms": [
+        {
+          "selector": "message_arm__0__bcef094c9cdc",
+          "family": "message_family__0__7b7a85fd38f4",
+          "groupId": "9579b07cb6369081|e8c57c563072dcb1|ea9014ef1778991d|ec87a7ece092e144|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "9579b07cb6369081",
+            "ec87a7ece092e144"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "d2998daecc94e224",
+          "interactionIds": [
+            "d4de7e5f79a45ef2",
+            "c026e05182891157",
+            "01275c3615275201",
+            "8ed90b51edb78b56",
+            "137c30fcb96bbf79"
+          ],
+          "expressionRefs": [
+            "EXPR.e06731a15827f76b",
+            "EXPR.5bd672cc75445a0e"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__09d8f20d32e6",
+          "family": "message_family__3__f0112f613d95",
+          "groupId": "814ca96b9dbc1209|f8d71316556aac14",
+          "attachEndpointIds": [
+            "f8d71316556aac14",
+            "814ca96b9dbc1209"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "656fabe4b80ed1da",
+          "interactionIds": [
+            "aaf4d67ad14f0ce4",
+            "84e82ada63ccc3ed"
+          ],
+          "expressionRefs": [
+            "EXPR.8af5c503d2278da8"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "PAIRING:bb13cc0c04e1e8ef\u003d91e5dd31946b7386"
+      ],
       "unsatCore": []
     },
     {
@@ -582,16 +1260,70 @@
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.e9707442-b80a-3c99-8d85-996393297c14": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c82929f6-e908-3f38-be3c-6aa0756ba079": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
+      "selectedPathId": "e72d4b1a67f79ff3",
+      "selectedSessionId": "8a700e6a11f627d3-59edc76d",
       "fatalObserved": true,
-      "selectedArms": [],
-      "repairedArms": [],
+      "selectedArms": [
+        {
+          "selector": "message_arm__0__bcef094c9cdc",
+          "family": "message_family__0__7b7a85fd38f4",
+          "groupId": "9579b07cb6369081|e8c57c563072dcb1|ea9014ef1778991d|ec87a7ece092e144|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "9579b07cb6369081",
+            "ec87a7ece092e144"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "d2998daecc94e224",
+          "interactionIds": [
+            "d4de7e5f79a45ef2",
+            "c026e05182891157",
+            "01275c3615275201",
+            "8ed90b51edb78b56",
+            "137c30fcb96bbf79"
+          ],
+          "expressionRefs": [
+            "EXPR.e06731a15827f76b",
+            "EXPR.5bd672cc75445a0e"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__09d8f20d32e6",
+          "family": "message_family__3__f0112f613d95",
+          "groupId": "814ca96b9dbc1209|f8d71316556aac14",
+          "attachEndpointIds": [
+            "f8d71316556aac14",
+            "814ca96b9dbc1209"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "656fabe4b80ed1da",
+          "interactionIds": [
+            "aaf4d67ad14f0ce4",
+            "84e82ada63ccc3ed"
+          ],
+          "expressionRefs": [
+            "EXPR.8af5c503d2278da8"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "PAIRING:bb13cc0c04e1e8ef\u003d91e5dd31946b7386"
+      ],
       "unsatCore": []
     },
     {
       "ordinal": 12,
-      "status": "sat",
+      "status": "unsat",
       "assignment": {
         "CONFIG:zookeeper.test.allowDiscontinuousProposals": "true",
         "CONFIG:readonlymode.enabled": "false",
@@ -605,9 +1337,9 @@
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.e9707442-b80a-3c99-8d85-996393297c14": "true",
         "CONFIG:zookeeper.test.allowDiscontinuousProposals": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
-      "fatalObserved": true,
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
       "selectedArms": [],
       "repairedArms": [],
       "unsatCore": []
@@ -628,11 +1360,94 @@
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.e9707442-b80a-3c99-8d85-996393297c14": "true",
         "CONFIG:readonlymode.enabled": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
+      "selectedPathId": "e72d4b1a67f79ff3",
+      "selectedSessionId": "8a700e6a11f627d3-59edc76d",
       "fatalObserved": true,
-      "selectedArms": [],
-      "repairedArms": [],
+      "selectedArms": [
+        {
+          "selector": "message_arm__0__bcef094c9cdc",
+          "family": "message_family__0__7b7a85fd38f4",
+          "groupId": "9579b07cb6369081|e8c57c563072dcb1|ea9014ef1778991d|ec87a7ece092e144|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "9579b07cb6369081",
+            "ec87a7ece092e144"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "d2998daecc94e224",
+          "interactionIds": [
+            "d4de7e5f79a45ef2",
+            "c026e05182891157",
+            "01275c3615275201",
+            "8ed90b51edb78b56",
+            "137c30fcb96bbf79"
+          ],
+          "expressionRefs": [
+            "EXPR.e06731a15827f76b",
+            "EXPR.5bd672cc75445a0e"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__09d8f20d32e6",
+          "family": "message_family__3__f0112f613d95",
+          "groupId": "814ca96b9dbc1209|f8d71316556aac14",
+          "attachEndpointIds": [
+            "f8d71316556aac14",
+            "814ca96b9dbc1209"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "656fabe4b80ed1da",
+          "interactionIds": [
+            "aaf4d67ad14f0ce4",
+            "84e82ada63ccc3ed"
+          ],
+          "expressionRefs": [
+            "EXPR.8af5c503d2278da8"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__a7344a1dc807",
+          "family": "message_family__3__70387414a3a4",
+          "groupId": "58c5d2895fadafcd|8f5a923a8e41b83b|e8c57c563072dcb1|ea9014ef1778991d|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "58c5d2895fadafcd",
+            "8f5a923a8e41b83b"
+          ],
+          "sessionId": "f7ce0b46956871bd-49d569b7",
+          "sessionIds": [
+            "f7ce0b46956871bd-49d569b7"
+          ],
+          "producerPathId": "38bea1d31dc877a1",
+          "interactionIds": [
+            "a9792c576c4b06a5",
+            "ba6b445dd84092d3",
+            "0168974f6ccc4f3f",
+            "ae1216060af6b314",
+            "30f3f1c4ac7cc1d5"
+          ],
+          "expressionRefs": [
+            "EXPR.1938d6e8bf493110",
+            "EXPR.f5e993067cf9e209"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "PAIRING:bb13cc0c04e1e8ef\u003d91e5dd31946b7386"
+      ],
       "unsatCore": []
     },
     {
@@ -651,11 +1466,65 @@
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c939d538-92b2-38dd-b4a1-1ee73fca453a": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.854be31a-0cc5-36df-9d31-58e96739205b": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
+      "selectedPathId": "e72d4b1a67f79ff3",
+      "selectedSessionId": "8a700e6a11f627d3-59edc76d",
       "fatalObserved": true,
-      "selectedArms": [],
-      "repairedArms": [],
+      "selectedArms": [
+        {
+          "selector": "message_arm__0__bcef094c9cdc",
+          "family": "message_family__0__7b7a85fd38f4",
+          "groupId": "9579b07cb6369081|e8c57c563072dcb1|ea9014ef1778991d|ec87a7ece092e144|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "9579b07cb6369081",
+            "ec87a7ece092e144"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "d2998daecc94e224",
+          "interactionIds": [
+            "d4de7e5f79a45ef2",
+            "c026e05182891157",
+            "01275c3615275201",
+            "8ed90b51edb78b56",
+            "137c30fcb96bbf79"
+          ],
+          "expressionRefs": [
+            "EXPR.e06731a15827f76b",
+            "EXPR.5bd672cc75445a0e"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__09d8f20d32e6",
+          "family": "message_family__3__f0112f613d95",
+          "groupId": "814ca96b9dbc1209|f8d71316556aac14",
+          "attachEndpointIds": [
+            "f8d71316556aac14",
+            "814ca96b9dbc1209"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "656fabe4b80ed1da",
+          "interactionIds": [
+            "aaf4d67ad14f0ce4",
+            "84e82ada63ccc3ed"
+          ],
+          "expressionRefs": [
+            "EXPR.8af5c503d2278da8"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "PAIRING:bb13cc0c04e1e8ef\u003d91e5dd31946b7386"
+      ],
       "unsatCore": []
     },
     {
@@ -674,11 +1543,65 @@
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c939d538-92b2-38dd-b4a1-1ee73fca453a": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.771cd1e9-b54d-3c81-941c-2daf8dccd1fb": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
+      "selectedPathId": "e72d4b1a67f79ff3",
+      "selectedSessionId": "8a700e6a11f627d3-59edc76d",
       "fatalObserved": true,
-      "selectedArms": [],
-      "repairedArms": [],
+      "selectedArms": [
+        {
+          "selector": "message_arm__0__bcef094c9cdc",
+          "family": "message_family__0__7b7a85fd38f4",
+          "groupId": "9579b07cb6369081|e8c57c563072dcb1|ea9014ef1778991d|ec87a7ece092e144|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "9579b07cb6369081",
+            "ec87a7ece092e144"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "d2998daecc94e224",
+          "interactionIds": [
+            "d4de7e5f79a45ef2",
+            "c026e05182891157",
+            "01275c3615275201",
+            "8ed90b51edb78b56",
+            "137c30fcb96bbf79"
+          ],
+          "expressionRefs": [
+            "EXPR.e06731a15827f76b",
+            "EXPR.5bd672cc75445a0e"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__09d8f20d32e6",
+          "family": "message_family__3__f0112f613d95",
+          "groupId": "814ca96b9dbc1209|f8d71316556aac14",
+          "attachEndpointIds": [
+            "f8d71316556aac14",
+            "814ca96b9dbc1209"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "656fabe4b80ed1da",
+          "interactionIds": [
+            "aaf4d67ad14f0ce4",
+            "84e82ada63ccc3ed"
+          ],
+          "expressionRefs": [
+            "EXPR.8af5c503d2278da8"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "PAIRING:bb13cc0c04e1e8ef\u003d91e5dd31946b7386"
+      ],
       "unsatCore": []
     },
     {
@@ -697,16 +1620,70 @@
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c939d538-92b2-38dd-b4a1-1ee73fca453a": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c82929f6-e908-3f38-be3c-6aa0756ba079": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
+      "selectedPathId": "e72d4b1a67f79ff3",
+      "selectedSessionId": "8a700e6a11f627d3-59edc76d",
       "fatalObserved": true,
-      "selectedArms": [],
-      "repairedArms": [],
+      "selectedArms": [
+        {
+          "selector": "message_arm__0__bcef094c9cdc",
+          "family": "message_family__0__7b7a85fd38f4",
+          "groupId": "9579b07cb6369081|e8c57c563072dcb1|ea9014ef1778991d|ec87a7ece092e144|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "9579b07cb6369081",
+            "ec87a7ece092e144"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "d2998daecc94e224",
+          "interactionIds": [
+            "d4de7e5f79a45ef2",
+            "c026e05182891157",
+            "01275c3615275201",
+            "8ed90b51edb78b56",
+            "137c30fcb96bbf79"
+          ],
+          "expressionRefs": [
+            "EXPR.e06731a15827f76b",
+            "EXPR.5bd672cc75445a0e"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__09d8f20d32e6",
+          "family": "message_family__3__f0112f613d95",
+          "groupId": "814ca96b9dbc1209|f8d71316556aac14",
+          "attachEndpointIds": [
+            "f8d71316556aac14",
+            "814ca96b9dbc1209"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "656fabe4b80ed1da",
+          "interactionIds": [
+            "aaf4d67ad14f0ce4",
+            "84e82ada63ccc3ed"
+          ],
+          "expressionRefs": [
+            "EXPR.8af5c503d2278da8"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "PAIRING:bb13cc0c04e1e8ef\u003d91e5dd31946b7386"
+      ],
       "unsatCore": []
     },
     {
       "ordinal": 17,
-      "status": "sat",
+      "status": "unsat",
       "assignment": {
         "CONFIG:zookeeper.test.allowDiscontinuousProposals": "true",
         "CONFIG:readonlymode.enabled": "false",
@@ -720,9 +1697,9 @@
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c939d538-92b2-38dd-b4a1-1ee73fca453a": "true",
         "CONFIG:zookeeper.test.allowDiscontinuousProposals": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
-      "fatalObserved": true,
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
       "selectedArms": [],
       "repairedArms": [],
       "unsatCore": []
@@ -743,11 +1720,94 @@
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c939d538-92b2-38dd-b4a1-1ee73fca453a": "true",
         "CONFIG:readonlymode.enabled": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
+      "selectedPathId": "e72d4b1a67f79ff3",
+      "selectedSessionId": "8a700e6a11f627d3-59edc76d",
       "fatalObserved": true,
-      "selectedArms": [],
-      "repairedArms": [],
+      "selectedArms": [
+        {
+          "selector": "message_arm__0__bcef094c9cdc",
+          "family": "message_family__0__7b7a85fd38f4",
+          "groupId": "9579b07cb6369081|e8c57c563072dcb1|ea9014ef1778991d|ec87a7ece092e144|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "9579b07cb6369081",
+            "ec87a7ece092e144"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "d2998daecc94e224",
+          "interactionIds": [
+            "d4de7e5f79a45ef2",
+            "c026e05182891157",
+            "01275c3615275201",
+            "8ed90b51edb78b56",
+            "137c30fcb96bbf79"
+          ],
+          "expressionRefs": [
+            "EXPR.e06731a15827f76b",
+            "EXPR.5bd672cc75445a0e"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__09d8f20d32e6",
+          "family": "message_family__3__f0112f613d95",
+          "groupId": "814ca96b9dbc1209|f8d71316556aac14",
+          "attachEndpointIds": [
+            "f8d71316556aac14",
+            "814ca96b9dbc1209"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "656fabe4b80ed1da",
+          "interactionIds": [
+            "aaf4d67ad14f0ce4",
+            "84e82ada63ccc3ed"
+          ],
+          "expressionRefs": [
+            "EXPR.8af5c503d2278da8"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__a7344a1dc807",
+          "family": "message_family__3__70387414a3a4",
+          "groupId": "58c5d2895fadafcd|8f5a923a8e41b83b|e8c57c563072dcb1|ea9014ef1778991d|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "58c5d2895fadafcd",
+            "8f5a923a8e41b83b"
+          ],
+          "sessionId": "f7ce0b46956871bd-49d569b7",
+          "sessionIds": [
+            "f7ce0b46956871bd-49d569b7"
+          ],
+          "producerPathId": "38bea1d31dc877a1",
+          "interactionIds": [
+            "a9792c576c4b06a5",
+            "ba6b445dd84092d3",
+            "0168974f6ccc4f3f",
+            "ae1216060af6b314",
+            "30f3f1c4ac7cc1d5"
+          ],
+          "expressionRefs": [
+            "EXPR.1938d6e8bf493110",
+            "EXPR.f5e993067cf9e209"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "PAIRING:bb13cc0c04e1e8ef\u003d91e5dd31946b7386"
+      ],
       "unsatCore": []
     },
     {
@@ -766,11 +1826,65 @@
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.854be31a-0cc5-36df-9d31-58e96739205b": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.771cd1e9-b54d-3c81-941c-2daf8dccd1fb": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
+      "selectedPathId": "e72d4b1a67f79ff3",
+      "selectedSessionId": "8a700e6a11f627d3-59edc76d",
       "fatalObserved": true,
-      "selectedArms": [],
-      "repairedArms": [],
+      "selectedArms": [
+        {
+          "selector": "message_arm__0__bcef094c9cdc",
+          "family": "message_family__0__7b7a85fd38f4",
+          "groupId": "9579b07cb6369081|e8c57c563072dcb1|ea9014ef1778991d|ec87a7ece092e144|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "9579b07cb6369081",
+            "ec87a7ece092e144"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "d2998daecc94e224",
+          "interactionIds": [
+            "d4de7e5f79a45ef2",
+            "c026e05182891157",
+            "01275c3615275201",
+            "8ed90b51edb78b56",
+            "137c30fcb96bbf79"
+          ],
+          "expressionRefs": [
+            "EXPR.e06731a15827f76b",
+            "EXPR.5bd672cc75445a0e"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__09d8f20d32e6",
+          "family": "message_family__3__f0112f613d95",
+          "groupId": "814ca96b9dbc1209|f8d71316556aac14",
+          "attachEndpointIds": [
+            "f8d71316556aac14",
+            "814ca96b9dbc1209"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "656fabe4b80ed1da",
+          "interactionIds": [
+            "aaf4d67ad14f0ce4",
+            "84e82ada63ccc3ed"
+          ],
+          "expressionRefs": [
+            "EXPR.8af5c503d2278da8"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "PAIRING:bb13cc0c04e1e8ef\u003d91e5dd31946b7386"
+      ],
       "unsatCore": []
     },
     {
@@ -789,16 +1903,70 @@
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.854be31a-0cc5-36df-9d31-58e96739205b": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c82929f6-e908-3f38-be3c-6aa0756ba079": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
+      "selectedPathId": "e72d4b1a67f79ff3",
+      "selectedSessionId": "8a700e6a11f627d3-59edc76d",
       "fatalObserved": true,
-      "selectedArms": [],
-      "repairedArms": [],
+      "selectedArms": [
+        {
+          "selector": "message_arm__0__bcef094c9cdc",
+          "family": "message_family__0__7b7a85fd38f4",
+          "groupId": "9579b07cb6369081|e8c57c563072dcb1|ea9014ef1778991d|ec87a7ece092e144|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "9579b07cb6369081",
+            "ec87a7ece092e144"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "d2998daecc94e224",
+          "interactionIds": [
+            "d4de7e5f79a45ef2",
+            "c026e05182891157",
+            "01275c3615275201",
+            "8ed90b51edb78b56",
+            "137c30fcb96bbf79"
+          ],
+          "expressionRefs": [
+            "EXPR.e06731a15827f76b",
+            "EXPR.5bd672cc75445a0e"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__09d8f20d32e6",
+          "family": "message_family__3__f0112f613d95",
+          "groupId": "814ca96b9dbc1209|f8d71316556aac14",
+          "attachEndpointIds": [
+            "f8d71316556aac14",
+            "814ca96b9dbc1209"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "656fabe4b80ed1da",
+          "interactionIds": [
+            "aaf4d67ad14f0ce4",
+            "84e82ada63ccc3ed"
+          ],
+          "expressionRefs": [
+            "EXPR.8af5c503d2278da8"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "PAIRING:bb13cc0c04e1e8ef\u003d91e5dd31946b7386"
+      ],
       "unsatCore": []
     },
     {
       "ordinal": 21,
-      "status": "sat",
+      "status": "unsat",
       "assignment": {
         "CONFIG:zookeeper.test.allowDiscontinuousProposals": "true",
         "CONFIG:readonlymode.enabled": "false",
@@ -812,9 +1980,9 @@
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.854be31a-0cc5-36df-9d31-58e96739205b": "true",
         "CONFIG:zookeeper.test.allowDiscontinuousProposals": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
-      "fatalObserved": true,
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
       "selectedArms": [],
       "repairedArms": [],
       "unsatCore": []
@@ -835,11 +2003,94 @@
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.854be31a-0cc5-36df-9d31-58e96739205b": "true",
         "CONFIG:readonlymode.enabled": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
+      "selectedPathId": "e72d4b1a67f79ff3",
+      "selectedSessionId": "8a700e6a11f627d3-59edc76d",
       "fatalObserved": true,
-      "selectedArms": [],
-      "repairedArms": [],
+      "selectedArms": [
+        {
+          "selector": "message_arm__0__bcef094c9cdc",
+          "family": "message_family__0__7b7a85fd38f4",
+          "groupId": "9579b07cb6369081|e8c57c563072dcb1|ea9014ef1778991d|ec87a7ece092e144|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "9579b07cb6369081",
+            "ec87a7ece092e144"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "d2998daecc94e224",
+          "interactionIds": [
+            "d4de7e5f79a45ef2",
+            "c026e05182891157",
+            "01275c3615275201",
+            "8ed90b51edb78b56",
+            "137c30fcb96bbf79"
+          ],
+          "expressionRefs": [
+            "EXPR.e06731a15827f76b",
+            "EXPR.5bd672cc75445a0e"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__09d8f20d32e6",
+          "family": "message_family__3__f0112f613d95",
+          "groupId": "814ca96b9dbc1209|f8d71316556aac14",
+          "attachEndpointIds": [
+            "f8d71316556aac14",
+            "814ca96b9dbc1209"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "656fabe4b80ed1da",
+          "interactionIds": [
+            "aaf4d67ad14f0ce4",
+            "84e82ada63ccc3ed"
+          ],
+          "expressionRefs": [
+            "EXPR.8af5c503d2278da8"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__a7344a1dc807",
+          "family": "message_family__3__70387414a3a4",
+          "groupId": "58c5d2895fadafcd|8f5a923a8e41b83b|e8c57c563072dcb1|ea9014ef1778991d|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "58c5d2895fadafcd",
+            "8f5a923a8e41b83b"
+          ],
+          "sessionId": "f7ce0b46956871bd-49d569b7",
+          "sessionIds": [
+            "f7ce0b46956871bd-49d569b7"
+          ],
+          "producerPathId": "38bea1d31dc877a1",
+          "interactionIds": [
+            "a9792c576c4b06a5",
+            "ba6b445dd84092d3",
+            "0168974f6ccc4f3f",
+            "ae1216060af6b314",
+            "30f3f1c4ac7cc1d5"
+          ],
+          "expressionRefs": [
+            "EXPR.1938d6e8bf493110",
+            "EXPR.f5e993067cf9e209"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "PAIRING:bb13cc0c04e1e8ef\u003d91e5dd31946b7386"
+      ],
       "unsatCore": []
     },
     {
@@ -858,16 +2109,70 @@
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.771cd1e9-b54d-3c81-941c-2daf8dccd1fb": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c82929f6-e908-3f38-be3c-6aa0756ba079": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
+      "selectedPathId": "e72d4b1a67f79ff3",
+      "selectedSessionId": "8a700e6a11f627d3-59edc76d",
       "fatalObserved": true,
-      "selectedArms": [],
-      "repairedArms": [],
+      "selectedArms": [
+        {
+          "selector": "message_arm__0__bcef094c9cdc",
+          "family": "message_family__0__7b7a85fd38f4",
+          "groupId": "9579b07cb6369081|e8c57c563072dcb1|ea9014ef1778991d|ec87a7ece092e144|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "9579b07cb6369081",
+            "ec87a7ece092e144"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "d2998daecc94e224",
+          "interactionIds": [
+            "d4de7e5f79a45ef2",
+            "c026e05182891157",
+            "01275c3615275201",
+            "8ed90b51edb78b56",
+            "137c30fcb96bbf79"
+          ],
+          "expressionRefs": [
+            "EXPR.e06731a15827f76b",
+            "EXPR.5bd672cc75445a0e"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__09d8f20d32e6",
+          "family": "message_family__3__f0112f613d95",
+          "groupId": "814ca96b9dbc1209|f8d71316556aac14",
+          "attachEndpointIds": [
+            "f8d71316556aac14",
+            "814ca96b9dbc1209"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "656fabe4b80ed1da",
+          "interactionIds": [
+            "aaf4d67ad14f0ce4",
+            "84e82ada63ccc3ed"
+          ],
+          "expressionRefs": [
+            "EXPR.8af5c503d2278da8"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "PAIRING:bb13cc0c04e1e8ef\u003d91e5dd31946b7386"
+      ],
       "unsatCore": []
     },
     {
       "ordinal": 24,
-      "status": "sat",
+      "status": "unsat",
       "assignment": {
         "CONFIG:zookeeper.test.allowDiscontinuousProposals": "true",
         "CONFIG:readonlymode.enabled": "false",
@@ -881,9 +2186,9 @@
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.771cd1e9-b54d-3c81-941c-2daf8dccd1fb": "true",
         "CONFIG:zookeeper.test.allowDiscontinuousProposals": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
-      "fatalObserved": true,
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
       "selectedArms": [],
       "repairedArms": [],
       "unsatCore": []
@@ -904,16 +2209,99 @@
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.771cd1e9-b54d-3c81-941c-2daf8dccd1fb": "true",
         "CONFIG:readonlymode.enabled": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
+      "selectedPathId": "e72d4b1a67f79ff3",
+      "selectedSessionId": "8a700e6a11f627d3-59edc76d",
       "fatalObserved": true,
-      "selectedArms": [],
-      "repairedArms": [],
+      "selectedArms": [
+        {
+          "selector": "message_arm__0__bcef094c9cdc",
+          "family": "message_family__0__7b7a85fd38f4",
+          "groupId": "9579b07cb6369081|e8c57c563072dcb1|ea9014ef1778991d|ec87a7ece092e144|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "9579b07cb6369081",
+            "ec87a7ece092e144"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "d2998daecc94e224",
+          "interactionIds": [
+            "d4de7e5f79a45ef2",
+            "c026e05182891157",
+            "01275c3615275201",
+            "8ed90b51edb78b56",
+            "137c30fcb96bbf79"
+          ],
+          "expressionRefs": [
+            "EXPR.e06731a15827f76b",
+            "EXPR.5bd672cc75445a0e"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__09d8f20d32e6",
+          "family": "message_family__3__f0112f613d95",
+          "groupId": "814ca96b9dbc1209|f8d71316556aac14",
+          "attachEndpointIds": [
+            "f8d71316556aac14",
+            "814ca96b9dbc1209"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "656fabe4b80ed1da",
+          "interactionIds": [
+            "aaf4d67ad14f0ce4",
+            "84e82ada63ccc3ed"
+          ],
+          "expressionRefs": [
+            "EXPR.8af5c503d2278da8"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__a7344a1dc807",
+          "family": "message_family__3__70387414a3a4",
+          "groupId": "58c5d2895fadafcd|8f5a923a8e41b83b|e8c57c563072dcb1|ea9014ef1778991d|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "58c5d2895fadafcd",
+            "8f5a923a8e41b83b"
+          ],
+          "sessionId": "f7ce0b46956871bd-49d569b7",
+          "sessionIds": [
+            "f7ce0b46956871bd-49d569b7"
+          ],
+          "producerPathId": "38bea1d31dc877a1",
+          "interactionIds": [
+            "a9792c576c4b06a5",
+            "ba6b445dd84092d3",
+            "0168974f6ccc4f3f",
+            "ae1216060af6b314",
+            "30f3f1c4ac7cc1d5"
+          ],
+          "expressionRefs": [
+            "EXPR.1938d6e8bf493110",
+            "EXPR.f5e993067cf9e209"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "PAIRING:bb13cc0c04e1e8ef\u003d91e5dd31946b7386"
+      ],
       "unsatCore": []
     },
     {
       "ordinal": 26,
-      "status": "sat",
+      "status": "unsat",
       "assignment": {
         "CONFIG:zookeeper.test.allowDiscontinuousProposals": "true",
         "CONFIG:readonlymode.enabled": "false",
@@ -927,9 +2315,9 @@
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c82929f6-e908-3f38-be3c-6aa0756ba079": "true",
         "CONFIG:zookeeper.test.allowDiscontinuousProposals": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
-      "fatalObserved": true,
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
       "selectedArms": [],
       "repairedArms": [],
       "unsatCore": []
@@ -950,16 +2338,99 @@
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c82929f6-e908-3f38-be3c-6aa0756ba079": "true",
         "CONFIG:readonlymode.enabled": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
+      "selectedPathId": "e72d4b1a67f79ff3",
+      "selectedSessionId": "8a700e6a11f627d3-59edc76d",
       "fatalObserved": true,
-      "selectedArms": [],
-      "repairedArms": [],
+      "selectedArms": [
+        {
+          "selector": "message_arm__0__bcef094c9cdc",
+          "family": "message_family__0__7b7a85fd38f4",
+          "groupId": "9579b07cb6369081|e8c57c563072dcb1|ea9014ef1778991d|ec87a7ece092e144|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "9579b07cb6369081",
+            "ec87a7ece092e144"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "d2998daecc94e224",
+          "interactionIds": [
+            "d4de7e5f79a45ef2",
+            "c026e05182891157",
+            "01275c3615275201",
+            "8ed90b51edb78b56",
+            "137c30fcb96bbf79"
+          ],
+          "expressionRefs": [
+            "EXPR.e06731a15827f76b",
+            "EXPR.5bd672cc75445a0e"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__09d8f20d32e6",
+          "family": "message_family__3__f0112f613d95",
+          "groupId": "814ca96b9dbc1209|f8d71316556aac14",
+          "attachEndpointIds": [
+            "f8d71316556aac14",
+            "814ca96b9dbc1209"
+          ],
+          "sessionId": "8a700e6a11f627d3-59edc76d",
+          "sessionIds": [
+            "8a700e6a11f627d3-59edc76d"
+          ],
+          "producerPathId": "656fabe4b80ed1da",
+          "interactionIds": [
+            "aaf4d67ad14f0ce4",
+            "84e82ada63ccc3ed"
+          ],
+          "expressionRefs": [
+            "EXPR.8af5c503d2278da8"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "message_arm__3__a7344a1dc807",
+          "family": "message_family__3__70387414a3a4",
+          "groupId": "58c5d2895fadafcd|8f5a923a8e41b83b|e8c57c563072dcb1|ea9014ef1778991d|f7462a460894e2d2",
+          "attachEndpointIds": [
+            "ea9014ef1778991d",
+            "f7462a460894e2d2",
+            "e8c57c563072dcb1",
+            "58c5d2895fadafcd",
+            "8f5a923a8e41b83b"
+          ],
+          "sessionId": "f7ce0b46956871bd-49d569b7",
+          "sessionIds": [
+            "f7ce0b46956871bd-49d569b7"
+          ],
+          "producerPathId": "38bea1d31dc877a1",
+          "interactionIds": [
+            "a9792c576c4b06a5",
+            "ba6b445dd84092d3",
+            "0168974f6ccc4f3f",
+            "ae1216060af6b314",
+            "30f3f1c4ac7cc1d5"
+          ],
+          "expressionRefs": [
+            "EXPR.1938d6e8bf493110",
+            "EXPR.f5e993067cf9e209"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "PAIRING:bb13cc0c04e1e8ef\u003d91e5dd31946b7386"
+      ],
       "unsatCore": []
     },
     {
       "ordinal": 28,
-      "status": "sat",
+      "status": "unsat",
       "assignment": {
         "CONFIG:zookeeper.test.allowDiscontinuousProposals": "true",
         "CONFIG:readonlymode.enabled": "true",
@@ -973,9 +2444,9 @@
         "CONFIG:zookeeper.test.allowDiscontinuousProposals": "true",
         "CONFIG:readonlymode.enabled": "true"
       },
-      "selectedPathId": "f0bedfed74073a8c",
-      "selectedSessionId": "5b8998ea47acd01c-05222fcd",
-      "fatalObserved": true,
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
       "selectedArms": [],
       "repairedArms": [],
       "unsatCore": []
@@ -986,36 +2457,57 @@
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "seed-result-4b738b14",
+      "subject": "0e58eca4b9301767-3c1374be",
       "detail": "this session ran the occurrence and did not reach the anchor"
     },
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "a5d7c8ecbd55752d of 5b8998ea47acd01c-05222fcd",
-      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 3903), where the path throws: no producer for this path"
+      "subject": "seed-result-ca39bfa0",
+      "detail": "this session ran the occurrence and did not reach the anchor"
     },
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "a5d7c8ecbd55752d of 8ecdec9a23bc80a9-a430f590",
-      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 3889), where the path throws: no producer for this path"
+      "subject": "36300c096719672d of 8a700e6a11f627d3-59edc76d",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 4332), where the path throws: no producer for this path"
     },
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "b3261a09573e8bbe of seed-result-4b738b14",
-      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 3810), where the path throws: no producer for this path"
+      "subject": "f86a55c140cd1f4d of c4c1f701b9e422ff-1cc8b61f",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 3715), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "c4c1f701b9e422ff-1cc8b61f",
+      "kind": "UNPRODUCIBLE_ANSWER",
+      "cls": "DIAGNOSTIC",
+      "subject": "zkq-53",
+      "detail": "none of the 1 session(s) eligible to have sent this message ran in a world compatible with this path\u0027s, so no delivery this path could have received binds what it read"
+    },
+    {
+      "sessionId": "seed-result-ca39bfa0",
+      "kind": "UNPRODUCIBLE_ANSWER",
+      "cls": "DIAGNOSTIC",
+      "subject": "zkq-65",
+      "detail": "every session whose world is compatible with this path\u0027s (1 of the 2 eligible) rests on a value the recording does not state, so nothing binds what this path read from it"
     },
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "a5d7c8ecbd55752d of a3e0c1b825ed3a3a-6cdcc2ed",
-      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 3818), where the path throws: no producer for this path"
+      "subject": "adc68a7637e8e0a5 of seed-result-ca39bfa0",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 3730), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "36300c096719672d of f7ce0b46956871bd-49d569b7",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 3743), where the path throws: no producer for this path"
     },
     {
       "sessionId": "composition",
@@ -1049,28 +2541,63 @@
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "aaf4d67ad14f0ce4",
+      "subject": "0f82dc2b94e2af48",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "320e58d84480e9c0",
+      "subject": "5d0d6fb26cb3ba6a",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "0d7bfdcf918116a0",
+      "subject": "e4b91aebf142973f",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "c2c3dea1c099d6c1",
+      "subject": "dca59b8e41207e44",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "bd6628368a6029ff",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "394dea57121960e8",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "183f0767ecc0c44a",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "74e4bcff1c5cf383",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "1cf7ad5c901169d4",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
@@ -1105,14 +2632,14 @@
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "17bca3928e3a0d72",
+      "subject": "cc23d9484506960e",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "d09c9404cf19c6ad",
+      "subject": "297da9a76f08877d",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
@@ -1133,112 +2660,189 @@
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "8ed90b51edb78b56",
+      "subject": "62270857fef570f2",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "137c30fcb96bbf79",
+      "subject": "ca1888a57b6c8e85",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "33bcdbb439f04d80",
+      "subject": "058745b548ad784c",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "d43445d53d176089",
+      "subject": "0c8b6a891a560c3f",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "66abb626f218e9cb",
+      "subject": "707288a758526e8e",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "996344aa6a4bd3d5",
+      "subject": "9f4e9a144bba2f01",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "6ae5607826b99e13",
+      "subject": "260560b76e2f315f",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "1a4dc5e13cfd7938",
+      "subject": "d1463678d5bda1e4",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "f138b8b52c0b1f26",
+      "subject": "6dbe7018e97b973e",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "ce2b2fc114989967",
+      "subject": "15a999e257f48abe",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "d04f5b5b09b1d05d",
+      "subject": "44ef0a8258d147ce",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "8995634fc13cb265",
+      "subject": "7f206e445acdb009",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "04cf6f7f6e74eece",
+      "subject": "07b1dc7c2269408d",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "b3c76bbc6fe6c5c8",
+      "subject": "7baf4ee817ecc25b",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "399981c627111960",
+      "subject": "cc391f02cdf16354",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "3ae0b4949daa388b",
+      "subject": "b7bfd035efb1b868",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "d116f0b47a844067",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "c21866c9176c4206",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "d60d66ea5af208eb",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "bf23137ea97143f7",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "624697f02f3dec5a",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "f1ec4df83a151d18",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "f850f9d29aa08c93",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "59cb9fa0c7e05895",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "27b2da964338bd11",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "a18e968394fdcd29",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "565ad1c88d73d414",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
@@ -1277,18 +2881,18 @@
       "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
     },
     {
-      "sessionId": "5b8998ea47acd01c-05222fcd",
+      "sessionId": "8a700e6a11f627d3-59edc76d",
       "kind": "FORMULA_SAT_AT_RECORDED_VALUATION",
       "cls": "DIAGNOSTIC",
-      "subject": "a witness moving [CONFIG:zookeeper.test.allowDiscontinuousProposals]",
-      "detail": "the formula shows a witness moving [CONFIG:zookeeper.test.allowDiscontinuousProposals], and it is satisfiable with every declared root at its recorded value too, so the recording does not decide the arm"
+      "subject": "a witness moving [CONFIG:readonlymode.enabled]",
+      "detail": "the formula shows a witness moving [CONFIG:readonlymode.enabled], and it is satisfiable with every declared root at its recorded value too, so the recording does not decide the arm"
     },
     {
-      "sessionId": "8ecdec9a23bc80a9-a430f590",
+      "sessionId": "8a700e6a11f627d3-59edc76d",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "49d543e1cf11e5e8",
-      "detail": "world-pairing claim: each pairing on the fatal path by {552bce573b14b80f\u003dFLIP}"
+      "subject": "e72d4b1a67f79ff3",
+      "detail": "world-pairing claim: each pairing on the fatal path by {bb13cc0c04e1e8ef\u003dCONE}"
     }
   ]
 }

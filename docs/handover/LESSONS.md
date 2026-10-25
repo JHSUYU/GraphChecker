@@ -384,6 +384,16 @@ uncapped campaign (`launch-round.sh`) can take the whole pool, so development ro
 shared pool). A fixture that limits a test host's cores must count the head's planner service (one core for the
 exploration).
 
+**ZooKeeper on CloudLab (2026-10-25).** Timing the lifts never exposed: (1) a startup race the lifts always won --
+QuorumBase started peers 1-5 in order, a quorum of 1-4 elected 4, and 5 won the votes of the peers still looking, so
+two leaders stood, one waiting forever under the adapter's `NEVER_MS` limits (4 of 9 native runs): start from the
+highest id down; (2) a test's own 30 s waits that a replay on slower cores outlives (06 and 12 record the ensemble's
+start): the waits a test needs to succeed are unbounded in a workload, its short probes keep their bound (an
+unbounded 2000 ms probe hung 04's native run); (3) a count in an identity -- the leader's occurrences name the
+receiver turn of the deciding notification, so a recording that decides on another turn than its replay loses every
+leader-side slot (06, TODO ZooKeeper on CloudLab 1). Measure a native workload ten times on the new cluster before
+the first round. And `pgrep -f '<pattern>'` matches the shell that runs it: kill by the pid a run wrote.
+
 **Charge what is used where cores bind (2026-10-25).** A replay charged its 90th percentile rounded up to whole cores
 (HDFS: mean 1.63, p90 2.46, charged 2 or 3) left a node at 40 cores charged under a load of 25-55: on liftlab memory
 bound first and the rounding cost nothing. The ledger charges hundredths, a replay its mean, and a round runs as one

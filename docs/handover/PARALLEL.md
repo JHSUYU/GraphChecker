@@ -263,3 +263,13 @@ used:
    a snapshot, not a worktree you edit: bash reads its script as it runs.
 3. **Memory is spent, not rationed.** Heads keep their heaps for life and nothing else changes: a round of every case
    at once stays far under a node's 70 % ceiling (175 GB), so the only memory rule left is the ledger's.
+
+4. **Measured (2026-10-25, ZooKeeper rounds Z1-Z5 beside the HDFS named cases' pools P1-P4).** The ledger's steps cut
+   the nine HDFS named cases' summed walls from 15710 s (P1, whole cores by the mean, the pool gating by charges
+   alone) to 10099 s (P3, the load and a start's decayed cores), 9 of 9 PASS, beside 16 ZooKeeper cases at once; the
+   final series ran the same nine in 9472 s on fewer campaigns. Z4's whole round of 16 cases, 13 of them in 58
+   minutes, kept 54-59 % of the 200 logical CPUs busy (`/proc/stat`, `cpu-Z4.txt`): a node's 40 logical cores are 20
+   physical ones, so that is the physical cores full. Admitting by idle logical CPUs instead (Z5, P4: the busy cores
+   from `/proc/stat`) packed more replays, kept the CPUs no busier and ran 11 of 12 ZooKeeper cases 1-25 % slower and
+   the HDFS nine in 13376 s, so it was reverted: on these nodes the physical cores bind, and the load (which counts a
+   thread waiting for one) is the better gauge.

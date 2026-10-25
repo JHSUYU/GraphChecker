@@ -12,35 +12,35 @@
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "3e2748cba330feea-01f3883d",
+        "subject": "3e2748cba330feea-2f8cffbc",
         "detail": "this session ran the occurrence and did not reach the anchor"
       },
       {
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "83bb7ca5839d2548-b8841081",
+        "subject": "83bb7ca5839d2548-7802a76a",
         "detail": "this session ran the occurrence and did not reach the anchor"
       }
     ]
   },
-  "solverRuns": 10,
-  "seedSessionId": "seed-result-f0305431",
+  "solverRuns": 8,
+  "seedSessionId": "seed-result-a7df6947",
   "valuations": [
     {
       "ordinal": 0,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
         "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
       },
       "moved": {},
       "selectedPathId": "",
@@ -54,19 +54,19 @@
       "ordinal": 1,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
         "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
       },
       "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true"
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -79,19 +79,19 @@
       "ordinal": 2,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
-        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
         "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
       },
       "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true"
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -104,19 +104,19 @@
       "ordinal": 3,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
       },
       "moved": {
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true"
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -129,19 +129,19 @@
       "ordinal": 4,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
       },
       "moved": {
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true"
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -154,19 +154,19 @@
       "ordinal": 5,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
         "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
       },
       "moved": {
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -179,19 +179,19 @@
       "ordinal": 6,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
         "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
       },
       "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -204,19 +204,19 @@
       "ordinal": 7,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
         "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true"
       },
       "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -229,66 +229,16 @@
       "ordinal": 8,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 9,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "false",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "CONFIG:zookeeper.db.autocreate": "false"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 10,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
         "CONFIG:readonlymode.enabled": "true",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
       },
       "moved": {
         "CONFIG:readonlymode.enabled": "true"
@@ -301,19 +251,511 @@
       "unsatCore": []
     },
     {
+      "ordinal": 9,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "true",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "CONFIG:zookeeper.snapshot.trust.empty": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 10,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "CONFIG:zookeeper.db.autocreate": "false"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
       "ordinal": 11,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
-        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
         "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 12,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 13,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 14,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 15,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 16,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 17,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "true",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
+        "CONFIG:readonlymode.enabled": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 18,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "true",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
+        "CONFIG:zookeeper.snapshot.trust.empty": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 19,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
+        "CONFIG:zookeeper.db.autocreate": "false"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 20,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 21,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 22,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 23,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 24,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 25,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "true",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false",
+        "CONFIG:readonlymode.enabled": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 26,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "true",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 27,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false",
+        "CONFIG:zookeeper.db.autocreate": "false"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 28,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
       },
       "moved": {
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
@@ -327,465 +769,23 @@
       "unsatCore": []
     },
     {
-      "ordinal": 12,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 13,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 14,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 15,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 16,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true"
-      },
-      "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 17,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
-        "CONFIG:zookeeper.snapshot.trust.empty": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 18,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "false",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
-        "CONFIG:zookeeper.db.autocreate": "false"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 19,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
-        "CONFIG:readonlymode.enabled": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 20,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 21,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 22,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 23,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 24,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true"
-      },
-      "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 25,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
-        "CONFIG:zookeeper.snapshot.trust.empty": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 26,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
-        "CONFIG:zookeeper.db.autocreate": "false",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
-        "CONFIG:zookeeper.db.autocreate": "false"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 27,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
-        "CONFIG:readonlymode.enabled": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 28,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
       "ordinal": 29,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
         "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
       },
       "moved": {
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true"
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -798,20 +798,20 @@
       "ordinal": 30,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
         "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
       },
       "moved": {
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true"
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -824,20 +824,20 @@
       "ordinal": 31,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true"
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true"
       },
       "moved": {
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true"
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -850,20 +850,20 @@
       "ordinal": 32,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "true",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
       },
       "moved": {
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
-        "CONFIG:zookeeper.snapshot.trust.empty": "true"
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
+        "CONFIG:readonlymode.enabled": "true"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -876,20 +876,20 @@
       "ordinal": 33,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "false",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "true",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
       },
       "moved": {
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
-        "CONFIG:zookeeper.db.autocreate": "false"
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
+        "CONFIG:zookeeper.snapshot.trust.empty": "true"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -902,16 +902,250 @@
       "ordinal": 34,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "true",
+        "CONFIG:zookeeper.db.autocreate": "false"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 35,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
         "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 36,
+      "status": "unsat",
+      "assignment": {
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 37,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 38,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
+        "CONFIG:readonlymode.enabled": "true",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
+        "CONFIG:readonlymode.enabled": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 39,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "true",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
+        "CONFIG:zookeeper.snapshot.trust.empty": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 40,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "true",
+        "CONFIG:zookeeper.db.autocreate": "false"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 41,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 42,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 43,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "true",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
       },
       "moved": {
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
@@ -925,19 +1159,71 @@
       "unsatCore": []
     },
     {
-      "ordinal": 35,
+      "ordinal": 44,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
         "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "true",
+        "CONFIG:zookeeper.db.autocreate": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
+        "CONFIG:zookeeper.snapshot.trust.empty": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 45,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "true",
+        "CONFIG:zookeeper.db.autocreate": "false"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 46,
+      "status": "unsat",
+      "assignment": {
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true"
       },
       "moved": {
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
@@ -951,309 +1237,23 @@
       "unsatCore": []
     },
     {
-      "ordinal": 36,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 37,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true"
-      },
-      "moved": {
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 38,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
-        "CONFIG:zookeeper.snapshot.trust.empty": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 39,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "false",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
-        "CONFIG:zookeeper.db.autocreate": "false"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 40,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
-        "CONFIG:readonlymode.enabled": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 41,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 42,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true"
-      },
-      "moved": {
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 43,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true",
-        "CONFIG:zookeeper.snapshot.trust.empty": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 44,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "false",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true",
-        "CONFIG:zookeeper.db.autocreate": "false"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 45,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "true",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
-      },
-      "moved": {
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true",
-        "CONFIG:readonlymode.enabled": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 46,
-      "status": "unsat",
-      "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true"
-      },
-      "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
       "ordinal": 47,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "true",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
         "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
       },
       "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
-        "CONFIG:zookeeper.snapshot.trust.empty": "true"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
+        "CONFIG:readonlymode.enabled": "true"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -1266,20 +1266,20 @@
       "ordinal": 48,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "false",
         "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "true",
+        "CONFIG:zookeeper.db.autocreate": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
       },
       "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
-        "CONFIG:zookeeper.db.autocreate": "false"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
+        "CONFIG:zookeeper.snapshot.trust.empty": "true"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -1292,20 +1292,20 @@
       "ordinal": 49,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "true",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "false",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
       },
       "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "true",
-        "CONFIG:readonlymode.enabled": "true"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "true",
+        "CONFIG:zookeeper.db.autocreate": "false"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -1318,20 +1318,20 @@
       "ordinal": 50,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "true",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
         "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "false",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true"
       },
       "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
-        "CONFIG:zookeeper.snapshot.trust.empty": "true"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true",
+        "CONFIG:readonlymode.enabled": "true"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -1344,20 +1344,20 @@
       "ordinal": 51,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "false",
         "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "true",
+        "CONFIG:zookeeper.db.autocreate": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true"
       },
       "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
-        "CONFIG:zookeeper.db.autocreate": "false"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true",
+        "CONFIG:zookeeper.snapshot.trust.empty": "true"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -1370,20 +1370,20 @@
       "ordinal": 52,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
-        "CONFIG:readonlymode.enabled": "true",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "false",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true"
       },
       "moved": {
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
-        "CONFIG:readonlymode.enabled": "true"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "true",
+        "CONFIG:zookeeper.db.autocreate": "false"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -1396,20 +1396,20 @@
       "ordinal": 53,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "false",
-        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:readonlymode.enabled": "true",
+        "CONFIG:zookeeper.snapshot.trust.empty": "true",
+        "CONFIG:zookeeper.db.autocreate": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
       },
       "moved": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "true",
-        "CONFIG:zookeeper.db.autocreate": "false"
+        "CONFIG:readonlymode.enabled": "true",
+        "CONFIG:zookeeper.snapshot.trust.empty": "true"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -1422,20 +1422,20 @@
       "ordinal": 54,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "true",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
-        "CONFIG:zookeeper.db.autocreate": "true",
         "CONFIG:readonlymode.enabled": "true",
+        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "CONFIG:zookeeper.db.autocreate": "false",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
       },
       "moved": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "true",
-        "CONFIG:readonlymode.enabled": "true"
+        "CONFIG:readonlymode.enabled": "true",
+        "CONFIG:zookeeper.db.autocreate": "false"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -1448,20 +1448,20 @@
       "ordinal": 55,
       "status": "unsat",
       "assignment": {
-        "CONFIG:zookeeper.snapshot.trust.empty": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
+        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "true",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.ef2a6354-13d9-3613-80bd-3996f7535277": "false",
         "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.3dfc1425-b0cc-37bd-ac19-ccb689b87c62": "false",
+        "CONFIG:readonlymode.enabled": "false",
+        "CONFIG:zookeeper.snapshot.trust.empty": "true",
         "CONFIG:zookeeper.db.autocreate": "false",
-        "CONFIG:readonlymode.enabled": "true",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.c92d20ce-9af2-3f57-9487-7a5c6240e1a4": "false",
         "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7b4c04c4-62cf-3844-a89c-1089e04aeace": "false",
-        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.2cc3ae5e-12e7-3011-ac58-7c7adab4fea6": "false",
-        "REGION.98b8e38a-d414-366b-972d-5bccb78d80a7.in.1e572445-cc23-314d-b920-fe70f8771062": "false"
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.7033d16b-7a5e-372b-9b4b-75fc0dba87f0": "false"
       },
       "moved": {
-        "CONFIG:zookeeper.db.autocreate": "false",
-        "CONFIG:readonlymode.enabled": "true"
+        "CONFIG:zookeeper.snapshot.trust.empty": "true",
+        "CONFIG:zookeeper.db.autocreate": "false"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -1476,14 +1476,14 @@
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "3e2748cba330feea-01f3883d",
+      "subject": "3e2748cba330feea-2f8cffbc",
       "detail": "this session ran the occurrence and did not reach the anchor"
     },
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "83bb7ca5839d2548-b8841081",
+      "subject": "83bb7ca5839d2548-7802a76a",
       "detail": "this session ran the occurrence and did not reach the anchor"
     }
   ]
