@@ -38,7 +38,7 @@ hdfs-adhoc-49	accept-F1-adhoc-49	UNSAT_CLOSED	hdfs-adhoc-49.smt2.gz	hdfs-adhoc-4
 hdfs-adhoc-50	accept-F1-adhoc-50	UNSAT_CLOSED	hdfs-adhoc-50.smt2.gz	hdfs-adhoc-50.claim.json
 hdfs-adhoc-52	accept-F7-adhoc-52	RUN_DEFECT	hdfs-adhoc-52.smt2.gz	hdfs-adhoc-52.claim.json
 hdfs-bugs-slowdisk-zero	accept-F4-bugs-slowdisk-zero	SAT_CANDIDATE	hdfs-bugs-slowdisk-zero.smt2.gz	hdfs-bugs-slowdisk-zero.claim.json
-hdfs-11741	accept-F1-11741	RUN_DEFECT	hdfs-11741.smt2.gz	hdfs-11741.claim.json
+hdfs-11741	accept-F7-11741	SAT_CANDIDATE	hdfs-11741.smt2.gz	hdfs-11741.claim.json
 hdfs-adhoc-07	accept-F7-adhoc-07	UNSAT_CLOSED	hdfs-adhoc-07.smt2.gz	hdfs-adhoc-07.claim.json
 hdfs-adhoc-21	accept-F1-adhoc-21	UNSAT_CLOSED	hdfs-adhoc-21.smt2.gz	hdfs-adhoc-21.claim.json
 hdfs-adhoc-29	accept-F3-adhoc-29	UNSAT_CLOSED	hdfs-adhoc-29.smt2.gz	hdfs-adhoc-29.claim.json

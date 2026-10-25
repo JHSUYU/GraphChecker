@@ -15,7 +15,7 @@ campaigns at once, load 25-55 on 40 CPUs), so no case ran alone.
 | F5 | `hcF5` (f6d277c51) | `f1`; 52 on `f5` (57e091c8af6: a LightWeightGSet sized for 64 MB) | 12, 14 (256 tasks), 52 |
 | F6 | `hcF6` (55141de02) | `f6` (899c200cc8e: TestEncryptedTransfer without block-acquire retries) | 11 (24 waves) |
 | F7 | `hcF7a` (94fce7127); `hcF7d` (b6408caa6, agent D's DECIDE branch); `hcF7` (e0deb39c1, the merge) | `f6`; 11741 on `f1` | 07 (depth 0); 11741; 52 |
-| F8 | `hcF8` (741d1fdea: the merge plus 11741's one claim) | `f1` | 11741 |
+| F8 | `hcF8` (741d1fdea: the merge plus 11741's one claim) | `f1` | 11741, stopped in EXPLORE on the owner's call (2026-10-25); no row |
 
 F1-F7a run one engine: between 9c1bbe157 and 94fce7127 only case declarations (`experiments/hadoop/*/case.sh`,
 `hdfs-cases.tsv`) and the reading tool `tools/analysis/vacuity.py` changed. F7's 11741 and 52 add DECIDE's last changes
@@ -23,7 +23,7 @@ F1-F7a run one engine: between 9c1bbe157 and 94fce7127 only case declarations (`
 last rank claimed in its own run on its own path's polarity, the free formula asked whole first where no run observed
 the fatal); offline on the final corpora of 17897, 17899-bug2, 17967-pathB, 17960, adhoc-10, adhoc-09 and adhoc-16 they
 leave every claim unchanged. A case's later round supersedes its earlier
-one (`collect-results.sh F8,F7,F6,F5,F4,F3,F2,F1`); the superseded runs stay in `/bulk/gc-out/hdfs-final` (F1-12's eight claims
+one (`collect-results.sh F7,F6,F5,F4,F3,F2,F1`); the superseded runs stay in `/bulk/gc-out/hdfs-final` (F1-12's eight claims
 refuted by CONFIRM, F1-52's stalled replays, F1-14/15/16's truncated closures, F1-24/26/37's replays past 2400 s,
 F1-28/29's recovery on the other DataNode, F1-11's divergence) as the evidence for each declaration or workaround
 (STATUS "Per-system surface", LESSONS §10).
@@ -31,7 +31,7 @@ F1-28/29's recovery on the other DataNode, F1-11's divergence) as the evidence f
 **Run one case:** `cd <snapshot> && env GC_OUT=<out> GC_TREES=<tree set> CAUSYNTH_CUSTOM_JDK_HOME=<image> CASES=<case>
 CASE_TIMEOUT_SECONDS=<budget> PRUNE=0 tools/rounds/launch-round.sh <snapshot> <ROUND>`; **all:** `tools/rounds/run-series.sh
 <round> experiments/hadoop/hdfs-cases.tsv system/hdfs-cloudlab=<snapshot>`, or lanes of it side by side
-([../../docs/REPRODUCE.md](../../docs/REPRODUCE.md) §9). The table is `final-stats.py --order F8,F7,F6,F5,F4,F3,F2,F1` over the
+([../../docs/REPRODUCE.md](../../docs/REPRODUCE.md) §9). The table is `final-stats.py --order F7,F6,F5,F4,F3,F2,F1` over the
 run dirs: seeding = PREFLIGHT..IMPORT and ZKKEYS (static passes, recording, seed replay); exploration = EXPLORE;
 compose+solver = COMPOSE + SOLVE + DECIDE; other = CONFIRM + EMIT + REPRODUCE; regions / occurrences = the final closure.
 
@@ -76,7 +76,7 @@ compose+solver = COMPOSE + SOLVE + DECIDE; other = CONFIRM + EMIT + REPRODUCE; r
 | hdfs-adhoc-50 | F1-adhoc-50 | concurrent | UNSAT_CLOSED | NO_SUPPORTED_WITNESS | - | 4816 | 841 | 3891 | 53 | 18 | - | 11 | 88 | 73 |
 | hdfs-adhoc-52 | F7-adhoc-52 | concurrent | RUN_DEFECT | NO_SUPPORTED_WITNESS | - | 6285 | 848 | 3390 | 1989 | 43 | - | 9 | 215 | 123 |
 | hdfs-bugs-slowdisk-zero | F4-bugs-slowdisk-zero | concurrent | SAT_CANDIDATE | STATE_PAIRING_FLIPPED | 10/10 | 926 | 318 | 516 | 6 | 82 | - | 5 | 6 | 5 |
-| hdfs-11741 | F1-11741 | concurrent | RUN_DEFECT | NO_SUPPORTED_WITNESS | - | 18903 | 502 | 16292 | 2065 | 36 | - | 19 | 114 | 31 |
+| hdfs-11741 | F7-11741 | concurrent | SAT_CANDIDATE | CLOCK_SKEW | 0/10 | 18022 | 530 | 6091 | 1855 | 628 | 8918 (1) | 19 | 111 | 26 |
 | hdfs-adhoc-07 | F7-adhoc-07 | concurrent | UNSAT_CLOSED | NO_SUPPORTED_WITNESS | - | 4901 | 638 | 3977 | 123 | 153 | - | 17 | 64 | 75 |
 | hdfs-adhoc-21 | F1-adhoc-21 | concurrent | UNSAT_CLOSED | NO_SUPPORTED_WITNESS | - | 1318 | 757 | 502 | 43 | 12 | - | 8 | 8 | 10 |
 | hdfs-adhoc-29 | F3-adhoc-29 | concurrent | UNSAT_CLOSED | NO_SUPPORTED_WITNESS | - | 1423 | 681 | 707 | 15 | 15 | - | 3 | 3 | 15 |
@@ -84,7 +84,7 @@ compose+solver = COMPOSE + SOLVE + DECIDE; other = CONFIRM + EMIT + REPRODUCE; r
 | hdfs-adhoc-39 | F1-adhoc-39 | concurrent | UNSAT_CLOSED | NO_SUPPORTED_WITNESS | - | 1398 | 631 | 730 | 19 | 9 | - | 11 | 97 | 39 |
 | hdfs-adhoc-40 | F4-adhoc-40 | concurrent | UNSAT_CLOSED | NO_SUPPORTED_WITNESS | - | 931 | 568 | 335 | 14 | 8 | - | 9 | 26 | 18 |
 
-46 of 46 cases; wall 158312 s (44.0 h); seeding 52369, exploration 99007, compose+solver 5064, other 1451, refuted claims 0 s
+46 of 46 cases; wall 157431 s (43.7 h); seeding 52397, exploration 88806, compose+solver 4854, other 2043, refuted claims 8918 s
 
 ## Reading per case
 
@@ -99,7 +99,7 @@ found a new bug: every SAT is a named bug or a designed tolerance, as on system/
 - **hdfs-17960**: **PASS** (HDFS-17960): the configuration root `dfs.namenode.snapshot.deletion.ordered` moved to false (MARKER_FLIPPED), 10/10.
 - **hdfs-17967-pathA / pathB / pathC**: **PASS** (HDFS-17967): a key update lost with a failed heartbeat on each path (MARKER_FLIPPED), each 10/10.
 - **hdfs-bugs-slowdisk-zero**: **PASS** (owner bug): STATE_PAIRING_FLIPPED with no root moved, 10/10 natively, control 0/10 (REPRODUCE plants the turn-counted order in a world that plants no root, c8d40a5d8).
-- **hdfs-11741**: SAT, confirmed in the VM, the mandated mechanism (HDFS-11741, CLOCK_SKEW): on the merged DECIDE (F7) the explored clock world, nn0's key-manager clock (`updateKeys`, +20 h) and the balancer's (+30 h) among its moved clocks, is claimed in its own run on its own path's polarity, and CONFIRM's replay planted the clocks and reached the fatal ("required block key (keyID=...) doesn't exist"); three confirmed claims each reproduced 0 of 10 natively, the clocks planted but the plant's two ORDER rows on dn1's `removeExpiredKeys` never coming in a native run (control 0/10). system/hdfs reproduced it 10/10 natively with the serial-number hook applied; here no SERIAL_NO root moves and that order is TODO. F1 on the earlier DECIDE ran out its budget (EXPLORATION_CUT) without claiming the explored clock world. F8 (one claim) is its final row.
+- **hdfs-11741**: SAT, confirmed in the VM, the mandated mechanism (HDFS-11741, CLOCK_SKEW): on the merged DECIDE (F7) the explored clock world, nn0's key-manager clock (`updateKeys`, +20 h) and the balancer's (+30 h) among its moved clocks, is claimed in its own run on its own path's polarity, and CONFIRM's replay planted the clocks and reached the fatal ("required block key (keyID=...) doesn't exist"); F7's claim loop made five claims: three confirmed claims each reproduced 0 of 10 natively, the clocks planted but the plant's two ORDER rows on dn1's `removeExpiredKeys` never coming in a native run (control 0/10), and CONFIRM refuted one (STATE pairing: the run read `allKeys` from another writer than the model joined), so the first confirmed claim stands as the fallback (`final/unreproduced/0000`; the loop's 8918 s are the table's refuted-claims column). system/hdfs reproduced it 10/10 natively with the serial-number hook applied; here no SERIAL_NO root moves and that order is TODO. F1 on the earlier DECIDE ran out its budget (EXPLORATION_CUT) without claiming the explored clock world. F8 (one claim, the branch's declaration) was stopped in EXPLORE on the owner's call; F7 (agent D's DECIDE branch `hcF7d`) is its final row.
 - **hdfs-adhoc-10**: SAT, confirmed, 10/10: a LOCAL_IO SYNC fault at jn0's `lastWriterEpoch` persist fails the writer's next `journal()` (`Journal.checkWriteRequest`:518). QJM's designed tolerance (a quorum of 2 of 3 goes on), not a new bug.
 - **hdfs-adhoc-12**: SAT, confirmed, 10/10: the target DataNode's heartbeat REQUEST fault loses the KeyUpdateCommand, so a token under nn0's new key misses at `retrievePassword`:541; the known 17899/17967 class. F1 lost a heartbeat race (BLOCKING TOPOLOGY_DIVERGENCE, 8 re-pairing claims refuted by CONFIRM); F5 claimed the fault world.
 - **hdfs-adhoc-05, 06**: UNSAT, vacuous by construction: every path's fatal arm literal false; `numReadyBytes` and `flushTo` read the same ready half of the double buffer on one thread under the stream's lock (06: `bufToSend` is allocated at `numReadyBytes`).
