@@ -10,7 +10,7 @@ source "${here}/../../run_engine.sh"
 source "${here}/../lib/heads.sh"
 out=${GC_OUT}
 vm=${CAUSYNTH_CUSTOM_JDK_HOME:?launch-round.sh: name the concolic VM image as CAUSYNTH_CUSTOM_JDK_HOME}
-owner_host=lift11
+owner_host=${GC_CONTROL_HOST}
 round_cases=(hdfs-11741 hdfs-17960 hdfs-17967-pathA hdfs-17967-pathB
   hdfs-17967-pathC hdfs-17899-bug1 hdfs-17899-bug2 hdfs-17899-bug3
   hdfs-17897 hdfs-bugs-slowdisk-zero)
@@ -29,7 +29,7 @@ heads=()
 for host in ${LIFTS}; do
   [[ "${host}" != "${owner_host}" ]] || continue
   if room=$(campaign_host_room "${host}"); then
-    heads+=("${host}:${room}")
+    heads+=("${host}:${room% *}:${room#* }")
   else
     echo "the memory of ${host} could not be read: it heads nothing" >&2
   fi
