@@ -35,6 +35,9 @@ else
 fi
 mountpoint -q /bulk || sudo mount /bulk
 mkdir -p /bulk/bin /bulk/m2/dot-m2 "${HOME}/.local/bin"
-[[ -L "${HOME}/.m2" ]] || { [[ ! -e "${HOME}/.m2" ]] || mv "${HOME}/.m2" "${HOME}/.m2.local"; ln -sfn /bulk/m2/dot-m2 "${HOME}/.m2"; }
+mkdir -p /bulk/m2/dot-ivy2 /bulk/m2/dot-ant
+for dot in m2 ivy2 ant; do
+  [[ -L "${HOME}/.${dot}" ]] || { [[ ! -e "${HOME}/.${dot}" ]] || mv "${HOME}/.${dot}" "${HOME}/.${dot}.local"; ln -sfn "/bulk/m2/dot-${dot}" "${HOME}/.${dot}"; }
+done
 sudo usermod -aG docker "${user}"
 echo "${me}: ready"
