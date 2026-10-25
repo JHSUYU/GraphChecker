@@ -54,27 +54,28 @@ mapfile -t pending < <(for at in "${!order[@]}"; do
 suffix_of() { printf '%s-%s\n' "${round}" "${1#*-}"; }
 rows_of() { wc -l 2>/dev/null <"${GC_OUT}/accept-$(suffix_of "$1")/summary.tsv" || echo 0; }
 
-host_busy() {
-  local at mb busy
-  read -r at mb busy _ 2>/dev/null <"${campaign_host_gate_root}/$(campaign_host_key "$1")/available" || true
-  [[ "${busy}" =~ ^[0-9]+$ ]] || busy=-
-  printf '%s\n' "${busy}"
+host_load() {
+  local load
+  load=$(campaign_host_read "$1" "cat /proc/loadavg" | awk 'NF >= 3 {print int($1 * 100)}' | tail -n 1)
+  printf '%s\n' "${load:-0}"
 }
 
 declare -A free_of=() room_of=()
 cluster_free=0
 read_cluster() {
-  local host room cores busy line=""
+  local host room cores load total line=""
   cluster_free=0
   for host in "${hosts[@]}"; do
     read -r room cores <<<"$(campaign_host_room "${host}")" || continue
     [[ "${room}" =~ ^-?[0-9]+$ && "${cores}" =~ ^-?[0-9]+$ ]] || continue
-    busy=$(host_busy "${host}")
+    total=$(campaign_host_core_limit "${host}") || continue
+    load=$(host_load "${host}")
+    (( total - load >= cores )) || cores=$(( total - load ))
     (( cores >= 0 )) || cores=0
     free_of[${host}]=${cores}
     room_of[${host}]=${room}
     cluster_free=$(( cluster_free + cores ))
-    line+="${host}:${busy}:${cores}:${room} "
+    line+="${host}:${load}:${cores}:${room} "
   done
   printf '%s\t%s\t%s\t%s\n' "${EPOCHSECONDS}" "${#head_of[@]}" "${cluster_free}" "${line% }" >>"${load_log}"
 }
