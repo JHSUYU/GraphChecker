@@ -990,6 +990,12 @@ which no ORDER holds". The cause is not CONFIRM's planning, as H3 read it from t
    sessions it gated without the exposing session, which `<step>/replaced` named before the drop was known, and
    the dropped session's own invariant rows (DIAGNOSTIC: a BLOCKING one fails IMPORT) stay in
    `campaign_gaps.jsonl`; no later gate re-judges that batch. Re-gating it at the drop would close this.
+   T3 (`/bulk/gc-out/zk-agenttr/accept-T3-bugs-trunc-sync`, snapshot `/bulk/gc-run/zktr-3` = bf5d9dc85, tree set
+   `/bulk/trees/zk4`, alone, 3385 s): UNSAT_CLOSED at FIXED_POINT in 95 rounds, no BLOCKING gap, no defect, z3 unsat on
+   the file, 19 paths, 149 leaves, vacuity.py substantive (1 of 19 paths free), BOUNDED by
+   `region_path_max_world_depth` and `grow_rerun_dropped` (257811a1c73f2c3f's re-run, stranded as before, and
+   ee22557a70e24505's); the four flips cut from 257811a1c73f2c3f's kept first replay (life 3's
+   `Learner.readSyncPacket#u4` #1-#3, `createInputArchive#u9#1`) were ADMITTED.
 3. **The CPU-aware ledger and replay fidelity**: packing the CPUs fuller (PARALLEL §8) gives the order's watchdog less
    CPU per replay; watch the give-up counts (`round-status.sh`'s giveups, `of an order of ... given up`) against
    `cpu-<round>.txt` when the busy share rises.
