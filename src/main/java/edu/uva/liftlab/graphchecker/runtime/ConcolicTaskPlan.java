@@ -416,7 +416,8 @@ final class ConcolicTaskPlan {
         for (RuntimeTask task : tasks) {
             if (task.rootHookGroup.equals(nonNull(rootHookGroupKey))
                     && task.plannedIn(address)
-                    && (task != answering || !task.aloneInContext)) {
+                    && (task != answering || !task.aloneInContext
+                    || !task.countsAloneDiffer(address))) {
                 return true;
             }
         }
@@ -993,6 +994,19 @@ final class ConcolicTaskPlan {
                     && address.node().equals(observed.node())
                     && address.context().render().equals(
                     observed.context().render());
+        }
+
+        boolean countsAloneDiffer(OccurrenceAddress observed) {
+            List<Frame> planned = address.index().frames();
+            List<Frame> ran = observed.index().frames();
+            if (planned.size() != ran.size()) return false;
+            for (int at = 0; at < planned.size(); at++) {
+                if (!planned.get(at).callSite().equals(
+                        ran.get(at).callSite())) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         boolean recorded(OccurrenceAddress observed) {

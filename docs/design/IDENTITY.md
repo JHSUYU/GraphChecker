@@ -1104,8 +1104,10 @@ not its address, and not another invocation under the same anchor, which is the 
 occurrence's; hdfs-11741 K2: the second `handle()` call of one balancer handshake, under the anchor
 of that handshake's planned first call, answered the declared second handshake, which then ran
 unplanned), and the answering task's own context only where the recording opened the region there
-once, that occurrence (`aloneInContext`: an invocation there whose counts alone differ is the planned
-occurrence, where the recording opened several it may be any of them; zk-adhoc-06 on CloudLab: the
+once, that occurrence (`aloneInContext`), and only at an index of the planned frames' depth and call
+sites, its counts alone differing (`RuntimeTask#countsAloneDiffer`): that invocation is the planned
+occurrence; one another path reached (an error's, a retry's) is not, and where the recording opened
+several it may be any of them (zk-adhoc-06 on CloudLab: the
 leader's work is a hand-off continuation of the election receiver's turn that delivered the deciding
 notification, `WorkerReceiver.run#u292@k`, the recordings decided on turn 4 and the replays on turn
 3, so every leader-side occurrence, the target's included, ran in its planned context at `@3` and
@@ -1120,8 +1122,9 @@ it, so every later stage reads the planned address as before, and a DIAGNOSTIC `
 row names the address the run computed (`RowRuntime#answered`). A task answered so is done: a later
 activation at that task's own recorded address runs unplanned, since the task took an earlier
 activation of its shape (the replay ran one more activation of that shape before it than the
-recording did). An occurrence a replay exposed (GROW) states no shape and is answered by its address
-alone. A planned loop body is asked where its occurrence opens, at its loop root's enclosing entry
+recording did); so in its own context too: a replay that opens the region there at `@3` and then at
+the planned `@4` answers the task with `@3`, and `@4` runs unplanned. An occurrence a replay exposed
+(GROW, `plan/ExposedRegionPlanMain#planRow`) states no shape and is answered by its address alone. A planned loop body is asked where its occurrence opens, at its loop root's enclosing entry
 (`ConcolicTaskPlan#addressLoopRootInvocation`, the same rule, `#answeredHere`), since no root entry
 admits a body: the entry binds the task (`RuntimeTask#claimsEnclosingInvocation`; a task bound to
 another entry answers no other), its bodies run under it, and the entry's occurrence takes the

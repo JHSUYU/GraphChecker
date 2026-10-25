@@ -4,6 +4,8 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import com.google.gson.Gson;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.causynth.RecordedAccesses;
 import edu.uva.liftlab.graphchecker.causynth.RecordedHeap;
@@ -17,6 +19,9 @@ import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
+import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
+import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.plan.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.plan.RuntimeWorkflowDiscovery;
 import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
@@ -127,6 +132,28 @@ public class RuntimeRegionPlannerTest {
                 }
             }
             assertEquals(Arrays.toString(row) + ": " + gaps, row[2], named);
+        }
+    }
+
+    @Test
+    public void aPlannedOccurrenceAloneInItsContextIsSoForTheTaskThatAsksIt()
+            throws Exception {
+        List<RuntimeRegionPlanner.MethodEvent> events = cutEvents(
+                RuntimeRegionPlanner.UNREGISTERED_SOURCE, true,
+                RuntimeRegionPlanner.UNREGISTERED_SOURCE, DN1);
+        RuntimeRegionPlanner.Result activations = activations(events);
+        RuntimeRegionPlanner.Result planned = plan(closure(activations, false,
+                false), activations, events);
+        assertFalse(planned.regionPlans.isEmpty());
+        for (Map<String, Object> row : planned.regionPlans) {
+            JsonObject encoded = new Gson().toJsonTree(row).getAsJsonObject();
+            ConcolicTaskPlan.RuntimeTask task = new ConcolicTaskPlan.RuntimeTask(
+                    ExecutionTask.create(RegionInstancePlan.decode(encoded)
+                            .goal(), "TASK.chain", new JsonArray(),
+                            new JsonArray(), LoopBoundPolicy.cfgBackedges(8,
+                                    Collections.<String, Integer>emptyMap())));
+            assertTrue(String.valueOf(row.get("occurrenceId")),
+                    task.aloneInContext);
         }
     }
 
