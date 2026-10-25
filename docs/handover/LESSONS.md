@@ -384,6 +384,12 @@ uncapped campaign (`launch-round.sh`) can take the whole pool, so development ro
 shared pool). A fixture that limits a test host's cores must count the head's planner service (one core for the
 exploration).
 
+**Charge what is used where cores bind (2026-10-25).** A replay charged its 90th percentile rounded up to whole cores
+(HDFS: mean 1.63, p90 2.46, charged 2 or 3) left a node at 40 cores charged under a load of 25-55: on liftlab memory
+bound first and the rounding cost nothing. The ledger charges hundredths, a replay its mean, and a round runs as one
+pool of every case (`tools/rounds/run-pool.sh`, PARALLEL §8), not lanes and not alone reruns, which only paid on 30 GB
+hosts.
+
 **Cluster setup traps (tools/cloudlab/setup-nodes.sh does them right):** the home directory is local per node, so the
 repositories, worktrees, snapshots, trees, ~/.m2 and z3 must live on the shared /bulk; Ubuntu's `maven` pulls in JDK 11
 as the default java (set JDK 8 with update-alternatives); the unit tests call `z3` from PATH (a /usr/local/bin link);

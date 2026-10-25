@@ -202,7 +202,7 @@ measured peak times 1.25, the largest idle head's of the host), stay within
 the start's own (a replay its campaign's measured cores, a solve two, an engine JVM, a REPRODUCE run or a
 `fanout.sh` job one), stay within `CAUSYNTH_HOST_MAX_CORES_PCT` (100) percent of its `nproc` (a host whose
 charges keep no core busy takes any one start): memory binds on liftlab, cores on CloudLab. A charge,
-`<mb>.<cores>.<host>.<pid>.<time>.<rand>`, lives by a lease its holder renews
+`<mb>.<cores x 100>.<host>.<pid>.<time>.<rand>`, lives by a lease its holder renews
 (`$CAUSYNTH_HOST_LEDGER/<host>/charges/`, 120 s), so a killed run's charges lapse, and is released
 the moment what it ran returns. A running workload JVM that outgrows its
 charge is granted the excess, charged on the ledger, unless the host's real use (`MemTotal` less
