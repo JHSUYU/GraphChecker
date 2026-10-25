@@ -246,11 +246,14 @@ used:
    keeps the 2.00 cores of the solve it took over for its life, idle, and each seated question charges 2.00 more, so
    with 14 ZooKeeper and 9 HDFS campaigns at once (rounds Z1 and P1) node1 read 40 cores charged under a load of 13-16,
    77 % idle. Cores oversubscribe gracefully where memory does not, so admission and every host order count a node
-   busy as the lesser of its charged cores and its load plus what its live starts have yet to add to the load: the
-   1-minute load is an average with a 60 s time constant, so a start t seconds old adds its cores x e^(-t/60)
-   (`campaign_host_busy_cores`; the memory reading carries `/proc/loadavg`). Counting every start of the last 120 s
-   whole read node2 55 cores busy under a load of 24 (round Z3), many short replays each counted twice. A build before
-   it writes readings without the load, so while one runs beside it the charges stand.
+   busy as the lesser of its charged cores and the cores its CPUs were busy plus what its newest starts have yet to
+   use: the memory reading (one ssh, cached, refreshed every 5 s by whichever campaign reads first) carries
+   `/proc/stat`'s total and idle (+ iowait) jiffies, the busy cores are the change since the reading before, at most
+   60 s old (`campaign_host_cpu_busy`), and a start t seconds old adds its cores x e^(-t/15)
+   (`campaign_host_busy_cores`). Not the load average: it counts threads blocked on NFS and replays waiting on their
+   order, and lags a minute -- round Z4 read loads of 9-25 per node while the CPUs were 7-41 % busy, and with
+   every start of the last 120 s counted whole node2 read 55 cores busy under a load of 24 (Z3). A build before this
+   writes readings without the counters, so while one runs beside it the charges stand.
 2. **One pool per round.** `tools/rounds/run-pool.sh <round> <cases.tsv> <branch>=<snapshot>... [case...]` replaces
    fixed lanes and the alone reruns: it starts the case with the longest expected wall first (`POOL_EXPECTED`, rows
    `case<TAB>seconds`, e.g. the results table's wall column; else the case budget), whenever 10 % of the cluster's cores
