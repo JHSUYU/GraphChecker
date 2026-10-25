@@ -2743,6 +2743,46 @@ public class ComposerTest {
         lowering.end();
     }
 
+    @Test
+    public void aStringLengthsRangeIsTheConditionOfItsUseNotAnAssertionOfItsOwn() {
+        Map<String, VmTermLowering.Sort> declared =
+                new LinkedHashMap<String, VmTermLowering.Sort>();
+        declared.put("s", VmTermLowering.Sort.STRING);
+        JsonObject length = vmString("length",
+                vmLeaf("SymbolExpression", "s", "java/lang/String"));
+
+        SmtLowering framed = new SmtLowering(declared);
+        framed.begin("row", SmtLowering.NO_JOIN, ExpressionTable.empty());
+        VmTermLowering.Term used = framed.dispatch(length, null, "row");
+        List<String> conditions = framed.end();
+        assertTrue(conditions.toString(), conditions.stream().anyMatch(
+                condition -> condition.contains("(str.len s)")
+                        && condition.contains("2147483647")));
+        List<String> texts = new ArrayList<String>(conditions);
+        texts.add(used.text);
+        String body = framed.body(texts);
+        for (String line : body.split("\n")) {
+            assertFalse(line, line.startsWith("(assert")
+                    && line.contains("str.len"));
+        }
+        StringBuilder query = new StringBuilder(body);
+        for (String condition : conditions) {
+            query.append("(assert ").append(condition).append(")\n");
+        }
+        query.append("(assert (> ").append(used.text)
+                .append(" 2147483647))\n");
+        assertEquals("unsat", solver().ask(query.toString(),
+                Collections.<String>emptyList(), false).status());
+
+        SmtLowering unframed = new SmtLowering(declared);
+        VmTermLowering.Term plain = unframed.dispatch(length, null, "root");
+        List<String> facts = unframed.facts(
+                Collections.singletonList(plain.text));
+        assertTrue(facts.toString(), facts.stream().anyMatch(
+                fact -> fact.contains("(str.len s)")
+                        && fact.contains("2147483647")));
+    }
+
     private static final class StringRows {
         private final Z3 solver;
 

@@ -1509,11 +1509,12 @@ unit), so a `charAt` is a char wherever its definedness (`0 <= i < length`, on i
 query bounds the characters it reads (an unguarded range per `charAt` held every index below its
 string's length on every path: solr-bugs-snapshot-no-active Z2K, 13,188 lines, 44 of 46 MB,
 undecided; with the alphabet, sat in 1.8 s). A `length`'s Java int range is likewise a side
-condition of its lowering, stated where the length is used, as a container's size is, never an
-assertion of its own: one per lowered `length` held every String it measured in the query whether
+condition of its lowering, stated where the length is used, as a container's size is (with no
+frame open, as in EXPLORE, a fact `facts()` states once its names are reached), not an assertion of
+its own: one per lowered `length` held every String it measured in the query whether
 or not anything used the length (zk-adhoc-06 A1: 127 ranges over MBean names no other assertion
 read kept 1 MB of map chains in its formula and left each path's own run undecided past 60 s; now
-178 KB, each path's run sat in 0.1 s). A lowered text past 2048 characters -- a value's of
+167 KB, each path's run sat in 0.1 s). A lowered text past 2048 characters -- a value's of
 any sort but Bool (whose atoms the clock margin reads), a definedness, a String's nullness -- is a
 `define-fun` the query states once and every use names (`SmtLowering#compact`, as container
 subterms and view leaves are): an operation writes its operand's text by value, a substring its
