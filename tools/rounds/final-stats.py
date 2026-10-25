@@ -4,7 +4,8 @@ run (the first round of --order whose run accept-<round>-<short> has a summary r
 and the final closure's size.  seeding = PREFLIGHT..IMPORT (+ZKKEYS); exploration = EXPLORE; compose+solver =
 COMPOSE + SOLVE + DECIDE; other = CONFIRM + EMIT + REPRODUCE; refuted = the wall of the claims CONFIRM refuted before
 the last (stage_metrics.tsv times only the last claim); regions / occurrences = the final closure; rounds = EXPLORE's
-obligation generations; replays = the obligation replays EXPLORE ran, and on how many nodes.
+obligation generations; replays = the obligation replays EXPLORE started, the most in flight at once, and on how
+many nodes; native = final/reproduce.json's reproduced/runs.
 
 With --util <dir> (tools/cloudlab/util-sampler.sh's rows) it adds what the five nodes did over each case's window
 (its summary row's time back by its wall): the cluster's mean CPU busy % over the whole case and over its
@@ -50,13 +51,34 @@ def window(rows, start, end):
 
 
 def replays(it):
-    hosts = collections.Counter()
-    for path in glob.glob(os.path.join(it, 'obligations-*', '*', 'replay-host.txt')):
-        try:
-            hosts[open(path).read().strip()] += 1
-        except OSError:
-            pass
-    return sum(hosts.values()), len(hosts)
+    """EXPLORE's obligation replays from stream_events.tsv: how many started, the most at once (a replay its
+    exploration's end withdrew has no collect row and counts until then), on how many nodes."""
+    started, hosts, live, peak = 0, set(), set(), 0
+    try:
+        events = open(os.path.join(it, 'stream_events.tsv'))
+    except OSError:
+        return 0, 0, 0
+    for line in events:
+        f = line.rstrip('\n').split('\t')
+        if len(f) < 4 or f[2] != 'REPLAY':
+            continue
+        if f[1] == 'admit':
+            started += 1
+            live.add(f[3])
+            peak = max(peak, len(live))
+            if len(f) > 4:
+                hosts.add(f[4])
+        elif f[1] == 'collect':
+            live.discard(f[3])
+    return started, peak, len(hosts)
+
+
+def reproduced(final):
+    try:
+        r = json.load(open(os.path.join(final, 'reproduce.json')))
+        return '%d/%d' % (r.get('reproduced', 0), r.get('runs', 0))
+    except (OSError, ValueError):
+        return None
 
 
 def main():
@@ -110,13 +132,14 @@ def main():
         native = re.search(r'reproduced (\d+/\d+) natively', finding)
         mech = finding.split('|')[0].split(' at ')[0].strip()
         wall = int(last[2])
-        n_replays, n_hosts = replays(it)
+        n_replays, peak, n_hosts = replays(it)
+        native_n = reproduced(os.path.join(sched, 'final')) or (native.group(1) if native else '-')
         row = dict(case=case, run=tag, mode='alone' if run in alone else 'concurrent', claim=last[3],
                    blockers=last[5], wall=wall, seeding=sec(SEED), exploration=sec(['EXPLORE']),
                    compose=sec(COMPOSE), other=sec(OTHER), refutedClaims=refuted,
                    refuted=wall - sec(SEED + ['EXPLORE'] + COMPOSE + OTHER) if refuted else 0,
-                   regions=len(regions), occ=occ, rounds=rounds, replays=n_replays, replayHosts=n_hosts,
-                   mech=mech, native=native.group(1) if native else '-')
+                   regions=len(regions), occ=occ, rounds=rounds, replays=n_replays, peak=peak, replayHosts=n_hosts,
+                   mech=mech, native=native_n)
         if util:
             end = int(os.path.getmtime(summary))
             start = end - wall
@@ -128,14 +151,14 @@ def main():
                            cpuExplore='%.0f' % explore['cpu'] if explore else '-')
         rows.append(row)
     keys = ['case', 'run', 'mode', 'claim', 'mech', 'native', 'blockers', 'wall', 'seeding', 'exploration', 'compose',
-            'other', 'refutedClaims', 'refuted', 'regions', 'occ', 'rounds', 'replays', 'replayHosts']
+            'other', 'refutedClaims', 'refuted', 'regions', 'occ', 'rounds', 'replays', 'peak', 'replayHosts']
     ukeys = ['cpu', 'cpuExplore', 'cpuPeak', 'memPeak'] if util else []
     print('\t'.join(keys + ukeys))
     for r in rows:
         print('\t'.join(str(r.get(k, '-')) for k in keys + ukeys))
     print()
     head = ('| case | run | mode | claim | mechanism | native | wall (s) | seeding (s) | exploration (s) '
-            '| compose+solver (s) | other (s) | refuted claims (s) | regions | occurrences | rounds | replays (nodes) |')
+            '| compose+solver (s) | other (s) | refuted claims (s) | regions | occurrences | rounds | replays: started / most at once (nodes) |')
     rule = '| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |'
     if util:
         head += ' CPU % case | CPU % explore | CPU % peak | node mem peak (GB) |'
@@ -148,7 +171,7 @@ def main():
             continue
         line = ('| %(case)s | %(run)s | %(mode)s | %(claim)s | %(mech)s | %(native)s | %(wall)d | %(seeding)d '
                 '| %(exploration)d | %(compose)d | %(other)d | %(ref)s | %(regions)d | %(occ)d | %(rounds)d '
-                '| %(replays)d (%(replayHosts)d) |'
+                '| %(replays)d / %(peak)d (%(replayHosts)d) |'
                 % dict(r, ref='%d (%d)' % (r['refuted'], r['refutedClaims']) if r['refutedClaims'] else '-'))
         if util:
             line += ' %s | %s | %s | %s |' % tuple(r.get(k, '-') for k in ukeys)
