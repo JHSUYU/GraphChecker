@@ -74,6 +74,10 @@ grace, and one that reaches no hook makes its replay's obligations admit nothing
 (`FocusedReplay#noteUnsettledPublication`), no new verdict; or (b) no nested path is cut from a session whose
 flipped activation published no rows. Today's corpora of 07 (CC7), 11741 (AW5), 29 30 40 (HF1) and 39 (WD3) hold
 no stranded activation, so either touches only perpetual bodies like 21's actor.
+(b) is in (branch `zk-fixtrunc`, PIPELINE §7.4 "cut from by no flip query"): a session whose world holds a flip at
+an occurrence it states no decision of offers no flip query (its pairing flips still), one DIAGNOSTIC
+`WORLD_UNSTATED` row a round, for zk-bugs-trunc-sync's BLOCKING row (TODO ZooKeeper on CloudLab 2). (a) stays
+open: the nested worlds below such a session are not asked.
 
 
 ### 5. Defects found this session (STATUS "Open defects" has each with its fix)
@@ -965,8 +969,16 @@ which no ORDER holds". The cause is not CONFIRM's planning, as H3 read it from t
    "the session this path was cut from states no decision for the flip it inherited:
    `ZKDatabase.addCommittedProposal(Request)#u21#1 -> true` at occurrence 16109589cba8003a", so the claim is
    RUN_DEFECT. liftlab's F2B-trunc closed in 84 rounds without it; CloudLab's runs explore to 97-100 rounds (waves
-   9-11). Read the parent session's decisions at that occurrence (`sessions/<parent>/decisions.jsonl.gz`) and whether
-   the flip's site ran there under another address (an index shift, as 06).
+   9-11). Cause (branch `zk-fixtrunc`): no address shift. The flip ran at its exact address and was ADMITTED twice:
+   first replay (session `ea702b2e`, stated at `peer1#epoch2`), then its GROW re-run (`0ea6da09`, the follower's
+   second life now planned), whose test failed ("server 1 stopped before it synced") while life 3's
+   `runFromConfig` -- the declared and flipped occurrence -- still joined its peer: stranded at the run's end
+   (`TERMINAL_NEVER_REACHED`), it published no row, only mints, and the swap put the re-run's session in. The
+   `#u21#1 = true` rows the re-run states at `peer1#epoch1` are life 2's own replay, another occurrence. Every flip
+   cut from the re-run then inherited an unstated flip (life 2's TRUNC-sync FAULT among them) and was
+   refused, BLOCKING. Fix: TODO HDFS §4 (b), PIPELINE §7.4: such a session offers no flip query, DIAGNOSTIC
+   `WORLD_UNSTATED`. What it leaves unasked is the second counterfactual on top of that world, which no session
+   could state.
 3. **The CPU-aware ledger and replay fidelity**: packing the CPUs fuller (PARALLEL §8) gives the order's watchdog less
    CPU per replay; watch the give-up counts (`round-status.sh`'s giveups, `of an order of ... given up`) against
    `cpu-<round>.txt` when the busy share rises.

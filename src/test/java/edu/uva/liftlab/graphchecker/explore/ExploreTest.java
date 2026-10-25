@@ -523,6 +523,51 @@ public class ExploreTest {
     }
 
     @Test
+    public void aWorldWhoseReplayStatesNoRowOfItsFlipCutsNoFlipQuery()
+            throws Exception {
+        for (boolean stated : new boolean[] {true, false}) {
+            Path iteration = tree.newFolder("unstated-" + stated).toPath();
+            Session seed = new Session(iteration, "s-seed");
+            seed.activation(TARGET, false);
+            seed.marker(TARGET, "CASE.MARKER", "M_MARKER", "false");
+            seed.decision(TARGET, "Guard#u8", 1, false, "M_MARKER");
+            seed.flush();
+            Session world = new Session(iteration, "s-world");
+            world.activation(TARGET, true);
+            world.activation(WRITER, true);
+            world.marker(TARGET, "CASE.MARKER", "M_MARKER", "false");
+            world.marker(TARGET, "CASE.OTHER", "M_OTHER", "false");
+            world.decision(TARGET, "Guard#u8", 1, false, "M_MARKER");
+            world.decision(TARGET, "Guard#u9", 1, false, "M_OTHER");
+            if (stated) world.decision(WRITER, "Writer#u3", 1, true, "");
+            world.answered(ObligationResult.of("o-world", Verdict.ADMITTED,
+                    "s-world", "the focused prefix reproduced"));
+            world.flush();
+            worker(iteration, "obligations-0000", "w-world", "o-world",
+                    "s-world", WRITER, "Writer#u3", NONE, NONE);
+            scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                    "Guard#u8", "Guard#u9"));
+            Path out = tree.newFolder("unstated-out-" + stated).toPath();
+            Path round = out.resolve("obligations-0001");
+            plan(iteration, TARGET_SELECTOR, null, results(out), round, 1);
+            String cut = Corpus.pathId("s-world", TARGET);
+            List<String> asked = new ArrayList<String>();
+            for (Obligation obligation : obligations(round)) {
+                if (obligation.pathId().equals(cut)) {
+                    asked.add(obligation.siteId());
+                }
+            }
+            assertEquals("cut from the world's path: " + asked, stated,
+                    asked.contains("Guard#u9"));
+            assertEquals(!stated, anyGap(round, gap -> gap.cls()
+                    == GapClass.DIAGNOSTIC
+                    && gap.subject().equals("s-world")
+                    && gap.detail().startsWith("WORLD_UNSTATED:")));
+            assertFalse(anyGap(round, gap -> gap.cls() == GapClass.BLOCKING));
+        }
+    }
+
+    @Test
     public void anArmIsKeyedByWhatItsGuardDependsOn() throws Exception {
         Path iteration = tree.newFolder("depends").toPath();
         LocationId qop = LocationId.of(LocationKind.INSTANCE, "33", "qop");

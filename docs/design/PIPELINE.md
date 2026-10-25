@@ -1231,7 +1231,20 @@ attest arms, §7.3). Contexts compare by `contract/ContextShape` (`Corpus#contex
 PLAN picks its walk origins by): per anchor hop the RPC site and the sending node, then the root's
 role and api, without the per-site invocation counts; a sender no row names is unknown, never a
 difference. Each stop is a DIAGNOSTIC `BRANCH_STOPPED` gap and counts in
-the manifest's `branchesStopped`. COMPOSE and the claim stay on the exact declared address. A flip
+the manifest's `branchesStopped`. COMPOSE and the claim stay on the exact declared address. A
+session whose world holds a flip -- its own or one it inherits -- at an occurrence of which it states
+no decision (`Corpus#unstatedFlip`) is CUT FROM BY NO FLIP QUERY: that activation published no row,
+its root still running when the run ended (`ConcolicResultPublisher#strandWithoutTerminal`, a
+`TASK_UNANSWERED` `TERMINAL_NEVER_REACHED` row of the session; at a witness or a stall after a flip
+the same), while `FocusedReplay` saw the arm taken live and the verdict stands ADMITTED. A flip query
+asserts each inherited flip's prefix through its flipped decision as the session ran it (§7.5), which
+this session states nowhere, so each one cut from it was refused, a BLOCKING row every round
+(zk-bugs-trunc-sync Z4 and Z9: the GROW re-run of `ZKDatabase.addCommittedProposal#u21#1 -> true` at
+the follower's third life's `runFromConfig`, the declared occurrence, failed its test -- "server 1
+stopped before it synced" -- while that `runFromConfig` still joined its peer, and every flip of the
+re-run's paths was refused, the second life's TRUNC-sync FAULT among them; TODO HDFS §4 (b)). Its
+pairing flips, which assert no prefix, are still offered; its paths still compose and its arms
+still attest; each round names it once, a DIAGNOSTIC `WORLD_UNSTATED` row with the flip. A flip
 candidate is a decision with a term (`FlipQuery.flippable`) at one of the task's flip sites, fault
 decisions first; where the iteration has a ZooKeeper chain, a decision is one only where it rests on
 a root, a message's field, a heap read or a chain read (`explore.ZkKeys`, SYMBOL-SCOPE §6.4) -- store

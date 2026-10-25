@@ -444,6 +444,8 @@ public final class ObligationFactory {
                 new ArrayList<List<Corpus.RecordedPath>>();
         List<Integer> tooDeep = new ArrayList<Integer>();
         List<Keyed> offering = new ArrayList<Keyed>();
+        Map<String, Corpus.Flip> unstated =
+                new LinkedHashMap<String, Corpus.Flip>();
         for (Task task : tasks) {
             List<Corpus.RecordedPath> paths =
                     new ArrayList<Corpus.RecordedPath>();
@@ -456,18 +458,39 @@ public final class ObligationFactory {
                     deep++;
                     continue;
                 }
+                if (!unstated.containsKey(path.sessionId)) {
+                    Corpus.Flip withheld =
+                            corpus.unstatedFlip(path.sessionId);
+                    if (withheld != null) {
+                        unstated.put(path.sessionId, withheld);
+                    }
+                }
                 paths.add(path);
                 offering.add(new Keyed(task, path, OFFERED));
             }
             cut.add(paths);
             tooDeep.add(deep);
         }
+        for (Map.Entry<String, Corpus.Flip> withheld : unstated.entrySet()) {
+            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                    withheld.getKey(), "WORLD_UNSTATED: the world this "
+                            + "replay ran holds the flip "
+                            + withheld.getValue().render() + ", and it "
+                            + "states no decision of that occurrence: its "
+                            + "activation published no row (its root was "
+                            + "still running when the run ended), so no flip "
+                            + "query cut from it can assert the flip it "
+                            + "inherits: none is cut from it, and its "
+                            + "pairing flips, which assert no prefix, still "
+                            + "are"));
+        }
         List<Offered> offers;
         try {
             offers = Parallel.grouped(offering, path -> path.path.sessionId,
                     path -> offered(corpus, path.task,
                             flipSites.get(path.task.taskId()), path.path,
-                            keys));
+                            keys, !unstated.containsKey(path.path.sessionId)));
         } catch (IOException unreadable) {
             throw new UncheckedIOException(unreadable);
         }
@@ -493,21 +516,26 @@ public final class ObligationFactory {
 
     private static Offered offered(Corpus corpus, Task task,
                                    Set<String> flipSites,
-                                   Corpus.RecordedPath path, ZkKeys keys) {
+                                   Corpus.RecordedPath path, ZkKeys keys,
+                                   boolean flips) {
         Offered offered = new Offered();
-        for (int index : faultFirst(corpus, path)) {
-            DecisionRow decision = path.decisions.get(index);
-            if (!FlipQuery.flippable(decision)) {
-                continue;
+        if (flips) {
+            for (int index : faultFirst(corpus, path)) {
+                DecisionRow decision = path.decisions.get(index);
+                if (!FlipQuery.flippable(decision)) {
+                    continue;
+                }
+                if (!keys.flippable(corpus, path.sessionId, decision)) {
+                    offered.offChain++;
+                    continue;
+                }
+                if (flipSites == null
+                        || !FlipQuery.asks(flipSites, decision)) {
+                    continue;
+                }
+                offered.asked.add(new Candidate(corpus, task, path, index,
+                        false));
             }
-            if (!keys.flippable(corpus, path.sessionId, decision)) {
-                offered.offChain++;
-                continue;
-            }
-            if (flipSites == null || !FlipQuery.asks(flipSites, decision)) {
-                continue;
-            }
-            offered.asked.add(new Candidate(corpus, task, path, index, false));
         }
         offered.asked.addAll(PairingFlip.candidates(corpus, task, path,
                 offered.gaps));
