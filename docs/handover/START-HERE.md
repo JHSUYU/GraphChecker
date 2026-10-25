@@ -74,9 +74,10 @@ needed; STATUS "Per-system surface" each workaround with its evidence run.
   HEAD), then `ssh node2 'cd /bulk/gc-run/<name> && mvn -q -o package -DskipTests'`.
 - **One case:** `cd <snapshot> && env GC_OUT=<out> GC_TREES=/bulk/trees/f1 CAUSYNTH_CUSTOM_JDK_HOME=/bulk/vm/hbase/j2sdk-image
   CASES="<case ids>" CASE_TIMEOUT_SECONDS=14400 PRUNE=0 tools/rounds/launch-round.sh <snapshot> <ROUND>`.
-- **The series:** `tools/rounds/run-series.sh <ROUND> experiments/hadoop/hdfs-cases.tsv system/hdfs-cloudlab=<snapshot>`
-  (one case at a time), or several lanes side by side as F1 ran (each lane a `run-series.sh` over its own table, started on
-  its own node: `/bulk/gc-out/hdfs-final/lanes/lane<k>.tsv`). Development rounds: `tools/adhoc/sweep.sh` (shared pool).
+- **The series:** `tools/rounds/run-pool.sh <ROUND> experiments/hadoop/hdfs-cases.tsv system/hdfs-cloudlab=<snapshot>`,
+  run from the snapshot: one pool of every case over the five nodes, longest first, a start whenever a tenth of the
+  cluster's cores is free (PARALLEL §8; F1 ran before it as lanes of `run-series.sh`,
+  `/bulk/gc-out/hdfs-final/lanes/lane<k>.tsv`). Development rounds: `tools/adhoc/sweep.sh` (shared pool).
 - **Reading:** `tools/rounds/round-verify.sh <ROUND>`, `tools/analysis/vacuity.py --latest --detail <run>` on every UNSAT,
   `tools/analysis/smt-legend.py --repo <tree> <run>/out/<case>` on every SAT, `results/hdfs/final-stats.py`,
   `results/hdfs/collect-results.sh`. A live watcher: `/bulk/analysis/hdfs-2026-10-24/watch.sh '<round glob>'`.

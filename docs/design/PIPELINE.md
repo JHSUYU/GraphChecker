@@ -1930,10 +1930,12 @@ workers' files (a replay's JVM exit, `workload_cores_x100`). A host is taken for
 kind (`campaign_stream_try_host`) when its ledger admits the start at its kind's charge AND its
 kind's cores (below; `campaign_stream_kind_cores`: a solve or a `HARD` `campaign_solve_cores`, two,
 its z3 race's two engines, a REPLAY, a re-run or a confirmation the cores replays measurably keep busy,
-`campaign_replay_cores`: the seed replay's alone, then at least the 90th percentile of the replays after it
-once eight returned, from the watcher's `workload_cores_x100`, its CPU time over its wall time -- solr-adhoc-05's
-replays kept 2.2-3.7 cores busy each, and counted one they held 8 of 13 hosts at 96-100 % CPU; CloudLab's HDFS
-replays p50 0.78, p90 1.39, at most 1.65 of 614), a
+`campaign_replay_cores`: the seed replay's alone, then the mean of the replays after it, recomputed every eight
+returned, at least 0.10, from the watcher's `workload_cores_x100`, its CPU time over its wall time -- solr-adhoc-05's
+replays kept 2.2-3.7 cores busy each, and counted one they held 8 of 13 hosts at 96-100 % CPU; CloudLab's HDFS final
+series' 768 replays mean 1.63, p50 1.50, p90 2.46: charged the 90th percentile rounded up to whole cores, as until
+2026-10-25, a node read 40 cores charged under a load of 25-55, so every core figure is in hundredths and a replay
+is charged its mean, which a node's 20-40 replays sum to; PARALLEL §8), a
 question the host's resident solver answers (`campaign_stream_seated`: a solve) only on a free seat
 of that solver (`campaign_stream_has_seat`, §7.5: a warm host's seats, a cold host's one,
 `campaign_stream_host_count` counting each solve in and out) -- so each kind runs on a host as many
@@ -1963,7 +1965,7 @@ with the frozen jar and its sha256, a REPLAY or a re-run as a placed step (below
 generation current when it starts (§7.8). The gate
 (`campaign_host_try_start <host> <need> <cores> [spare]`) is a ledger shared by all campaigns, gates and
 `tools/adhoc/fanout.sh` under `$CAUSYNTH_HOST_LEDGER/<host>/` (`tools/lib/gc-env.sh`, handed to every
-peer with the ceilings): one file per live charge, `charges/<mb>.<cores>.<host>.<pid>.<time>.<rand>`
+peer with the ceilings): one file per live charge, `charges/<mb>.<cores x 100>.<host>.<pid>.<time>.<rand>`
 (`campaign_host_charge_row`; one reading, `campaign_host_charged`, sums both), and a start is allowed when
 both `Σ live charges + held + need ≤ L` and `MemTotal − MemAvailable + held + need ≤ L`, where `L`
 is `CAUSYNTH_HOST_MAX_USED_PCT` (70) percent of `MemTotal` and `held` the room a head holds there
@@ -1974,11 +1976,11 @@ host's `cores` file), so a start larger than `C` still runs on a host whose char
 than it has. A refused start says which half refused it (`campaign_host_refused`, the head's "waiting
 for room" line: "<host> has N cores charged to what it runs; one needs K and at most C ... may be
 charged"). The cores a start states are named once: a solve, a `HARD` ask or a solver JVM started for
-no handed charge `campaign_solve_cores` (2; a cold solve's charge keeps its two when its solver takes it
-over), every replay (the seed's, the stream's, the final CONFIRM's) `campaign_replay_cores`, a head's
-engine JVM (every stage's, the served planner's, an offline gate's) `campaign_engine_cores` (1),
-REPRODUCE's native runs `campaign_reproduce_cores` (1), a `fanout.sh` job `campaign_fanout_job_cores`
-(1); what a running JVM is granted as it grows and a composer's z3 room keep none beside the start that
+no handed charge `campaign_solve_cores` (200, two cores; a cold solve's charge keeps them when its solver
+takes it over), every replay (the seed's, the stream's, the final CONFIRM's) `campaign_replay_cores`, a head's
+engine JVM (every stage's, the served planner's, an offline gate's) `campaign_engine_cores` (100),
+REPRODUCE's native runs `campaign_reproduce_cores` (100), a `fanout.sh` job `campaign_fanout_job_cores`
+(100); what a running JVM is granted as it grows and a composer's z3 room keep none beside the start that
 charged them. On liftlab (30 GB, 48 cores) memory bound first; on CloudLab (251 GB, 40 logical cores)
 memory never binds, and with cores counted per campaign nine campaigns each filled every host to its 40
 cores (round C1: load 70-93, HDFS replays 3-5x slower): the core half is what holds them. A charge holds for the whole life

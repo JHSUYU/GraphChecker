@@ -56,7 +56,7 @@ rows_of() { wc -l 2>/dev/null <"${GC_OUT}/accept-$(suffix_of "$1")/summary.tsv" 
 
 host_load() {
   local load
-  load=$(campaign_host_read "$1" cat /proc/loadavg | awk 'NF >= 3 {print int($1 * 100)}' | tail -n 1)
+  load=$(campaign_host_read "$1" "cat /proc/loadavg" | awk 'NF >= 3 {print int($1 * 100)}' | tail -n 1)
   printf '%s\n' "${load:-0}"
 }
 
@@ -123,7 +123,7 @@ bash ${snap[${id}]}/tools/rounds/launch-run.sh ${snap[${id}]} ${id} ${suffix} \
   fi
   head_of[${id}]=${host}
   started_at[${id}]=${EPOCHSECONDS}
-  echo "$(date +%F_%T) ${EPOCHSECONDS} START ${id} ${suffix} ${snap[${id}]} host=${host} free=${cluster_free}" >>"${log}"
+  echo "$(date +%F_%T) ${EPOCHSECONDS} START ${id} ${suffix} ${snap[${id}]} host=${host} free=$(campaign_cores_text "${cluster_free}")" >>"${log}"
 }
 
 head_alive() {
@@ -153,7 +153,7 @@ reap() {
 }
 
 last_start=0
-echo "$(date +%F_%T) ${EPOCHSECONDS} POOL ${#pending[@]} case(s) on ${LIFTS}: ${cluster_cores} cores, a start once ${pool_free_cores} are free, at least ${pool_gap_s} s apart" >>"${log}"
+echo "$(date +%F_%T) ${EPOCHSECONDS} POOL ${#pending[@]} case(s) on ${LIFTS}: $(campaign_cores_text "${cluster_cores}") cores, a start once $(campaign_cores_text "${pool_free_cores}") are free, at least ${pool_gap_s} s apart" >>"${log}"
 while (( ${#pending[@]} > 0 || ${#head_of[@]} > 0 )); do
   reap
   read_cluster

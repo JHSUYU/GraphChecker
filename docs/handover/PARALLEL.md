@@ -221,3 +221,37 @@ may be idle).
 - Measured on 07 (idle-pool/): the pool idles because of the head's serial chain (landing, the import gate, GROW in
   the head's hands, one solver at a time) and a dispatch cursor that piles replays on one host -- not capacity; the
   scheduler rewrite (branch solr-stream2) addresses each. During a final round, agents keep off the pool.
+
+## 8. CloudLab: five big-memory nodes, filled by their cores (2026-10-25)
+
+The owner, 2026-10-25: "我们的cloudlab一般是5个节点，是大内存。这点和之前的liftlab不同。所以在system/hdfs-cloudlab和
+system/zookeeper-cloudlab上，我们的并行策略要最大化cloudlab集群的使用。" The two clusters bind on different resources:
+
+| | liftlab (lift02-15) | CloudLab (node0-4) |
+| --- | --- | --- |
+| hosts x cores x memory | 14 x 48 x 30 GB: 672 cores, 420 GB | 5 x 40 x 251 GB: 200 cores, 1255 GB |
+| replays a host holds (4-8 GB, 1-2 cores each) | 3-5, by memory (70 % of 30 GB) | 20-40 by cores, 20-40 by memory |
+| what binds a round | memory | cores |
+| a case over 30 min | ran again alone on all 14 lifts, to have their memory | runs beside every other case: no node's memory fills |
+
+So the strategy on both CloudLab branches is to keep every core charged with useful work and to charge cores as they are
+used:
+1. **Hundredths of a core.** The ledger charges a replay its measured mean cores (`workload_cores_x100` over the
+   replays it returned, recomputed every eight; the seed's own before that; at least 0.10), a solver 2.00, an engine JVM
+   1.00, a native run 1.00, a fan-out job 1.00, all in hundredths (`<mb>.<cores x 100>.<host>...`). The liftlab rule, the
+   90th percentile rounded up to whole cores, cost nothing where memory bound first; on CloudLab it left a third of the
+   CPUs idle: HDFS's final series' 768 replays averaged 1.63 cores (p50 1.50, p90 2.46) and were charged 2 or 3, so a
+   node showed 40 cores charged under a load of 25-55. With 20-40 replays on a node their sum is their mean times their
+   number, so the mean is the charge.
+2. **One pool per round.** `tools/rounds/run-pool.sh <round> <cases.tsv> <branch>=<snapshot>... [case...]` replaces
+   fixed lanes and the alone reruns: it starts the case with the longest expected wall first (`POOL_EXPECTED`, rows
+   `case<TAB>seconds`, e.g. the results table's wall column; else the case budget), whenever 10 % of the cluster's cores
+   are free both by the ledger and by `/proc/loadavg` (`POOL_FREE_CORES`, hundredths), at least `POOL_GAP_S` (30 s) after
+   the last start (`POOL_MAX` caps the cases at once; 0, none), its head on the node heading the fewest of the pool's
+   cases (ties: the most free cores, then memory room). A case's obligations still go to every node (level 1). A
+   case's pool run is its record. `series-<round>.log` has START/END rows as `run-series.sh` writes them, and
+   `pool-<round>.tsv` a row per poll: time, cases running, the cluster's free cores, and per node load, free cores
+   (hundredths) and memory room (MB). Stop starting new cases: `touch $GC_OUT/series-<round>.STOP`. Run the pool from
+   a snapshot, not a worktree you edit: bash reads its script as it runs.
+3. **Memory is spent, not rationed.** Heads keep their heaps for life and nothing else changes: a round of every case
+   at once stays far under a node's 70 % ceiling (175 GB), so the only memory rule left is the ledger's.

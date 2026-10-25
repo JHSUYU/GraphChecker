@@ -374,10 +374,12 @@ and three trees of the Hadoop fork ([`experiments/hadoop/trees.tsv`](../experime
 5. **The cases.** One: `cd <snapshot> && env GC_OUT=/bulk/gc-out/<dir> GC_TREES=/bulk/trees/f1
    CAUSYNTH_CUSTOM_JDK_HOME=/bulk/vm/hbase/j2sdk-image CASES="hdfs-17960" CASE_TIMEOUT_SECONDS=14400 PRUNE=0
    tools/rounds/launch-round.sh <snapshot> <ROUND>` (a snapshot: `tools/lib/worktree-add.sh /bulk/gc-run/<name> <commit>
-   --detach`, then `mvn -q -o package -DskipTests`). All of them as the final round ran: the case table split into lanes,
-   each lane a `tools/rounds/run-series.sh <ROUND> <lane.tsv> system/hdfs-cloudlab=<snapshot>` started detached on its
-   own node (`ssh -f node<k> 'setsid nohup ... &'`), every case's obligations and replays spread over all five nodes by the
-   host ledger's memory and cores.
+   --detach`, then `mvn -q -o package -DskipTests`). All of them, one pool over the five nodes (PARALLEL §8):
+   `cd <snapshot> && (setsid nohup env GC_OUT=/bulk/gc-out/<dir> GC_TREES=/bulk/trees/f1
+   CAUSYNTH_CUSTOM_JDK_HOME=/bulk/vm/hbase/j2sdk-image PRUNE=0 tools/rounds/run-pool.sh <ROUND>
+   experiments/hadoop/hdfs-cases.tsv system/hdfs-cloudlab=<snapshot> > /bulk/gc-out/<dir>/pool-<ROUND>.out 2>&1 < /dev/null &)`
+   (longest case first, a start whenever a tenth of the cluster's cores is free; `POOL_EXPECTED` a `case<TAB>seconds`
+   file of expected walls). The final round F1 ran before the pool, as lanes of `run-series.sh`.
 
 6. **Reading them**, as §5: `tools/rounds/round-verify.sh <ROUND>`, `tools/analysis/vacuity.py --latest --detail <run>` on
    every UNSAT, `results/hdfs/final-stats.py --order <rounds> --cases experiments/hadoop/hdfs-cases.tsv --out <GC_OUT>`.
