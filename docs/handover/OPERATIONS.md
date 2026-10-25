@@ -436,3 +436,33 @@ On this cluster:
 9. **Tree changes** go to an agent's `gc/hb-*` branch, then fast-forward/merge into `gc/hbase-checks` and push the fork:
    `git push fork gc/hbase-checks:graphchecker/hbase-checks` (allowed; apache never). Name each workaround in STATUS
    "Per-system surface".
+
+## 11. CloudLab (system/solr-cloudlab, system/hbase-cloudlab, 2026-10-25)
+
+`system/solr-cloudlab` and `system/hbase-cloudlab` are `system/solr` and `system/hbase` (the engines, case settings and
+workarounds as published) with the CloudLab port of `system/hdfs-cloudlab` (its tools only, none of its HDFS engine
+changes) and the parallel settings sized for this experiment: five Ubuntu 22.04 nodes `node0`..`node4` (Clemson: two
+Xeon Gold 6142, 64 logical = 32 physical cores, 376 GB each; a 10 Gb/s private network 10.10.1.0/24; a second 931 GB
+disk `/dev/sdb`; passwordless ssh between them and to GitHub). Every section above applies with these values:
+
+| what | where / how |
+| --- | --- |
+| hosts | `LIFTS="node0 node1 node2 node3 node4"`, all five workers and heads (`GC_CONTROL_HOST` empty). A series runs from node0 (it serves /bulk); every case's obligations, CONFIRM and native runs go to all five. |
+| the limit | **cores**: a replay is one Zero interpreter thread plus its publication (measured `workload_cores_x100`: 2 cores each), so a node holds 32 replays at once by cores; by memory (80 % of 376 GB at a few hundred MB to a few GB each) far more. Every ledger charge states its cores beside its MB (`<mb>.<cores>.<host>...`, PIPELINE §7.7) and a start goes only where every campaign's live charged cores plus its own fit the node's 64 (`CAUSYNTH_HOST_MAX_CORES_PCT` 100); every choice among hosts takes the one with the most free cores, memory breaking ties (`campaign_host_roomier`). |
+| memory ceilings | sized for 376 GB (commit "CloudLab: the ledger, heaps and solver seats ..."): `CAUSYNTH_HOST_MAX_USED_PCT` 80 (liftlab 70: the nodes run nothing else); `engine_memory_mb` 65536 in every case's `workflow.properties` (an engine JVM starts at its measured need and doubles only when it runs out, so the ceiling costs nothing until used; liftlab's 12288/21504 cut hbase-adhoc-10's planner and solr-adhoc-07's/-14's composers); `campaign_solver_max_heap_mb` 65536; COMPOSE's z3 room `campaign_compose_z3_most_room_mb` and `campaign_compose_z3_host_most_mb` 65536 (all 128 valuations' z3 pairs at once on four nodes; liftlab's 16-18 GB left solr-adhoc-05's scoped z3s memout at their slot). The served planner is charged its whole heap's footprint for life, ~70 GB on its head's node. |
+| solver seats | `campaign_solver_seats`: a warm solver takes a question per four of its node's cores (16 here, 8 on liftlab), each solve charged two cores. |
+| CPU clock | every core at the `performance` governor (`setup-node.sh`; CloudLab's `schedutil` kept busy cores at 2.4-2.8 of 3.7 GHz). A replay is one interpreter thread, so the clock is its speed: under schedutil hbase-bugs-backup-lock-reply-lost's seed and obligation replays took 5m13-5m16 each, its exploration (one round, two replays at once) 362 s against 186 s on the lifts. |
+| shared storage | `/bulk` = `GC_BULK`: node0's `/dev/sdb` (ext4 at `/data`), `/data/bulk` exported over NFS 4.2 and mounted at `/bulk` everywhere (node0 by a bind mount). The home directory is local to each node, so `~/.m2`, `~/.ivy2` and `~/.ant` (Solr's Ant and Ivy) link to `/bulk/m2/dot-*`. |
+| local scratch | `/localtmp` on each node = its own `/dev/sdb` (`/data/localtmp`); replays work in `/localtmp/$USER/graphchecker/`. |
+| repositories | `/bulk/GraphChecker` (`GC_REPO`; worktrees by `tools/lib/worktree-add.sh`, sparse, serialized by a flock); integration worktrees `/bulk/wt/gc-solr-cloudlab`, `/bulk/wt/gc-hbase-cloudlab` |
+| trees | `GC_TREES=/bulk/wt`: `lucene-solr-checks` (the Solr fork's `graphchecker/solr-checks`, 12d23091d1) and `hbase-checks` (the HBase fork's `graphchecker/hbase-checks`, b5d5cc6a20), each built by its system's `prepare-trees.sh` against its worktree's jar: 17/17 and 18/18 workloads PASSED natively, 20/20 and 22/22 cases valid (2026-10-25) |
+| VM images | `/bulk/vm/solr/j2sdk-image` (system/solr's VM sources) and `/bulk/vm/hbase/j2sdk-image` (system/hbase's), each `tools/vm/build-image-docker.sh <dir>` from a full clone on a node's /localtmp (Ubuntu 22.04 has no gcc-6: the sources' Ubuntu 18.04 image), ~10 minutes each, both at once on two nodes; `smoke.log` ends `SMOKE_EXIT=0`, 24 OK |
+| snapshots | `/bulk/gc-run/<system>-cl-<n>` (`worktree-add.sh <dir> system/<system>-cloudlab --detach`, then `mvn -q -o package -DskipTests` on a node) |
+| outputs | `/bulk/gc-out/solr-cl`, `/bulk/gc-out/hbase-cl`; the ledger `/bulk/gc-out/hosts`; the node samples `/bulk/gc-out/cl-util/<node>.tsv` (`tools/cloudlab/util-sampler.sh`) |
+| making the cluster | `BULK_SUBNET=10.10.1.0/24 tools/cloudlab/setup-nodes.sh` from any node with a checkout of either branch (packages incl. Ant, disks, NFS, JDK 8, the dot-directory links, z3, the governor), then REPRODUCE §9 |
+
+The final series ran every case of both systems alone on the five nodes, one at a time
+(`/bulk/analysis/cloudlab-2026-10-25/series.sh`: `tools/rounds/run-series.sh` per system from the snapshots, the
+sampler throughout); `tools/rounds/final-stats.py --util /bulk/gc-out/cl-util` makes each system's table
+(`results/<system>/README.md`). Monitoring: `/bulk/analysis/cloudlab-2026-10-25/watch.sh` (a line per stage change,
+error and verdict, and the nodes' CPU and memory every 5 min, under a Monitor).

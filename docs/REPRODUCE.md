@@ -1,4 +1,4 @@
-# Reproducing the checks from GitHub: the 46 HDFS cases (§0-§5), Solr (§6), HBase (§7)
+# Reproducing the checks from GitHub: the 46 HDFS cases (§0-§5), Solr (§6), HBase (§7), Solr and HBase on CloudLab (§9)
 
 Everything a run needs is on GitHub: GraphChecker's branch of the system (the engine, the case settings, the VM
 sources) and the system's fork, whose `graphchecker/*` branch is the tree under test (the adapter, the target markers,
@@ -306,3 +306,86 @@ cluster and bounds").
    HBase 19) and 31 (vacuous; its RUN_DEFECT was stale generation gaps, fixed after the run). A run's
    `out/<case>/schedule/final/candidate.smt2` compares with `results/hbase/<case>.smt2.gz`; replays race, so wall times
    vary run to run and a native reproduction is a count.
+
+## 9. Solr and HBase on CloudLab (`system/solr-cloudlab`, `system/hbase-cloudlab`)
+
+The 20 Solr and 22 HBase cases run on two branches made from `system/solr` and `system/hbase` (engines, case settings and
+workarounds unchanged) with CloudLab's hosts, storage and parallel settings ([handover/OPERATIONS.md](handover/OPERATIONS.md)
+"CloudLab"), on the same trees as §6 and §7 (`graphchecker/solr-checks`, `graphchecker/hbase-checks`). Each case runs
+alone on the five nodes.
+
+1. **The cluster.** Five Ubuntu 22.04 nodes `node0`-`node4`, passwordless ssh between them and to GitHub, a private
+   subnet and a spare disk `/dev/sdb` each. From any node:
+
+   ```bash
+   git clone -q -b system/hbase-cloudlab git@github.com:JHSUYU/GraphChecker.git ~/gc-setup
+   BULK_SUBNET=10.10.1.0/24 ~/gc-setup/tools/cloudlab/setup-nodes.sh
+   ```
+
+   JDK 8 (the default java), Maven, Ant, NFS, Docker and jq on every node; `/dev/sdb` each node's `/data` (`/localtmp`
+   on it); node0's `/data/bulk` at `/bulk` everywhere; `~/.m2`, `~/.ivy2`, `~/.ant` linked to `/bulk/m2/dot-*`; z3 4.14.1
+   at `/bulk/bin/z3`; every core at the performance governor.
+
+2. **GraphChecker** on /bulk, one worktree per branch:
+
+   ```bash
+   git clone -q git@github.com:JHSUYU/GraphChecker.git /bulk/GraphChecker
+   for s in solr hbase; do
+     git -C /bulk/GraphChecker worktree add -q --no-checkout /bulk/wt/gc-$s-cloudlab system/$s-cloudlab
+     git -C /bulk/wt/gc-$s-cloudlab sparse-checkout set --no-cone '/*' '!/third_party/'
+     git -C /bulk/wt/gc-$s-cloudlab checkout -q
+   done
+   ssh node1 'cd /bulk/wt/gc-solr-cloudlab && mvn -q package -DskipTests'     # online: fills ~/.m2
+   ssh node1 'cd /bulk/wt/gc-hbase-cloudlab && mvn -q -o package -DskipTests'
+   ```
+
+3. **The images**, both at once, each from a full clone on a node's local disk (~10 minutes; `smoke.log` ends
+   `SMOKE_EXIT=0`):
+
+   ```bash
+   for p in "node1 solr" "node2 hbase"; do set -- $p
+     ssh $1 "git clone -q -b system/$2-cloudlab /bulk/GraphChecker /localtmp/\$USER/gc-vm-$2 &&
+       cd /localtmp/\$USER/gc-vm-$2 && sg docker -c 'tools/vm/build-image-docker.sh /bulk/vm/$2'" &
+   done; wait
+   ```
+
+4. **The trees**, both at once (~17 minutes; 17 and 18 workloads `PASSED`):
+
+   ```bash
+   ssh node3 'cd /bulk/wt && git clone -q -b graphchecker/solr-checks --single-branch \
+     https://github.com/JHSUYU/solr.git lucene-solr-checks && cd lucene-solr-checks && ant -q ivy-bootstrap'
+   ssh node3 'cd /bulk/wt/gc-solr-cloudlab && experiments/solr/prepare-trees.sh' > /bulk/prepare-solr.log 2>&1 &
+   ssh node4 'cd /bulk/wt/gc-hbase-cloudlab && experiments/hbase/prepare-trees.sh' > /bulk/prepare-hbase.log 2>&1 &
+   wait
+   ```
+
+5. **The cases.** A snapshot of each branch (never rebuild one a run reads), then every case alone, Solr's after
+   HBase's, from node0, with the nodes sampled throughout:
+
+   ```bash
+   for s in solr hbase; do
+     /bulk/wt/gc-$s-cloudlab/tools/lib/worktree-add.sh /bulk/gc-run/$s-cl-1 system/$s-cloudlab --detach
+     ssh node1 "cd /bulk/gc-run/$s-cl-1 && mvn -q -o package -DskipTests"
+   done
+   /bulk/gc-run/hbase-cl-1/tools/cloudlab/util-sampler.sh /bulk/gc-out/cl-util 15
+   for s in hbase solr; do
+     env GC_OUT=/bulk/gc-out/$s-cl CAUSYNTH_CUSTOM_JDK_HOME=/bulk/vm/$s/j2sdk-image \
+       /bulk/gc-run/$s-cl-1/tools/rounds/run-series.sh C1 /bulk/gc-run/$s-cl-1/experiments/$s/$s-cases.tsv \
+       system/$s-cloudlab=/bulk/gc-run/$s-cl-1
+   done   # start it detached: (setsid nohup bash -c '...' > series.out 2>&1 < /dev/null &)
+   ```
+
+   One case: the same `run-series.sh` with the case id after the checkout. A stopped series resumes by the same command.
+
+6. **Reading them**, as §6.5 and §7.5, and each system's table:
+
+   ```bash
+   cd /bulk/gc-run/hbase-cl-1
+   tools/rounds/final-stats.py --order C1 --alone C1 --cases experiments/hbase/hbase-cases.tsv \
+     --out /bulk/gc-out/hbase-cl --util /bulk/gc-out/cl-util
+   GC_OUT=/bulk/gc-out/hbase-cl tools/rounds/collect-results.sh results/hbase-cloudlab experiments/hbase/hbase-cases.tsv C1
+   ```
+
+   seeding = PREFLIGHT..IMPORT and ZKKEYS; exploration = EXPLORE; compose+solver = COMPOSE + SOLVE + DECIDE; other =
+   CONFIRM + EMIT + REPRODUCE; refuted claims = the claims CONFIRM refuted before the last; regions / occurrences = the
+   final closure; the CPU columns are the five nodes' mean busy % over the case and over its exploration.
