@@ -2209,12 +2209,15 @@ campaign_replay_cores_measured() {
     campaign_replay_cores_x100+=("${x100}")
     (( ${#campaign_replay_cores_x100[@]} >= campaign_replay_typical_after )) \
       || return 0
-    # The obligation replays' own p90, to the nearest core, never the seed's:
-    # a focused replay keeps fewer cores busy over its life (CloudLab:
-    # hbase-adhoc-07's seed 2.15, its replays 1.83-1.92; three other cases'
-    # 1.13-1.19), and charged its seed's 3 a 64-core node took 18 of 07's.
+    # The obligation replays' own p90 rounded up, never the seed's: a focused
+    # replay keeps fewer cores busy over its life (CloudLab: hbase-adhoc-07's
+    # seed 2.15, its replays 1.83-1.92), and charged its seed's 3 a 64-core
+    # node took 18 of 07's.  Rounded up, never to the nearest: a replay on a
+    # node past its cores is measured at the share it got, so a charge cut to
+    # the nearest core admits more and is measured lower again (hbase-adhoc-10:
+    # replays measured 2.16-2.31, nodes at load 100-123 on 64 cores).
     cores=$(( ($(campaign_percentile_90 "${campaign_replay_cores_x100[@]}") \
-      + 50) / 100 ))
+      + 99) / 100 ))
     (( cores >= 1 )) || cores=1
   fi
   (( cores != campaign_replay_cores )) || return 0
