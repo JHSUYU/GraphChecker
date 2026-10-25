@@ -239,6 +239,9 @@ public final class ImportGateMain {
             roots.add(pair);
         }
         record.add("roots", roots);
+        JsonArray unstated = new JsonArray();
+        for (String flip : judged.unstated()) unstated.add(flip);
+        record.add("unstated", unstated);
         ArtifactIO.replace(ledger.resolve(judged.sessionId() + RECORD),
                 record + "\n");
     }

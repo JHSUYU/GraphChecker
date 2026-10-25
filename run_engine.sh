@@ -6016,17 +6016,39 @@ campaign_stream_swap_jobs=16
 campaign_stream_swap() {
   local swap="" round="" id="" exposing="" status="" key="" worker=""
   local rerun="" session="" ids="" file="" verdict="" pid="" rests=""
-  local entry="" kind="" changed=0
+  local entry="" kind="" changed=0 unstated="" count=0
   local -a due=() held=() withdrawing=() pids=() kept=() dropped=()
   local -A named=() swapping=() answered=() answer_session=()
   for swap in "${stream_swaps[@]}"; do
     read -r round id exposing status <<<"${swap}"
     key="${id} ${exposing}"
+    worker=$(dirname "$(dirname "${stream_reruns[${key}]}")")
     if [[ "${status}" -ne 0 ]]; then
-      worker=$(dirname "$(dirname "${stream_reruns[${key}]}")")
       printf '%s\n' "${round}" >>"${worker}/grow-dropped"
       campaign_log "obligation ${id}: its re-run under the grown tree did \
 not finish (exit ${status}): dropped, ${exposing} stays in the corpus"
+      campaign_stream_rerun_done "${key}" dropped
+      changed=1
+      continue
+    fi
+    session=$(jq -r '.sessionId // ""' \
+      "${stream_reruns[${key}]}/obligation_result.jsonl")
+    unstated=""
+    [[ -z "${session}" ]] || unstated=$(campaign_stream_unstated \
+      "${session}" "${exposing}") || campaign_fail EXPLORE CAMPAIGN \
+      "${iteration_dir}/import_gated" "obligation ${id}: the gate's ledger \
+states no unstated flips of ${exposing} or of its re-run's ${session}"
+    if [[ -n "${unstated}" ]]; then
+      printf '%s\n' "${round}" >>"${worker}/grow-dropped"
+      rm -f -- "${iteration_dir}/import_gated/${session}.json" \
+        "${iteration_dir}/import_gated/${session}.named.json.gz"
+      count=$(grep -c '' <<<"${unstated}")
+      campaign_stream_gap DIAGNOSTIC "${id} world-unstated=${count}" \
+        "its re-run under the grown tree, session ${session}, states no \
+decision at ${count} flip(s) of its world that ${exposing} states \
+($(paste -sd ';' <<<"${unstated}")): dropped, ${exposing} stays in the \
+corpus, the regions the re-run exposed stay uncaptured in that world, and no \
+flip on them is asked there"
       campaign_stream_rerun_done "${key}" dropped
       changed=1
     elif campaign_stream_swap_due "${exposing}"; then
@@ -6143,6 +6165,14 @@ verdict=${answered[${worker}/obligation_result.jsonl]}"
   stream_dirty=1
   (( ${#stream_chain[@]} == 0 || stream_hold > 0 )) \
     || campaign_stream_chain_reattempt
+}
+
+campaign_stream_unstated() {
+  local session=$1 exposing=$2
+  jq -n -r \
+    --slurpfile rerun "${iteration_dir}/import_gated/${session}.json" \
+    --slurpfile before "${iteration_dir}/import_gated/${exposing}.json" \
+    '($rerun[0].unstated - $before[0].unstated)[]'
 }
 
 campaign_swap_files=(replay.log concolic_region_results.jsonl
@@ -6313,6 +6343,7 @@ gaps.jsonl.gz | grep -F 'unplanned-input-max=' || true) \
     | rows("loop-body-bound") as $loops
     | rows("daemon-tick-bound") as $ticks
     | rows("ordered-map-unmodeled") as $sorted
+    | rows("world-unstated") as $unstated
     | (rows("view-hold-max") + [$confirmHolds[] | bound("view-hold-max")])
       as $holds
     | ($rounds | last | .ceilingCut // 0) as $ceiling
@@ -6362,6 +6393,14 @@ gaps.jsonl.gz | grep -F 'unplanned-input-max=' || true) \
               + " run'"'"'s contents (" + ($sorted
               | map(.subject | sub(" ordered-map-unmodeled=.*"; "")) | unique
               | join(", ")) + ")")}),
+        (select(($unstated | length) > 0)
+         | {by: "grow_rerun_world_unstated",
+            detail: ("\($unstated | length) GROW re-run(s) stated no"
+              + " decision at a flip of their world their exposing session"
+              + " states, and were dropped: the regions they exposed stay"
+              + " uncaptured in those worlds and no flip on them is asked"
+              + " there (" + ($unstated | map(.subject
+              | sub(" world-unstated=.*"; "")) | unique | join(", ")) + ")")}),
         (select(($holds | length) > 0)
          | {by: "view_hold_max",
             detail: ("\($holds | length) pairing hold(s) of a node'"'"'s view"

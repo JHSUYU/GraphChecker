@@ -74,10 +74,8 @@ grace, and one that reaches no hook makes its replay's obligations admit nothing
 (`FocusedReplay#noteUnsettledPublication`), no new verdict; or (b) no nested path is cut from a session whose
 flipped activation published no rows. Today's corpora of 07 (CC7), 11741 (AW5), 29 30 40 (HF1) and 39 (WD3) hold
 no stranded activation, so either touches only perpetual bodies like 21's actor.
-(b) is in (branch `zk-fixtrunc`, PIPELINE §7.4 "cut from by no flip query"): a session whose world holds a flip at
-an occurrence it states no decision of offers no flip query (its pairing flips still), one DIAGNOSTIC
-`WORLD_UNSTATED` row a round; it removed zk-bugs-trunc-sync's BLOCKING row (T1, TODO ZooKeeper on CloudLab 2). (a) stays
-open: the nested worlds below such a session are not asked.
+A GROW re-run that strands its world's flip no longer replaces the replay that stated it (PIPELINE §7.8, branch
+`zk-fixtrunc`); a first replay that strands it (21's case) still leaves each flip cut from it refused, BLOCKING.
 
 
 ### 5. Defects found this session (STATUS "Open defects" has each with its fix)
@@ -970,18 +968,17 @@ which no ORDER holds". The cause is not CONFIRM's planning, as H3 read it from t
    `ZKDatabase.addCommittedProposal(Request)#u21#1 -> true` at occurrence 16109589cba8003a", so the claim is
    RUN_DEFECT. liftlab's F2B-trunc closed in 84 rounds without it; CloudLab's runs explore to 97-100 rounds (waves
    9-11). Cause (branch `zk-fixtrunc`): no address shift. The flip ran at its exact address and was ADMITTED twice:
-   first replay (session `ea702b2e`, stated at `peer1#epoch2`), then its GROW re-run (`0ea6da09`, the follower's
+   first replay (Z9 session `ea702b2e`, stated at `peer1#epoch2`), then its GROW re-run (`0ea6da09`, the follower's
    second life now planned), whose test failed ("server 1 stopped before it synced") while life 3's
    `runFromConfig` -- the declared and flipped occurrence -- still joined its peer: stranded at the run's end
    (`TERMINAL_NEVER_REACHED`), it published no row, only mints, and the swap put the re-run's session in. The
    `#u21#1 = true` rows the re-run states at `peer1#epoch1` are life 2's own replay, another occurrence. Every flip
-   cut from the re-run then inherited an unstated flip (life 2's TRUNC-sync FAULT among them) and was
-   refused, BLOCKING. Fix: TODO HDFS §4 (b), PIPELINE §7.4: such a session offers no flip query, DIAGNOSTIC
-   `WORLD_UNSTATED`. What it leaves unasked is the second counterfactual on top of that world, which no session
-   could state. T1 (`/bulk/gc-out/zk-agenttr/accept-T1-bugs-trunc-sync`, snapshot `/bulk/gc-run/zktr-1` = c01b70c0c,
-   alone, 4284 s): the same obligation's re-run stranded the same way (session `ea4a3130`, WORLD_UNSTATED rounds
-   28-96), UNSAT_CLOSED at FIXED_POINT in 97 rounds, no BLOCKING gap, no defect, z3 unsat on the file, 19 paths and
-   148 leaves as Z9, vacuity.py substantive (1 of 19 paths free), BOUNDED by `region_path_max_world_depth` as Z9.
+   cut from the re-run inherited an unstated flip and was refused, BLOCKING (79 obligations in Z9, most on life 2's
+   paths, its TRUNC-sync decisions among them), and the world's life-3 target path left the formula. Fix (PIPELINE
+   §7.8): a re-run takes its exposing session's place only if it states every flip that session states (the gate's
+   ledger keeps each session's unstated flips, invariant 10); else it is dropped, the first replay stays, and the
+   drop is a named bound (`world-unstated=<n>`, `grow_rerun_world_unstated`): life 2's flips in that world are asked
+   by no session, which this corpus no longer states.
 3. **The CPU-aware ledger and replay fidelity**: packing the CPUs fuller (PARALLEL §8) gives the order's watchdog less
    CPU per replay; watch the give-up counts (`round-status.sh`'s giveups, `of an order of ... given up`) against
    `cpu-<round>.txt` when the busy share rises.

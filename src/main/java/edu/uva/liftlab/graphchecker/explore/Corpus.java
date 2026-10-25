@@ -18,7 +18,6 @@ import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
-import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
@@ -745,17 +744,6 @@ public final class Corpus implements Arms.Rows {
     public World world(String sessionId) {
         World stated = worlds.get(sessionId == null ? "" : sessionId);
         return stated == null ? World.empty() : stated;
-    }
-
-    public Flip unstatedFlip(String sessionId) {
-        for (Flip flip : world(sessionId).flips) {
-            if (Obligation.pairing(flip.siteId)) continue;
-            OccurrenceAddress at = occurrence(flip.focusedOccurrenceId);
-            if (at == null || decisionsOf(sessionId, at).isEmpty()) {
-                return flip;
-            }
-        }
-        return null;
     }
 
     public String inputShape(String sessionId, OccurrenceAddress occurrence,
