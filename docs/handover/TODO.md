@@ -62,6 +62,12 @@ What the port left open, each with its evidence (STATE §C has where things are;
    6306493a...) never came (`reproduce/run-*/answer.json` `NOT_REACHED`). system/hdfs's 10/10 also applied the
    serial-number hook; here SERIAL_NO stays at its recording and is not planted. Read which native occurrence runs dn1's
    key removal and whether the order's identity or the unplanted serial number keeps it apart.
+13. **One unrun heartbeat occurrence withholds a confirmed SAT** (P1-17967-pathC, P2-17967-pathB, P2-17967-pathC,
+   all confirmed in the VM and reproduced 10/10 natively): one EXPLORE gap, TOPOLOGY_DIVERGENCE (P1: the heartbeat
+   ran under a `BP_SERVICE_ACTOR` anchor, not the closure's heartbeat anchor) or ADMISSION_GAP (P2: "no session of
+   this corpus ran this occurrence"), BLOCKING, so report.py withholds the claim. The timing of the DataNodes'
+   heartbeats against their service actors varies more as the pool packs the CPUs; P3 passed both. Read whether an
+   occurrence off the claim's cone should block a SAT (CHECKING §1).
 
 
 ## HDFS (finished: `system/hdfs` 39 cases, `system/hdfs1` 7; trees r7, r7-21, r8, 11741-r6 = the fork's `graphchecker/*` branches; image `vm-hg5`)

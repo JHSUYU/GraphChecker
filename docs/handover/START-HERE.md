@@ -58,6 +58,14 @@ their own snapshots and tree sets) are `results/hdfs/README.md`: the rounds, eve
 time breakdown and closure, and one reading per case. STATUS "HDFS checks on CloudLab" has the summary and what each case
 needed; STATUS "Per-system surface" each workaround with its evidence run.
 
+**The pool and the CPU-aware ledger (2026-10-25, PARALLEL §8).** The nine named cases but 11741 ran three times as
+one pool beside the ZooKeeper rounds of `system/zookeeper-cloudlab` (`/bulk/gc-out/hdfs-pool`; snapshots `hcP1`
+3f630e134, `hcP2` a830a3e87, `hcP3` 7828aa909; tree set `f1`): P1 on whole-core charges by the mean (16 ZooKeeper
+cases beside it, 44 % of the CPUs by load), P2 with the load-aware ledger, P3 with its decay fix. Their walls, summed
+over the nine: P1 15710 s, P3 10099 s (the final series' runs of the same nine, before the pool: 9472 s). P3 passed
+9 of 9 (each SAT confirmed in the VM, native 10/10, report.py PASS); in P1 and P2, 17967-pathC (P1, P2) and -pathB
+(P2) were confirmed and reproduced 10/10 natively but withheld by one BLOCKING gap (TODO HDFS on CloudLab 13).
+
 ## 3. Read, in this order
 
 1. This file, then [STATE.md](STATE.md) §C (where everything is on the cluster) and `results/hdfs/README.md`.
