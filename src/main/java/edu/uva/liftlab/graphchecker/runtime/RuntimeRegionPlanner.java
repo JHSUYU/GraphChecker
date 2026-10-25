@@ -1280,7 +1280,8 @@ public final class RuntimeRegionPlanner {
             for (String declared : new String[] {
                     RuntimeSelectedRegionFinalizer.DECLARED_OCCURRENCE,
                     RuntimeSelectedRegionFinalizer.CONTEXT_SHAPE,
-                    RuntimeSelectedRegionFinalizer.RECORDED_BESIDE}) {
+                    RuntimeSelectedRegionFinalizer.RECORDED_BESIDE,
+                    RuntimeSelectedRegionFinalizer.ALONE_IN_CONTEXT}) {
                 if (seed.containsKey(declared)) {
                     plan.put(declared, seed.get(declared));
                 }

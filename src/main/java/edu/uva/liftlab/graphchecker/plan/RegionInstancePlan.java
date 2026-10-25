@@ -23,6 +23,7 @@ public final class RegionInstancePlan extends PlanRow {
             LoopBoundPolicy.PLAN_FIELD,
             RuntimeSelectedRegionFinalizer.CONTEXT_SHAPE,
             RuntimeSelectedRegionFinalizer.RECORDED_BESIDE,
+            RuntimeSelectedRegionFinalizer.ALONE_IN_CONTEXT,
             DeclaredSiteCapture.ROOT_CALL_ID
     };
     private final Goal goal;

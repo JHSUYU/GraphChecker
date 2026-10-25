@@ -110,6 +110,7 @@ public final class RuntimeSelectedRegionFinalizer {
     public static final String DECLARED_OCCURRENCE = "declaredOccurrence";
     public static final String CONTEXT_SHAPE = "contextShape";
     public static final String RECORDED_BESIDE = "recordedBeside";
+    public static final String ALONE_IN_CONTEXT = "aloneInContext";
 
     private RuntimeSelectedRegionFinalizer() {
     }
@@ -795,15 +796,19 @@ public final class RuntimeSelectedRegionFinalizer {
             OccurrenceAddress address = OccurrenceAddress.parse(occurrence);
             List<String> shape = shapes.apply(address.context());
             List<String> beside = new ArrayList<>();
+            boolean alone = true;
             for (OccurrenceAddress other : recorded.get(address.regionId()
                     + "|" + address.node().render())) {
                 if (!other.id().equals(address.id())
                         && shapes.apply(other.context()).equals(shape)) {
                     beside.add(other.id());
+                    alone &= !other.context().render().equals(
+                            address.context().render());
                 }
             }
             instances.get(occurrence).put(CONTEXT_SHAPE, shape);
             instances.get(occurrence).put(RECORDED_BESIDE, beside);
+            instances.get(occurrence).put(ALONE_IN_CONTEXT, alone);
         }
     }
 
