@@ -327,7 +327,6 @@ public final class SmtLowering {
             new HashMap<String, Set<ReadRow>>();
     private final Set<String> nestedSelectors = new LinkedHashSet<String>();
     private final Deque<ReadAt> answering = new ArrayDeque<ReadAt>();
-    private final Set<String> integralDomains = new LinkedHashSet<String>();
 
     private final boolean symbolsDeclareThemselves;
     private final ExpressionTable table;
@@ -1098,16 +1097,6 @@ public final class SmtLowering {
             }
         }
         return false;
-    }
-
-    private void assertJavaIntegralDomain(String term, String javaType) {
-        JavaPrimitiveSmtSemantics.IntegralDomain domain =
-                JavaPrimitiveSmtSemantics.domainOfJavaType(javaType);
-        if (term.isEmpty() || domain == null || !integralDomains.add(term)) {
-            return;
-        }
-        assertPlain(VmTermLowering.integralRange(domain.lower, term,
-                domain.upper));
     }
 
     private void recordedReading(Term value, JsonElement observed,
@@ -4026,10 +4015,12 @@ public final class SmtLowering {
                     operation, origin, Sort.INT);
             if (strings.terms == null) return strings.refusal;
             String text = "(str.len " + strings.terms.get(0).text + ")";
-            Term length = definedResult(text, Sort.INT,
-                    IntegralWidth.JAVA_INT, strings.defined);
-            assertJavaIntegralDomain(text, "I");
-            return length;
+            JavaPrimitiveSmtSemantics.IntegralDomain domain =
+                    JavaPrimitiveSmtSemantics.domainOfJavaType("I");
+            sideCondition(VmTermLowering.integralRange(domain.lower, text,
+                    domain.upper));
+            return definedResult(text, Sort.INT, IntegralWidth.JAVA_INT,
+                    strings.defined);
         }
         if ("charAt".equals(operation) || "indexOf".equals(operation)
                 || "lastIndexOf".equals(operation)
