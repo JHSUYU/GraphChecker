@@ -18,7 +18,7 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | REPLAY | `campaign_session_replay`; the adapter (`runtime.*` in the workload JVM) | `iteration-0000/sessions/<seed>/` | killed on its bound (`seed_replay_time_factor`); no activation; no target row of the target method |
 | IMPORT | `campaign_import_session`; `contract.ImportGateMain` | `session_census.jsonl`, `import_gate.list`, `import_gate.json`, `import_gated/`, `campaign_gaps.jsonl` | a session file is missing; a BLOCKING row invariant |
 | ZKKEYS | `campaign_zk_keys`; `compose.ZkKeysMain` (only where PLAN wrote a ZooKeeper chain) | `zk_chain.jsonl` and `execution_task_plan.jsonl` rekeyed, `zk-keys.log` | ZkKeysMain exits nonzero |
-| EXPLORE | `campaign_explore` (the streaming loop), `campaign_stream_grow`; `explore.ExploreMain`, `explore.ObligationSolverMain`, `plan.ExposedRegionPlanMain` | `obligations-NNNN/` (`planning-NNNN/` until taken), `steps/NNNN/`, `obligation_results.jsonl`, focused sessions, `exploration.json` | a round's planner fails (one out of the most heap a head JVM is given ends the exploration instead, §7.9); a host's memory or cores cannot be read; a GROW re-run does not finish; a landed session's BLOCKING row invariant (as IMPORT) |
+| EXPLORE | `campaign_explore` (the streaming loop), `campaign_stream_grow`; `explore.ExploreMain`, `explore.ObligationSolverMain`, `plan.ExposedRegionPlanMain` | `obligations-NNNN/` (`planning-NNNN/` until taken), `steps/NNNN/`, `obligation_results.jsonl`, focused sessions, `exploration.json` | a round's planner fails (one out of the most heap a head JVM is given ends the exploration instead, §7.9); a host's memory or cores cannot be read; a landed session's BLOCKING row invariant (as IMPORT) |
 | — | `campaign_publish_iteration_manifest` | `iteration_manifest.json` | — |
 | COMPOSE | `campaign_compose`; `compose.ComposeMain` | `final/candidate.smt2`, `candidate_composition_manifest.json`, `claim.json`, `compose_inputs.sha256` | ComposeMain exits nonzero, its deepest throwable the reason (every refusal is a claim, not an exit) |
 | SOLVE, DECIDE | `campaign_solve`, `campaign_decide` (read the manifest) | log lines | the manifest states no solver verdict or no valuation rows |
@@ -2270,10 +2270,12 @@ world -- `contract.Flip#world`, the world `ExploreCodec#readWorld` and FlipQuery
 unless the row is a path re-run's, and every inherited flip -- but pairings, whose last decision at the flip's
 occurrence with that site and ordinal is none or another arm (`Flip#taken`, FlipQuery's test too; `unstated`,
 invariant 10). A re-run is DROPPED, as one that did not finish always was, when it did not finish (failed,
-stalled, past its bound), published no session (a refusal, a stall before any flip, an in-worker
-`REPLAY_BOUNDED`), or left unstated a flip its exposing session states (`campaign_stream_unstated`) -- unless it
-was ADMITTED and observed the fatal at the anchor (`campaign_stream_fatal`, the test `campaign_stream_move`
-lands a witness by), which swaps in and goes to its witness attempt whatever it left unstated. A drop
+stalled, past its bound), was not ADMITTED -- with no session (a refusal, a stall before any flip, an in-worker
+`REPLAY_BOUNDED`) or with one (a root it planted no mint row for, an unsettled publication, an unmatched
+prefix, a pairing not taken), its exposing session being always ADMITTED (§7.2's `exposing`) -- or left
+unstated a flip its exposing session states (`campaign_stream_unstated`), unless it observed the fatal at the
+anchor (`campaign_stream_fatal`, the test `campaign_stream_move` lands a witness by), which swaps in and goes
+to its witness attempt whatever it left unstated. A drop
 (`campaign_stream_rerun_drop`) keeps the exposing session in the corpus and its verdict row, never re-runs the
 obligation (`<worker>/grow-dropped`; before 2026-10-15 it failed the campaign), removes the re-run's ledger
 record, and is named: the exposing session is composed uncaptured (`uncaptured_sessions.txt`, below), and a

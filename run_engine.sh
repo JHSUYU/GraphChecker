@@ -6023,11 +6023,12 @@ campaign_stream_swap() {
       why="did not finish (exit ${status})"
     else
       session=$(jq -r '.sessionId // ""' "${rerun}/obligation_result.jsonl")
+      verdict=$(jq -r '.verdict // ""' "${rerun}/obligation_result.jsonl")
     fi
-    if [[ "${status}" -eq 0 && -z "${session}" ]]; then
-      why="published no session: $(jq -r '.detail // ""' \
-        "${rerun}/obligation_result.jsonl")"
-    elif [[ -n "${session}" ]] && ! campaign_stream_fatal \
+    if [[ "${status}" -eq 0 && "${verdict}" != ADMITTED ]]; then
+      why="is ${verdict}$([[ -n "${session}" ]] || printf ', no session'): \
+$(jq -r '.detail // ""' "${rerun}/obligation_result.jsonl")"
+    elif [[ "${status}" -eq 0 ]] && ! campaign_stream_fatal \
         "${rerun}/obligation_result.jsonl" "${rerun}/sessions/${session}"; then
       unstated=$(campaign_stream_unstated "${session}" "${exposing}") \
         || campaign_fail EXPLORE CAMPAIGN "${iteration_dir}/import_gated" \

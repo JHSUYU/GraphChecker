@@ -1895,8 +1895,8 @@ jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
   sessionId: "SESSION.regrown", role: "FOCUSED", obligationIds: ["OB.x"]}' \
   >"${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.regrown/manifest.json"
 jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: "OB.x",
-  verdict: "NOT_ADMITTED", sessionId: "SESSION.regrown",
-  detail: "the grown region refused the flip"}' \
+  verdict: "ADMITTED", sessionId: "SESSION.regrown",
+  detail: "the focused prefix reproduced"}' \
   >"${CAUSYNTH_CONCOLIC_WORKER_DIR}/replay_verdict.jsonl"
 EOF
   chmod +x "${stream_dir}/replay.sh"
@@ -2002,8 +2002,8 @@ jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
   sessionId: "SESSION.regrown", role: "FOCUSED", obligationIds: ["OB.x"]}' \
   >"${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.regrown/manifest.json"
 jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: "OB.x",
-  verdict: "NOT_ADMITTED", sessionId: "SESSION.regrown",
-  detail: "the grown region refused the flip"}' \
+  verdict: "ADMITTED", sessionId: "SESSION.regrown",
+  detail: "the focused prefix reproduced"}' \
   >"${CAUSYNTH_CONCOLIC_WORKER_DIR}/replay_verdict.jsonl"
 EOF
 chmod +x "${stream_dir}/replay.sh"
@@ -2073,7 +2073,7 @@ verdict=ADMITTED
 fatal=false
 session=SESSION.regrown
 case "${GU_MODE}" in
-  notadmitted) verdict=NOT_ADMITTED ;;
+  notadmitted|refused) verdict=NOT_ADMITTED ;;
   fatal) fatal=true ;;
   sessionless) verdict=NOT_ADMITTED; session="" ;;
 esac
@@ -2108,7 +2108,8 @@ EOF
       mkdir -p "${iteration}/import_gated"
       for session in "$@"; do
         flips='[]'
-        if [[ "${session}" == SESSION.regrown && "${gu_mode}" != stated ]] \
+        if [[ "${session}" == SESSION.regrown && "${gu_mode}" != stated \
+              && "${gu_mode}" != refused ]] \
             || [[ "${session}" == SESSION.exposing && "${gu_mode}" \
               == unstated ]]; then
           flips='["S#u1#0 -> true at occurrence O1 (obligation OB.x)"]'
@@ -2180,6 +2181,7 @@ unstated|FIXED_POINT SESSION.regrown - - - SESSION.exposing.json+SESSION.regrown
 dropped|FIXED_POINT SESSION.exposing SESSION.exposing obligations-0001 DIAGNOSTIC:OB.x:grow-rerun-dropped=0 SESSION.exposing.json SESSION.exposing -
 notadmitted|FIXED_POINT SESSION.exposing SESSION.exposing obligations-0001 DIAGNOSTIC:OB.x:grow-rerun-dropped=0 SESSION.exposing.json SESSION.exposing -
 sessionless|FIXED_POINT SESSION.exposing SESSION.exposing obligations-0001 DIAGNOSTIC:OB.x:grow-rerun-dropped=0 SESSION.exposing.json SESSION.exposing -
+refused|FIXED_POINT SESSION.exposing SESSION.exposing obligations-0001 DIAGNOSTIC:OB.x:grow-rerun-dropped=0 SESSION.exposing.json SESSION.exposing -
 fatal|FIXED_POINT SESSION.regrown - - - SESSION.exposing.json+SESSION.regrown.json SESSION.regrown witness
 EOF
 
