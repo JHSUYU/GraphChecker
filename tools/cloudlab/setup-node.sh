@@ -12,6 +12,11 @@ sudo apt-get install -y -qq openjdk-8-jdk maven ant nfs-common docker.io unzip z
 sudo update-alternatives --set java /usr/lib/jvm/java-8-openjdk-amd64/jre/bin/java >/dev/null
 sudo update-alternatives --set javac /usr/lib/jvm/java-8-openjdk-amd64/bin/javac >/dev/null
 sudo ln -sfn /usr/share/maven /usr/lib/maven
+# Replays run the Zero interpreter one thread each, so a core's clock is their speed: hold every core at the
+# performance governor (CloudLab's default schedutil kept busy cores at 2.4-2.8 of 3.7 GHz).
+for governor in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+  [[ ! -w "${governor}" && ! -e "${governor}" ]] || echo performance | sudo tee "${governor}" >/dev/null
+done
 if ! mountpoint -q /data; then
   sudo blkid "${disk}" >/dev/null 2>&1 || sudo mkfs.ext4 -q -F -m 0 "${disk}"
   sudo mkdir -p /data
