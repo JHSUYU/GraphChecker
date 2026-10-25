@@ -1,0 +1,11 @@
+# The six old HDFS bugs of system/hdfs-buggy-detect (owner 2026-10-25): each runs the ad hoc check of the point its
+# bug lives at on a tree of its own, graphchecker/hdfs-checks with that bug put back by hand and a workload for it
+# (experiments/hadoop/trees.tsv, hadoop-hdfs-bug-<jira>). The case directory hdfs-buggy-<jira> declares the check;
+# its README the bug, the point, what was put back and why, and the result.
+# case	branch	budget_s	jira	point(s)
+hdfs-buggy-11741	system/hdfs-buggy-detect	21600	HDFS-11741	hdfs-adhoc-11
+hdfs-buggy-17383	system/hdfs-buggy-detect	21600	HDFS-17383	hdfs-adhoc-12
+hdfs-buggy-16689	system/hdfs-buggy-detect	21600	HDFS-16689	hdfs-adhoc-45, hdfs-adhoc-09
+hdfs-buggy-15590	system/hdfs-buggy-detect	21600	HDFS-15590	hdfs-adhoc-52
+hdfs-buggy-11890	system/hdfs-buggy-detect	21600	HDFS-11890	hdfs-adhoc-28, hdfs-adhoc-29
+hdfs-buggy-13145	system/hdfs-buggy-detect	21600	HDFS-13145	hdfs-adhoc-09

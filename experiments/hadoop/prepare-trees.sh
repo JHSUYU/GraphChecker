@@ -16,7 +16,7 @@ while IFS=$'\t' read -r id _; do
   read -r repo spec < <(bash -c 'source "$1" "$2" "$3" >/dev/null && echo "${repo} ${test_class}#${test_method}"' \
     _ "${graphchecker}/experiments/lib/case-env.sh" "${dir}" "${arg}")
   workloads[$(basename "${repo}")]+=" ${spec}"
-done <"${here}/hdfs-cases.tsv"
+done < <(cat "${here}"/hdfs-*cases.tsv)
 
 names=("$@")
 ((${#names[@]} > 0)) || mapfile -t names < <(awk -F'\t' '$1 !~ /^#/ && NF {print $1}' "${here}/trees.tsv")

@@ -1,8 +1,14 @@
 # The HDFS trees the cases run (each case.sh's repo=, under GC_TREES): the
 # directory name and the branch of the Hadoop fork (HADOOP_FORK,
 # prepare-trees.sh) it is checked out at.  All three stand on Apache Hadoop
-# trunk 734dd8a67cd (2026-05-13).
+# trunk 734dd8a67cd (2026-05-13); the hadoop-hdfs-bug-<jira> trees are graphchecker/hdfs-checks with one old bug put back.
 # name	fork branch	what it is
 hadoop-hdfs-study-r7	graphchecker/hdfs-checks	every HDFS case but hdfs-adhoc-21 and hdfs-11741: the study checks' markers and workloads, the named cases' workloads, HDFS-17897's fix reverted, the time family's workarounds, a quorum call's replies read in its loggers' order (every QJM check, 05-10), a block recovery's primary the live replica not yet tried with the least DataNode UUID (28-30), a LightWeightGSet sized as for a 64 MB heap (52), TestEncryptedTransfer's client without block-acquire retries (11)
 hadoop-hdfs-21	graphchecker/hdfs-checks-adhoc21	hdfs-adhoc-21 only: r7 plus the DataNode handshake on a joined thread of its own and its workload's skip loop at the three largest strides
 hadoop-hdfs-11741-r6	graphchecker/hdfs-11741	hdfs-11741 only: trunk with HDFS-11741's fix reverted (an old bug) and its own hook generation
+hadoop-hdfs-bug-11741	graphchecker/hdfs-bug-11741	hdfs-buggy-11741 only: graphchecker/hdfs-checks with HDFS-11741 put back by hand and its workload
+hadoop-hdfs-bug-17383	graphchecker/hdfs-bug-17383	hdfs-buggy-17383 only: graphchecker/hdfs-checks with HDFS-17383 put back by hand and its workload
+hadoop-hdfs-bug-16689	graphchecker/hdfs-bug-16689	hdfs-buggy-16689 only: graphchecker/hdfs-checks with HDFS-16689 put back by hand and its workload
+hadoop-hdfs-bug-15590	graphchecker/hdfs-bug-15590	hdfs-buggy-15590 only: graphchecker/hdfs-checks with HDFS-15590 put back by hand and its workload
+hadoop-hdfs-bug-11890	graphchecker/hdfs-bug-11890	hdfs-buggy-11890 only: graphchecker/hdfs-checks with HDFS-11890 put back by hand and its workload
+hadoop-hdfs-bug-13145	graphchecker/hdfs-bug-13145	hdfs-buggy-13145 only: graphchecker/hdfs-checks with HDFS-13145 put back by hand and its workload
