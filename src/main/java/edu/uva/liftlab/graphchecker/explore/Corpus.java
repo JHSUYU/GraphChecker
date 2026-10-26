@@ -1438,7 +1438,28 @@ public final class Corpus implements Arms.Rows {
     public List<OccurrenceAddress> doorsOf(String producerEndpointId,
                                            OccurrenceAddress served,
                                            Map<String, Integer> cut,
-                                           List<OccurrenceAddress> earlier) {
+                                           List<OccurrenceAddress> earlier,
+                                           List<OccurrenceAddress> legs) {
+        List<OccurrenceAddress> doors = messageDoors(producerEndpointId,
+                served, cut, earlier);
+        List<OccurrenceAddress> senders =
+                new ArrayList<OccurrenceAddress>(doors);
+        senders.addAll(earlier);
+        for (OccurrenceAddress sender : senders) {
+            for (OccurrenceAddress reader : replyLegsOf(sender)) {
+                if (!reader.equals(served) && !senders.contains(reader)
+                        && !legs.contains(reader)) {
+                    legs.add(reader);
+                }
+            }
+        }
+        return doors;
+    }
+
+    private List<OccurrenceAddress> messageDoors(String producerEndpointId,
+                                                 OccurrenceAddress served,
+                                                 Map<String, Integer> cut,
+                                                 List<OccurrenceAddress> earlier) {
         List<OccurrenceAddress> doors = new ArrayList<OccurrenceAddress>();
         for (OccurrenceAddress door : new OccurrenceAddress[] {
                 senderOf(producerEndpointId),

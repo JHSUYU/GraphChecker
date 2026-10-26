@@ -1626,16 +1626,21 @@ public final class ClosurePlanner {
         for (String endpoint : corpus.startedBy(step.demand.occurrence)) {
             doorsOf(walk, step, endpoint);
         }
-        for (OccurrenceAddress reader
-                : corpus.replyLegsOf(step.demand.occurrence)) {
+        replyLegs(walk, step, corpus.replyLegsOf(step.demand.occurrence),
+                step.demand.occurrence.render());
+    }
+
+    private static void replyLegs(Walk walk, Step step,
+                                  List<OccurrenceAddress> readers,
+                                  String sent) {
+        for (OccurrenceAddress reader : readers) {
             if (walk.faulted(reader)) {
                 step.next(new Demand(reader, CONTROL_PRODUCER, false));
             } else {
                 step.faultless(reader.id(), () -> GapRow.of(
                         ExploreCodec.EXPLORATION, GapKind.ADMISSION_GAP,
                         GapClass.DIAGNOSTIC, reader.render(), "a reader of"
-                                + " the reply to a request "
-                                + step.demand.occurrence.render()
+                                + " the reply to a request " + sent
                                 + " sent decided no fault in any session, so"
                                 + " nothing of it decides whether the sender"
                                 + " sees the reply: no control producer"));
@@ -1666,8 +1671,10 @@ public final class ClosurePlanner {
         Demand demand = step.demand;
         Map<String, Integer> cut = new LinkedHashMap<String, Integer>();
         List<OccurrenceAddress> earlier = new ArrayList<OccurrenceAddress>();
+        List<OccurrenceAddress> legs = new ArrayList<OccurrenceAddress>();
         List<OccurrenceAddress> doors = corpus.doorsOf(endpoint,
-                demand.occurrence, cut, earlier);
+                demand.occurrence, cut, earlier, legs);
+        replyLegs(walk, step, legs, "a door of message " + endpoint);
         for (Map.Entry<String, Integer> each : cut.entrySet()) {
             step.once(demand.occurrence.id() + "|" + endpoint + "|"
                     + each.getKey(), () -> GapRow.of(ExploreCodec.EXPLORATION,

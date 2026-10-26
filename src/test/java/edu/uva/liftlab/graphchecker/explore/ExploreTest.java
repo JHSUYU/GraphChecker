@@ -2369,9 +2369,21 @@ public class ExploreTest {
                 started, "Table#put#2");
         OccurrenceAddress after = occurrence("hb/master0", "REGION.door",
                 started, "Table#put#9");
+        OccurrenceAddress firstSend = occurrence("hb/client0", "REGION.door",
+                CausalContext.of(Role.of("CLIENT"), "test", 1),
+                "Admin#disable#1");
+        OccurrenceAddress replyReader = occurrence("hb/client0",
+                "REGION.reply", CausalContext.of("m-first-reply", "HBASE_RPC"),
+                "RpcConnection#finishCall#1");
         Object[][] table = {
-            {"seed", "seed", "[" + before.render() + "]", 1, 1},
-            {"seed", "s-other", "[]", 0, 2},
+            {"seed", "seed", "[" + before.render() + "]", 1, 1, false,
+                    "[" + client.render() + "]", "[]"},
+            {"seed", "s-other", "[]", 0, 2, false,
+                    "[" + client.render() + "]", "[]"},
+            {"seed", "seed", "[" + before.render() + "]", 1, 1, true,
+                    new TreeSet<String>(Arrays.asList(client.render(),
+                            firstSend.render())).toString(),
+                    "[" + replyReader.render() + "]"},
         };
         for (Object[] row : table) {
             Path iteration = tree.newFolder().toPath();
@@ -2388,14 +2400,32 @@ public class ExploreTest {
             own.decision(writer, "Manager#u3", 1, true, "");
             own.activation(after, false);
             own.decision(after, "AbstractRpcClient#u66", 1, false, "");
+            if ((Boolean) row[5]) {
+                own.activation(firstSend, false);
+                own.decision(firstSend, "AbstractRpcClient#u66", 1, false, "");
+                own.activation(replyReader, false);
+                own.decision(replyReader, "RpcConnection#u12", 1, false, "");
+            }
             for (Session session : sessions.values()) session.flush();
             RowCodec.writeJsonl(SessionDir.of(iteration, "seed").schedule(),
                     Arrays.asList(RowCodec.writeScheduleEvent(ScheduleEvent.of(
-                            1L, ScheduleEvent.Kind.SEND, client.node().render()
+                            0L, ScheduleEvent.Kind.SEND, client.node().render()
+                                    + "|" + client.context().render(),
+                            "HBASE_RPC#REQUEST:MasterService.DisableTable",
+                            0, firstSend.id(), "m-first")),
+                            RowCodec.writeScheduleEvent(ScheduleEvent.of(1L,
+                                    ScheduleEvent.Kind.SEND, writer.node()
+                                            .render() + "|"
+                                            + CausalContext.of("m-first",
+                                            "HBASE_RPC").render(),
+                                    "HBASE_RPC#RESPONSE", 0, "",
+                                    "m-first-reply")),
+                            RowCodec.writeScheduleEvent(ScheduleEvent.of(
+                            2L, ScheduleEvent.Kind.SEND, client.node().render()
                                     + "|" + client.context().render(),
                             "HBASE_RPC#REQUEST:MasterService.CreateNamespace",
                             0, client.id(), "m-create")),
-                            RowCodec.writeScheduleEvent(ScheduleEvent.of(2L,
+                            RowCodec.writeScheduleEvent(ScheduleEvent.of(3L,
                                     ScheduleEvent.Kind.RECV, writer.node()
                                             .render() + "|"
                                             + started.render(),
@@ -2403,13 +2433,16 @@ public class ExploreTest {
             Map<String, Integer> cut = new LinkedHashMap<String, Integer>();
             List<OccurrenceAddress> earlier =
                     new ArrayList<OccurrenceAddress>();
+            List<OccurrenceAddress> legs = new ArrayList<OccurrenceAddress>();
             List<OccurrenceAddress> doors = Corpus.read(iteration, null)
-                    .doorsOf("m-create", writer, cut, earlier);
+                    .doorsOf("m-create", writer, cut, earlier, legs);
             List<String> said = new ArrayList<String>();
             for (OccurrenceAddress each : earlier) said.add(each.render());
-            String label = "door ran in " + row[1];
-            assertEquals(label, "[" + client.render() + "]",
-                    renders(doors));
+            String label = "door ran in " + row[1] + ", an earlier request"
+                    + " of the sending turn replied " + row[5];
+            assertEquals(label, row[6],
+                    new TreeSet<String>(rendersOf(doors)).toString());
+            assertEquals(label, row[7], renders(legs));
             assertEquals(label, row[2], said.toString());
             assertEquals(label, row[3], cut.getOrDefault(
                     Corpus.EARLIER_IN_TURN, 0));
@@ -2419,11 +2452,16 @@ public class ExploreTest {
     }
 
     private static String renders(List<OccurrenceAddress> occurrences) {
+        return rendersOf(occurrences).toString();
+    }
+
+    private static List<String> rendersOf(
+            List<OccurrenceAddress> occurrences) {
         List<String> rendered = new ArrayList<String>();
         for (OccurrenceAddress each : occurrences) {
             rendered.add(each.render());
         }
-        return rendered.toString();
+        return rendered;
     }
 
     private static Obligation named(List<Obligation> obligations,

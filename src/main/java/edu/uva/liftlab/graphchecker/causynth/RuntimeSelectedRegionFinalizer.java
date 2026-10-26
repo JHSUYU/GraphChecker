@@ -1263,13 +1263,8 @@ public final class RuntimeSelectedRegionFinalizer {
                     continue;
                 }
                 served.add(occurrence);
-                Set<String> doors = doorsOf(messages, program, occurrence);
-                OccurrenceAddress address = OccurrenceAddress.parse(occurrence);
-                doors.addAll(messages.replyLegsOf(address,
-                        program.activationsByStance().getOrDefault(
-                                ContextShape.Stance.of(address).render(),
-                                Collections.<String>emptyList()), readers));
-                for (String door : doors) {
+                for (String door : controlProducersOf(messages, program,
+                        occurrence, occurrenceById, readers)) {
                     String held = occurrenceById.get(door);
                     if (held == null || walk.reached.contains(held)
                             || walk.excluded.contains(held)
@@ -1284,6 +1279,32 @@ public final class RuntimeSelectedRegionFinalizer {
             progressed |= !seeds.isEmpty();
             walk.walk(seeds);
         } while (progressed);
+    }
+
+    static Set<String> controlProducersOf(RecordedMessages messages,
+            StaticProgram program, String served,
+            Map<String, String> occurrenceById,
+            Map<String, List<String>> readers) {
+        Set<String> doors = doorsOf(messages, program, served);
+        Set<String> producers = new LinkedHashSet<>(doors);
+        producers.addAll(replyLegsOf(messages, program, served, readers));
+        for (String door : doors) {
+            String sender = occurrenceById.get(door);
+            if (sender != null) {
+                producers.addAll(replyLegsOf(messages, program, sender,
+                        readers));
+            }
+        }
+        return producers;
+    }
+
+    private static Set<String> replyLegsOf(RecordedMessages messages,
+            StaticProgram program, String sender,
+            Map<String, List<String>> readers) {
+        OccurrenceAddress address = OccurrenceAddress.parse(sender);
+        return messages.replyLegsOf(address, program.activationsByStance()
+                .getOrDefault(ContextShape.Stance.of(address).render(),
+                        Collections.<String>emptyList()), readers);
     }
 
     static Set<String> doorsOf(RecordedMessages messages,

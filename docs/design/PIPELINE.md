@@ -255,7 +255,8 @@ occurrence(s), K admitted only as such`).
 
 A control producer (`CONTROL_PRODUCER_V1`, run paused but for its doors) is admitted where it read
 a fault: a door of the message that started a demanded occurrence, and a reply leg of a request it
-sent (`RecordedMessages#replyLegsOf`), the reply's readers and, in turn, what they sent. A request
+or one of those doors sent (`RecordedMessages#replyLegsOf`, `RuntimeSelectedRegionFinalizer#controlProducersOf`), the reply's readers
+and, in turn, what they sent. A request
 sent by a recorded occurrence standing under the demanded one counts as its own: same node and
 context, the demanded occurrence's index a proper prefix of its index (`OccurrenceAddress#standsUnder`),
 such as a continuation it registered. EXPLORE applies the same rule (§7.2).
@@ -909,8 +910,8 @@ are counted, never dropped silently: `concreteAnchors` states how many
   or one that decided no fault (hdfs-adhoc-28/29's heartbeat tick in a scope with no IPC client
   door, HG3: it waited as "only the seed replay ran this occurrence" and blocked the fixed point) --
   is one DIAGNOSTIC `ADMISSION_GAP` row and never waited for. Its reply legs too: the readers of the
-  reply to every request a demanded occurrence sent, and, in turn, of the replies to what those
-  readers sent (`Corpus#replyLegsOf`; a reply is a `<transport>#RESPONSE` message sent under the
+  reply to every request a demanded occurrence or a door of its message sent, and, in turn, of the
+  replies to what those readers sent (`Corpus#replyLegsOf`, the legs `Corpus#doorsOf` returns; a reply is a `<transport>#RESPONSE` message sent under the
   request's anchor, its readers the occurrences anchored on it), each that decided a fault
   (`CONTROL_PRODUCER`): a reply door decides whether the sender sees the reply wherever the reply is
   read. A synchronous client reads it in the sender itself (Hadoop IPC's `Client#getRpcResponse`,

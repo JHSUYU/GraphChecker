@@ -993,7 +993,12 @@ reaches, to a fixed point:
   client reads it in the sender (Hadoop IPC, Solr's `HttpSolrClient`) or in the sender's own work
   anchored on the reply; HBase's client reads every reply on its event loop, whose callbacks send the
   next request of an async chain (`RpcConnection#finishCall`), as Solr's `Http2SolrClient` listener
-  reads an asynchronous request's. It contributes no value, so the doors of the
+  reads an asynchronous request's. The doors of the message that started an admitted occurrence have
+  their reply legs admitted as well (`RuntimeSelectedRegionFinalizer#controlProducersOf`, EXPLORE's
+  `Corpus#doorsOf` legs): a reply to a request the sending turn made decides, as that turn's request
+  doors do, whether and what the turn sends -- lost, it fails the turn's call or has its client send
+  the request again (hbase-buggy-20642: the first DisableTable's lost reply, whose retry the master
+  takes for a new operation). A control producer contributes no value, so the doors of the
   message that started it are not admitted in turn. These are the control producers EXPLORE
   proposes the faults of as flips (IDENTITY.md §7.3); the seven HDFS `MARKER_FLIPPED` witnesses
   move such an IPC door. A value rule that reaches one moves its basis -- a demand (`DemandWalk#reach`),
