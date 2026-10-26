@@ -3889,9 +3889,17 @@ with it is a `RUN_DEFECT`.
   submission); both end at the order's timeout, an order not held in time; every other
   writer of the location the held write is of before the writer or after the reader, held alike --
   an earlier one before the writer, a later one after the reader, except a later one between the
-  writer and the version the read observed that the reader cannot pass (the reader occurrence's own
-  write, or one on the reader's thread: `StateClosure#overtaken`), which the writer overtakes, so it
-  is held before the writer (the eligibility `Arms#eligible` admits such a writer by) -- and
+  writer and the version the read observed that the reader cannot pass (`StateClosure#overtaken`:
+  `Arms#concurrent` false for the reader and it, the rule `Arms#eligible` admits such a writer by,
+  decided here on the session's own rows). The writer must overtake it (`Arms#concurrent` true for
+  the two writers, else `PAIRING_UNHELD`), so it is held before the writer, and the reader is held
+  not where `holdBefore` would hold it -- that sub-frame can contain the overtaken write, a cycle
+  that sits until the order's timeout -- but at its first activation entered after the last such
+  write (`StateClosure#holdAfter`; none before the read is `PAIRING_UNHELD`): the writer then runs
+  where the overtaken write ends, as early as the order allows, and every later event of the reader
+  stays after it, as recorded (hdfs-buggy-14311: vol1's upgrade task writes `layoutVersion` and
+  `cTime` while vol2's `readProperties` is held at `setNamespaceID`, after its `setLayoutVersion`,
+  so vol2's `setcTime` still follows the task's) -- and
   for an INITIAL the model chose every writer of the location after the reader. Only a write row of
   the selected session names such a writer. A store that ran outside every activation in that
   session (`UNATTRIBUTED_STORE`) has no row, so no order holds it, and the run's read of its version

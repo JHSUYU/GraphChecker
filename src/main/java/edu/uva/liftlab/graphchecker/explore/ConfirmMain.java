@@ -45,6 +45,7 @@ import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import edu.uva.liftlab.graphchecker.runtime.MessageDoors;
 import edu.uva.liftlab.graphchecker.runtime.RecordingPlant;
+import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -1147,6 +1148,8 @@ public final class ConfirmMain {
         private final Map<String, List<Placed>> placed =
                 new LinkedHashMap<String, List<Placed>>();
         private final Map<String, Long> last = new HashMap<String, Long>();
+        private final Map<String, OccurrenceAddress> occurrences =
+                new HashMap<String, OccurrenceAddress>();
 
         private static final class Placed {
             private final List<Frame> frames;
@@ -1176,20 +1179,62 @@ public final class ConfirmMain {
 
         private boolean overtaken(WriteRow other, WriteRow held,
                                   ReadRow read) {
-            if (held.version() >= read.observedVersion()
-                    || other.version() <= held.version()
-                    || other.version() > read.observedVersion()) {
-                return false;
+            return !held.initial()
+                    && held.version() < read.observedVersion()
+                    && other.version() > held.version()
+                    && other.version() <= read.observedVersion()
+                    && !concurrent(read.endpoint().occurrence(),
+                    other.endpoint().occurrence());
+        }
+
+        private boolean overtakes(WriteRow held, WriteRow other) {
+            return concurrent(held.endpoint().occurrence(),
+                    other.endpoint().occurrence());
+        }
+
+        private boolean concurrent(OccurrenceAddress reader,
+                                   OccurrenceAddress writer) {
+            return Arms.concurrent(reader, writer, occurrences::get,
+                    activations::get);
+        }
+
+        private void known(Endpoint endpoint) {
+            if (endpoint != null) {
+                occurrences.put(endpoint.id(), endpoint.occurrence());
             }
-            OccurrenceAddress writer = other.endpoint().occurrence();
-            OccurrenceAddress reader = read.endpoint().occurrence();
-            if (writer.id().equals(reader.id())) return true;
-            ActivationRow wrote = activations.get(writer.id());
-            ActivationRow reads = activations.get(reader.id());
-            return wrote != null && reads != null
-                    && wrote.threadKey() != null
-                    && !wrote.threadKey().isEmpty()
-                    && wrote.threadKey().equals(reads.threadKey());
+        }
+
+        private Hold holdAfter(Endpoint event, long seq, long passed) {
+            List<Placed> events = placed.getOrDefault(
+                    event.occurrence().id(),
+                    Collections.<Placed>emptyList());
+            List<Placed> later = new ArrayList<Placed>();
+            for (Placed other : events) {
+                if (other.seq > passed && other.seq <= seq) later.add(other);
+            }
+            later.sort((left, right) -> Long.compare(left.seq, right.seq));
+            for (Placed candidate : later) {
+                for (int depth = 0; depth <= candidate.frames.size();
+                     depth++) {
+                    List<Frame> frame = candidate.frames.subList(0, depth);
+                    if (!enteredBefore(events, frame, passed)) {
+                        return new Hold(event.occurrence(), frame, false);
+                    }
+                }
+            }
+            return null;
+        }
+
+        private static boolean enteredBefore(List<Placed> events,
+                                             List<Frame> frame, long passed) {
+            for (Placed other : events) {
+                if (other.seq <= passed && other.frames.size() >= frame.size()
+                        && other.frames.subList(0, frame.size())
+                        .equals(frame)) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         private String order(Holding holding, Exit first, Endpoint then,
@@ -1197,7 +1242,12 @@ public final class ConfirmMain {
             if (first.occurrence.id().equals(then.occurrence().id())) {
                 return null;
             }
-            Hold hold = held(first, then, thenSeq);
+            return order(holding, first, held(first, then, thenSeq), then,
+                    thenSeq);
+        }
+
+        private String order(Holding holding, Exit first, Hold hold,
+                             Endpoint then, long thenSeq) {
             String order = first.activation + "\n" + hold.activation;
             holding.orders.add(order);
             holding.pairs.add(new Pair(first, then, thenSeq, order,
@@ -1390,22 +1440,28 @@ public final class ConfirmMain {
             for (ActivationRow activation : session.activations()) {
                 activations.putIfAbsent(activation.occurrence().id(),
                         activation);
+                known(activation.anchorProducer());
             }
             for (ReadRow read : session.reads()) {
                 place(read.endpoint(), read.seq());
+                known(read.endpoint());
                 reads.add(read);
             }
             for (ExportRow export : session.exports()) {
                 place(export.endpoint(), export.seq());
+                known(export.endpoint());
             }
             for (AttachRow attach : session.attaches()) {
                 place(attach.endpoint(), attach.seq());
+                known(attach.endpoint());
+                known(attach.producer());
             }
             for (DecisionRow decision : session.decisions()) {
                 last(decision.occurrence(), decision.seq());
             }
             for (WriteRow write : session.writes()) {
                 if (!write.initial()) place(write.endpoint(), write.seq());
+                known(write.endpoint());
                 writes.put(version(write.location(), write.version()), write);
                 byLocation.computeIfAbsent(SmtLowering.locationKey(
                         write.location()),
@@ -1413,8 +1469,8 @@ public final class ConfirmMain {
             }
         }
 
-        private StateClosure(SessionReader session, OccurrenceAddress anchor,
-                             long cutoff) {
+        private StateClosure(SessionReader session,
+                             OccurrenceAddress anchor, long cutoff) {
             this(session);
             Map<String, List<ReadRow>> readsOn =
                     new LinkedHashMap<String, List<ReadRow>>();
@@ -1688,10 +1744,51 @@ public final class ConfirmMain {
             }
             boolean model = chosen.containsKey(reader)
                     || chosenAt.contains(location);
+            WriteRow passed = null;
+            for (WriteRow other : closure.byLocation.get(location)) {
+                if (other.endpoint().equals(held.endpoint())
+                        || other.initial()
+                        || !closure.overtaken(other, held, read)) {
+                    continue;
+                }
+                if (!closure.overtakes(held, other)) {
+                    throw new Refused("PAIRING_UNHELD: read "
+                            + Confirmation.id(read.endpoint()) + " of "
+                            + held.location() + " is paired with writer "
+                            + Confirmation.writer(held) + ", and write "
+                            + Confirmation.writer(other) + " at version "
+                            + other.version() + " lies between them: the"
+                            + " reader cannot pass it and the writer cannot"
+                            + " overtake it");
+                }
+                if (passed == null || RowOrder.compare(other, passed) > 0) {
+                    passed = other;
+                }
+            }
             if (!held.initial()) {
-                holding.order(closure.order(holding, closure.exit(
-                        held.endpoint(), held.seq()), read.endpoint(),
-                        read.seq()), model);
+                StateClosure.Exit written = closure.exit(held.endpoint(),
+                        held.seq());
+                if (passed == null) {
+                    holding.order(closure.order(holding, written,
+                            read.endpoint(), read.seq()), model);
+                } else {
+                    StateClosure.Hold after = closure.holdAfter(
+                            read.endpoint(), read.seq(), passed.seq());
+                    if (after == null) {
+                        throw new Refused("PAIRING_UNHELD: read "
+                                + Confirmation.id(read.endpoint()) + " of "
+                                + held.location() + " is paired with writer "
+                                + Confirmation.writer(held) + ", which"
+                                + " overtakes write "
+                                + Confirmation.writer(passed) + " at version "
+                                + passed.version() + ", and no activation of"
+                                + " the reader begins after that write and"
+                                + " before the read, so no hold lets it run"
+                                + " first");
+                    }
+                    holding.order(closure.order(holding, written, after,
+                            read.endpoint(), read.seq()), model);
+                }
             }
             for (WriteRow other : closure.byLocation.get(location)) {
                 if (other.endpoint().equals(held.endpoint())

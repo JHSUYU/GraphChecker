@@ -33,6 +33,7 @@ import java.util.NavigableSet;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 import java.util.regex.Pattern;
 
 public final class Arms {
@@ -463,27 +464,37 @@ public final class Arms {
 
     public boolean concurrent(OccurrenceAddress reader,
                               OccurrenceAddress writer, String session) {
+        return concurrent(reader, writer, rows::occurrenceOf,
+                occurrence -> rows.activationOf(session, occurrence));
+    }
+
+    public static boolean concurrent(OccurrenceAddress reader,
+            OccurrenceAddress writer,
+            Function<String, OccurrenceAddress> occurrenceOf,
+            Function<String, ActivationRow> activationOf) {
         if (reader == null || writer == null) return false;
         if (reader.id().equals(writer.id())) return false;
         if (reader.context().isLost() || writer.context().isLost()) {
             return false;
         }
-        if (sameThread(session, reader, writer)) return false;
-        if (!chainKnown(session, reader) || !chainKnown(session, writer)) {
+        if (sameThread(activationOf, reader, writer)) return false;
+        if (!chainKnown(occurrenceOf, reader)
+                || !chainKnown(occurrenceOf, writer)) {
             return false;
         }
-        return !ancestor(session, writer, reader)
-                && !ancestor(session, reader, writer);
+        return !ancestor(occurrenceOf, writer, reader)
+                && !ancestor(occurrenceOf, reader, writer);
     }
 
-    private boolean chainKnown(String session,
-                               OccurrenceAddress occurrence) {
+    private static boolean chainKnown(
+            Function<String, OccurrenceAddress> occurrenceOf,
+            OccurrenceAddress occurrence) {
         Set<String> seen = new LinkedHashSet<String>();
         OccurrenceAddress at = occurrence;
         while (at != null && seen.add(at.id())) {
             if (at.context().form() == CausalContext.Form.ROOT) return true;
             if (at.context().form() == CausalContext.Form.ANCHOR) {
-                at = rows.occurrenceOf(((CausalContext.Anchor) at.context())
+                at = occurrenceOf.apply(((CausalContext.Anchor) at.context())
                         .producerEndpointId());
                 continue;
             }
@@ -492,28 +503,31 @@ public final class Arms {
         return false;
     }
 
-    private boolean sameThread(String session, OccurrenceAddress left,
-                               OccurrenceAddress right) {
-        String one = threadKey(session, left);
-        String other = threadKey(session, right);
+    private static boolean sameThread(
+            Function<String, ActivationRow> activationOf,
+            OccurrenceAddress left, OccurrenceAddress right) {
+        String one = threadKey(activationOf, left);
+        String other = threadKey(activationOf, right);
         return !one.isEmpty() && one.equals(other);
     }
 
-    private String threadKey(String session, OccurrenceAddress occurrence) {
-        ActivationRow activation = rows.activationOf(session,
-                occurrence.id());
+    private static String threadKey(
+            Function<String, ActivationRow> activationOf,
+            OccurrenceAddress occurrence) {
+        ActivationRow activation = activationOf.apply(occurrence.id());
         return activation == null || activation.threadKey() == null
                 ? "" : activation.threadKey();
     }
 
-    private boolean ancestor(String session, OccurrenceAddress older,
-                             OccurrenceAddress younger) {
+    private static boolean ancestor(
+            Function<String, OccurrenceAddress> occurrenceOf,
+            OccurrenceAddress older, OccurrenceAddress younger) {
         Set<String> seen = new LinkedHashSet<String>();
         OccurrenceAddress at = younger;
         while (at != null && seen.add(at.id())) {
             OccurrenceAddress parent = null;
             if (at.context().form() == CausalContext.Form.ANCHOR) {
-                parent = rows.occurrenceOf(((CausalContext.Anchor)
+                parent = occurrenceOf.apply(((CausalContext.Anchor)
                         at.context()).producerEndpointId());
             }
             if (parent == null) {

@@ -392,56 +392,143 @@ public class ConfirmMainTest {
     }
 
     @Test
-    public void aWriteTheReaderCannotPassIsHeldBeforeTheWriterThatOvertakesIt()
+    @SuppressWarnings("unchecked")
+    public void anOvertakingReadIsHeldAfterTheWriteItsWriterOvertakes()
             throws Exception {
+        Frame transition = Frame.of("<a.Load: boolean doTransition()>", 0);
+        Frame props = Frame.of("<a.Load: void readProperties()>", 0);
+        Frame fields = Frame.of("<a.Info: void setFields()>", 0);
+        Frame layout = Frame.of("<a.Info: void setLayout()>", 0);
+        Frame named = Frame.of("<a.Info: void setNamespace()>", 0);
+        Frame pool = Frame.of("<a.Load: void setPool()>", 0);
+        Frame call = Frame.of("<a.Rpc: void call()>", 0);
+        Frame reply = Frame.of("<a.Rpc: void reply()>", 0);
+        Frame upgrade = Frame.of("<a.Load: void doUpgrade()>", 0);
+        Frame detach = Frame.of("<a.Load: void cleanupDetach()>", 0);
+        List<Frame> reading = Collections.singletonList(transition);
+        List<Frame> none = Collections.<Frame>emptyList();
+        List<List<Frame>> nothing = Collections.<List<Frame>>emptyList();
+        List<Frame> inProps = Arrays.asList(transition, props, fields, layout);
         String prior = "hdfs/dn0#epoch0/region/REGION.prior/ctx:Root:XCEIVER#2"
                 + "/idx:<a.Prior: void run()>@0";
+        Endpoint sent = Endpoint.of(anchor, "a.Rpc#call()#2:WRITE",
+                ExecutionIndex.of(Arrays.asList(transition, call)), 0);
+        String handler = "hdfs/dn0#epoch0/region/REGION.handler/ctx:Anchor:"
+                + sent.id() + "@IPC/call/idx:<a.Handler: void serve()>@0";
         Object[][] rows = {
-                {"the reader's own write", ANCHOR, "thread-r", true},
-                {"a write on the reader's thread", prior, "thread-r", true},
+                {"the reader's own write in a sub-frame of the read's, then"
+                        + " two more writes there", ANCHOR, "thread-r",
+                        inProps, Arrays.asList(
+                                Arrays.asList(transition, props, fields, named),
+                                Arrays.asList(transition, props, fields, pool)),
+                        reading,
+                        Arrays.asList(transition, props, fields, named)},
+                {"the reader's own write in a sub-frame of the read's, then"
+                        + " nothing", ANCHOR, "thread-r", inProps, nothing,
+                        reading, "PAIRING_UNHELD"},
+                {"the reader's own write in a sub-frame, the read in a later"
+                        + " one", ANCHOR, "thread-r", inProps,
+                        Collections.singletonList(Arrays.asList(transition,
+                                upgrade, detach)),
+                        Arrays.asList(transition, upgrade),
+                        Arrays.asList(transition, upgrade)},
+                {"the reader's own write in a frame before the read's",
+                        ANCHOR, "thread-r", Arrays.asList(props, fields,
+                        layout), nothing, reading, reading},
+                {"an earlier occurrence on the reader's thread", prior,
+                        "thread-r", none, nothing, reading, none},
+                {"the handler of a call the reader made", handler, "thread-h",
+                        none, Collections.singletonList(Arrays.asList(
+                                transition, reply)), reading,
+                        Arrays.asList(transition, reply)},
                 {"a write another thread moves past the read", prior,
-                        "thread-o", false},
+                        "thread-o", none, nothing, reading, "read first"},
         };
         int at = 0;
         for (Object[] row : rows) {
-            Path iteration = folder.newFolder("overtaken-" + at++).toPath();
-            Endpoint own = Endpoint.of(OccurrenceAddress.parse(
-                    (String) row[1]), "a.Store#load()#3:WRITE",
-                    ExecutionIndex.of(Collections.singletonList(Frame.of(
-                            "<a.Store: void load()>", 0))), 0);
+            String name = (String) row[0];
+            Path iteration = folder.newFolder("hold-after-" + at++).toPath();
+            OccurrenceAddress wrote = OccurrenceAddress.parse((String) row[1]);
+            List<Frame> wroteIn = (List<Frame>) row[3];
+            Endpoint own = Endpoint.of(wrote, "a.Info#setLayout()#3:WRITE",
+                    ExecutionIndex.of(wroteIn), 0);
+            Endpoint asking = Endpoint.of(anchor, "a.Load#check()#9:READ",
+                    ExecutionIndex.of((List<Frame>) row[5]), 0);
+            LocationId other = LocationId.of(LocationKind.INSTANCE, "1", "44");
             List<ActivationRow> activations = new ArrayList<ActivationRow>();
             activations.add(ActivationRow.of("ovt", anchor, "TASK.r", false,
                     true, "thread-r", ActivationRow.ClaimKind.NONE, null));
             activations.add(ActivationRow.of("ovt", mint, "TASK.w", false,
                     true, "thread-w", ActivationRow.ClaimKind.NONE, null));
-            if (!ANCHOR.equals(row[1])) {
-                activations.add(ActivationRow.of("ovt", own.occurrence(),
-                        "TASK.o", false, true, (String) row[2],
-                        ActivationRow.ClaimKind.NONE, null));
+            boolean answered = handler.equals(row[1]);
+            if (!wrote.id().equals(anchor.id())) {
+                activations.add(ActivationRow.of("ovt", wrote, "TASK.o",
+                        false, true, (String) row[2],
+                        ActivationRow.ClaimKind.NONE, answered ? sent : null));
+            }
+            List<WriteRow> writes = new ArrayList<WriteRow>();
+            writes.add(WriteRow.of("ovt", 10L, writer, CELL, 10L, "", "I"));
+            if (answered) {
+                writes.add(WriteRow.of("ovt", 15L, sent, other, 15L, "", "I"));
+            }
+            writes.add(WriteRow.of("ovt", 20L, own, CELL, 20L, "", "I"));
+            long seq = 21L;
+            for (List<Frame> next : (List<List<Frame>>) row[4]) {
+                writes.add(WriteRow.of("ovt", seq, Endpoint.of(anchor,
+                        "a.Load#next()#" + seq + ":WRITE",
+                        ExecutionIndex.of(next), 0), other, seq, "", "I"));
+                seq++;
             }
             SessionDir dir = SessionDir.of(iteration, "ovt");
             RowCodec.writeAll(dir.activations(), activations,
                     RowCodec::writeActivation);
-            RowCodec.writeAll(dir.writes(), Arrays.asList(
-                    WriteRow.of("ovt", 10L, writer, CELL, 10L, "", "I"),
-                    WriteRow.of("ovt", 20L, own, CELL, 20L, "", "I")),
-                    RowCodec::writeWrite);
+            RowCodec.writeAll(dir.writes(), writes, RowCodec::writeWrite);
             RowCodec.writeAll(dir.reads(), Collections.singletonList(
-                    ReadRow.of("ovt", 30L, reader, CELL, 20L, "S_cell", "I",
+                    ReadRow.of("ovt", 30L, asking, CELL, 20L, "S_cell", "I",
                             null)), RowCodec::writeRead);
-            ConfirmMain.Holding holding = ConfirmMain.holding(
-                    SessionReader.read(iteration, "ovt"),
-                    Collections.singletonMap(Confirmation.id(reader),
-                            Confirmation.id(writer)));
-            boolean before = false;
-            for (JsonObject edge : holding.edges) {
-                if (!"ORDER".equals(edge.get("kind").getAsString())) continue;
-                before |= edge.get("before").getAsString().startsWith(
-                        own.occurrence().id() + "|")
-                        && writer.activation().equals(
-                        edge.get("after").getAsString());
+            String wroteExit = Confirmation.activation(wrote,
+                    ExecutionIndex.of(wroteIn));
+            Object outcome;
+            try {
+                ConfirmMain.Holding holding = ConfirmMain.holding(
+                        SessionReader.read(iteration, "ovt"),
+                        Collections.singletonMap(Confirmation.id(asking),
+                                Confirmation.id(writer)));
+                String readHeld = null;
+                boolean overtaken = false;
+                boolean readFirst = false;
+                for (JsonObject edge : holding.edges) {
+                    if (!"ORDER".equals(edge.get("kind").getAsString())) {
+                        continue;
+                    }
+                    String before = edge.get("before").getAsString();
+                    String after = edge.get("after").getAsString();
+                    if (before.startsWith(mint.id() + "|")
+                            && after.startsWith(anchor.id() + "|")) {
+                        readHeld = after;
+                    }
+                    overtaken |= before.equals(wroteExit)
+                            && after.startsWith(mint.id() + "|");
+                    readFirst |= before.startsWith(anchor.id() + "|")
+                            && after.startsWith(wrote.id() + "|");
+                }
+                if (overtaken) {
+                    assertFalse(name + ": the hold contains the write",
+                            wrote.id().equals(anchor.id())
+                                    && (wroteExit.equals(readHeld)
+                                    || wroteExit.startsWith(readHeld + "/")));
+                    outcome = readHeld;
+                } else {
+                    outcome = readFirst ? "read first" : holding.edges;
+                }
+            } catch (ConfirmMain.Refused refused) {
+                outcome = refused.getMessage().substring(0,
+                        refused.getMessage().indexOf(':'));
             }
-            assertEquals(row[0] + ": " + holding.edges, row[3], before);
+            Object expected = row[6] instanceof String ? row[6]
+                    : Confirmation.activation(anchor,
+                    ExecutionIndex.of((List<Frame>) row[6]));
+            assertEquals(name, expected, outcome);
         }
     }
 
