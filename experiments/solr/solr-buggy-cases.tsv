@@ -5,3 +5,4 @@
 # the bug, the point, what was put back and why, and the result. A case's row is added with its directory.
 # SOLR-6763 (solr-adhoc-38) has a README only: masked on today's code by SOLR-7844 (solr-buggy-6763/README.md).
 # case	branch	budget_s	jira	point(s)
+solr-buggy-6101	system/solr-buggy-detect	21600	SOLR-6101	solr-adhoc-19
