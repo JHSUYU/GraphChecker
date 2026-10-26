@@ -215,6 +215,8 @@ public class RecordingPlantTest {
             shapedTarget(second.id(), tasks + "," + planned(
                     OccurrenceAddress.parse(first.render().replace(PREFLIGHT,
                             "REGION.other")), test, "", 30, receiver)),
+            shapedTarget(second.id(), tasks + "," + planned(second, test, "",
+                    30, receiver)),
             shapedTarget(second.id(), tasks) + shapedTarget(second.id(),
                     tasks.replace(",'rootCall':20", ",'rootCall':21"))
                     .replace("'row':0", "'row':1")};
@@ -289,11 +291,22 @@ public class RecordingPlantTest {
     @Test
     public void aNativeRunTakesTheFatalAtTheOccurrenceThatAnsweredTheAnchor()
             throws Exception {
-        Path dir = folder.newFolder("answered").toPath();
+        List<String> plants = nativeRun("answered", preflight(2, 4), "2");
+        assertTrue(plants.get(1), plants.get(1).contains(
+                "\"byShape\":true"));
+        List<String> exact = nativeRun("exact", preflight(4, -1), "3");
+        assertTrue("the retry answered the anchor by shape and did not "
+                + "throw; the anchor's own address threw: " + exact,
+                exact.get(1).contains("\"atAnchor\":true")
+                && exact.get(1).contains("\"byShape\":false"));
+    }
+
+    private List<String> nativeRun(String name, OccurrenceAddress second,
+                                   String fatalAt) throws Exception {
+        Path dir = folder.newFolder(name).toPath();
         String test = "'Root:CLIENT/test'";
         String receiver = Disable.class.getName();
         OccurrenceAddress first = preflight(1, -1);
-        OccurrenceAddress second = preflight(2, 4);
         Path plant = dir.resolve("plant.jsonl");
         Files.write(plant, shapedTarget(second.id(), planned(first, test, "",
                 10, receiver) + "," + planned(second, test, "'" + first.id()
@@ -304,7 +317,7 @@ public class RecordingPlantTest {
                         "bin", "java").toString(),
                 "-D" + RecordingPlant.PROPERTY + "=" + plant, "-cp",
                 System.getProperty("java.class.path"),
-                Native.class.getName()));
+                Native.class.getName(), fatalAt));
         ProcessBuilder builder = new ProcessBuilder(command)
                 .redirectErrorStream(true)
                 .redirectOutput(dir.resolve("jvm.log").toFile());
@@ -341,9 +354,13 @@ public class RecordingPlantTest {
                 "\"event\":\"PLANT_FATAL\"")
                 && plants.get(1).contains("\"atAnchor\":true")
                 && plants.get(1).contains(second.render()));
-        assertEquals(entered.toString(), 2, entered.size());
+        assertEquals(entered.toString(), "2".equals(fatalAt) ? 2 : 3,
+                entered.size());
         assertTrue(entered.get(0), entered.get(0).contains(first.render()));
-        assertTrue(entered.get(1), entered.get(1).contains(second.render()));
+        for (String later : entered.subList(1, entered.size())) {
+            assertTrue(later, later.contains(second.render()));
+        }
+        return plants;
     }
 
     public static final class Native {
@@ -353,12 +370,14 @@ public class RecordingPlantTest {
             RuntimeTraceContext.registerSource(client,
                     new SourceRef("CLIENT", "client", CLIENT, 0L));
             Object disable = new Disable();
-            String[] regions = {PREFLIGHT, "REGION.other", PREFLIGHT};
+            String[] regions = {PREFLIGHT, "REGION.other", PREFLIGHT,
+                PREFLIGHT};
+            int fatalAt = Integer.parseInt(args[0]);
             for (int request = 0; request < regions.length; request++) {
                 long call = RuntimeTraceContext.beginRequest(client, "test");
                 long id = CausynthTraceRecorder.enterMethod(ROOT_METHOD,
                         disable, regions[request]);
-                if (request == 2) {
+                if (request == fatalAt) {
                     CausynthTraceRecorder.recordBranch(id, ROOT_METHOD, 34,
                             "", true);
                     Thread.sleep(30000L);

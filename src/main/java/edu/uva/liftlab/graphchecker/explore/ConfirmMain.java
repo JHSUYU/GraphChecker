@@ -619,6 +619,7 @@ public final class ConfirmMain {
         String rootMethod = optionalString(object(anchored, "rootSelector"),
                 "method");
         JsonArray group = new JsonArray();
+        Set<String> addresses = new HashSet<String>();
         for (JsonObject task : tasks) {
             JsonObject selector = object(task, "rootSelector");
             if (loopBody(task)
@@ -627,11 +628,32 @@ public final class ConfirmMain {
                     "method"))) {
                 continue;
             }
+            String taskId = optionalString(task, "taskId");
             if (selector.has("arguments")) {
-                System.err.println(alone + "task " + optionalString(task,
-                        "taskId") + " of its root hook group selects its"
-                        + " root by the arguments' runtime types, which the"
-                        + " recording's region entry does not see");
+                System.err.println(alone + "task " + taskId + " of its root"
+                        + " hook group selects its root by the arguments'"
+                        + " runtime types, which the recording's region entry"
+                        + " does not see");
+                return null;
+            }
+            OccurrenceAddress address;
+            try {
+                address = OccurrenceAddress.parse(optionalString(task,
+                        "occurrenceId"));
+            } catch (RuntimeException unparsed) {
+                address = null;
+            }
+            if (address == null) {
+                System.err.println(alone + "task " + taskId + " of its root"
+                        + " hook group plans no occurrence address a run can"
+                        + " compare (" + optionalString(task, "occurrenceId")
+                        + ")");
+                return null;
+            }
+            if (!addresses.add(address.id())) {
+                System.err.println(alone + "two tasks of its root hook group"
+                        + " plan " + address.render() + ", and a native run"
+                        + " binds each address to one task");
                 return null;
             }
             JsonObject planned = new JsonObject();

@@ -569,7 +569,9 @@ public final class RecordingPlant {
         List<String> enclosing = CausynthTraceRecorder.enclosingOccurrences();
         String anchor = anchorOf(enclosing, rows.anchor);
         CausynthTraceRecorder.plantFatal(siteId, anchor != null ? anchor
-                : enclosing.isEmpty() ? "" : enclosing.get(0), anchor != null);
+                : enclosing.isEmpty() ? "" : enclosing.get(0), anchor != null,
+                anchor != null && CausynthTraceRecorder.answeredByShape(
+                        rows.anchor));
         if (anchor != null && ENDED.compareAndSet(false, true)) {
             end(siteId, anchor);
         }
@@ -775,6 +777,12 @@ public final class RecordingPlant {
                         + element);
             }
             regionId = address.regionId();
+            for (Planned other : planned) {
+                if (other.address.id().equals(address.id())) {
+                    throw new IOException("a target row whose plan names "
+                            + "one address twice: " + element);
+                }
+            }
             List<String> shape = Collections.unmodifiableList(
                     texts(task, SHAPE));
             shaped |= address.id().equals(anchor) && !shape.isEmpty();

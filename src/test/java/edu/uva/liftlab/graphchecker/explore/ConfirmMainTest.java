@@ -305,6 +305,49 @@ public class ConfirmMainTest {
     }
 
     @Test
+    public void aTargetRowStatesTheAnchorsRootHookGroupOnlyWhereANativeRunCanAskIt()
+            throws Exception {
+        String root = "<a.P: void preflight()>";
+        String anchor = "n0#epoch0/region/REGION.p/ctx:Root:CLIENT/test#2/idx:";
+        String other = "n0#epoch0/region/REGION.p/ctx:Root:CLIENT/test#1/idx:";
+        String task = "{'taskId':'T@','regionId':'REGION.p','occurrenceId':'@',"
+                + "'contextShape':['Root:CLIENT/test'],'recordedBeside':[],"
+                + "'rootCallId':5,'rootSelector':{'kind':'RECEIVER_CONTEXT',"
+                + "'method':'" + root + "','receiverClass':'a.P'}}";
+        Object[][] plans = {
+            {task.replace("@", anchor) + "\n" + task.replace("@", other), 2},
+            {task.replace("@", other), null},
+            {task.replace("@", anchor).replace("'regionId'",
+                    "'rootAuthority':'LOOP_BODY_ROOT','regionId'"), null},
+            {task.replace("@", anchor).replace("['Root:CLIENT/test']", "[]"),
+                null},
+            {task.replace("@", anchor) + "\n" + task.replace("@", other)
+                    .replace("'receiverClass':'a.P'", "'receiverClass':'a.P',"
+                    + "'arguments':{}"), null},
+            {task.replace("@", anchor) + "\n" + task.replace("@",
+                    "not an address"), null},
+            {task.replace("@", anchor) + "\n" + task.replace("@", anchor)
+                    .replace("'taskId':'T", "'taskId':'U"), null},
+            {task.replace("@", anchor) + "\n" + task.replace("@", other)
+                    .replace(root, "<a.P: void other()>"), 1}};
+        for (Object[] plan : plans) {
+            Path file = folder.newFile().toPath();
+            Files.write(file, ((String) plan[0]).replace('\'', '"')
+                    .getBytes(StandardCharsets.UTF_8));
+            JsonObject facts = ConfirmMain.plannedGroup(file,
+                    OccurrenceAddress.parse(anchor));
+            if (plan[1] == null) {
+                assertNull((String) plan[0], facts);
+                continue;
+            }
+            assertEquals((String) plan[0], root,
+                    facts.get("rootMethod").getAsString());
+            assertEquals((String) plan[0], plan[1],
+                    facts.getAsJsonArray("planned").size());
+        }
+    }
+
+    @Test
     public void aStoreReadIsComparedByItsVersionAndOrderedByNothing()
             throws Exception {
         Path iteration = iteration();

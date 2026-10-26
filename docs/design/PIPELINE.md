@@ -4203,15 +4203,18 @@ mapped to a bytecode offset; an invoke no context wraps matches no row. Inside t
   recording opened, not a context a task of the group plans the region in, an entry that opened its
   own occurrence) and to the root selector's method and receiver class; each task is answered once.
   The occurrence answering a task by shape takes the planned address (`Identity#answer`, as in a
-  replay), so a fatal in the occurrence that answers the anchor is a `PLANT_FATAL` at the anchor,
-  and a `PLANT_ANSWERED` row `{planned, plannedId, occurrenceAddress}` names the address the run
-  computed (hbase-buggy-20642: the retried DisableTable's handler answers the second disable's
-  preflight).
+  replay), so a fatal in the occurrence that answers the anchor is a `PLANT_FATAL` at the anchor
+  stating `byShape` true (that enclosing activation was the one bound by shape,
+  `CausynthTraceRecorder#answeredByShape`; a fatal at the anchor's own address states false), and a
+  `PLANT_ANSWERED` row `{planned, plannedId, occurrenceAddress}` names the address the run computed
+  (hbase-buggy-20642: the retried DisableTable's handler answers the second disable's preflight).
+  Which activation answers is this run's arrival order, so a fatal by shape is not the exact-identity
+  check a fatal at the anchor's own address is: REPRODUCE counts the two apart.
 
 A planted run is not the recording's world, so the workload's checks of that world are off in it
 as in a replay (`CausynthTraceRecorder.replaying()` is true under `causynth.plant`). Each run states
 its answer, whatever the workload's exit, as `run-<n>/answer.json` `{exit, rows, applied, unapplied,
-planted, rootsPlanted, ordersHeld, ordersChecked, ordersObserved, fatal, atAnchor, answeredBy, answeredByShape, control, reproduced}` (a control run never reproduced; `answeredBy` the address the run computed for the occurrence that answered the anchor by its shape, `answeredByShape` a fatal at the anchor there; `reproduce.json` counts `answeredByShape` apart, the control's too, and `plant.log` names each such run `ADDRESS_UNSTABLE`; `ordersChecked` the plant's checked ORDER rows, `ordersObserved` those the run observed in order, each unapplied row stating whether it was `checked`), read off its trace's plant rows
+planted, rootsPlanted, ordersHeld, ordersChecked, ordersObserved, fatal, atAnchor, answeredBy, answeredByShape, control, reproduced}` (a control run never reproduced; `atAnchor` a fatal at the anchor's own address, `answeredBy` the address the run computed for the occurrence that answered the anchor by its shape, `answeredByShape` a fatal at the anchor stating `byShape`, `reproducedByShape` the reproduced test with `answeredByShape` in place of `atAnchor`; `reproduced` and the "reproduced in N of M" line stay exact-only, `reproduce.json` counts `answeredByShape` and `reproducedByShape` apart, the control's too, the last line states them after the exact counts, and `plant.log` names each by-shape run `ADDRESS_UNSTABLE`; `ordersChecked` the plant's checked ORDER rows, `ordersObserved` those the run observed in order, each unapplied row stating whether it was `checked`), read off its trace's plant rows
 (each flushed as it is written, `CausynthTraceRecorder#writePlantRow`, so a run its bound kills keeps
 them; the trace is closed only by the run's end, §5) against the plant: the rows to apply (ROOT, ANSWER and ORDER of either scope; CLOCK_SITE and TARGET
 rows are context), how many it applied, each it did not with why (an ORDER not held in time: `LATE`

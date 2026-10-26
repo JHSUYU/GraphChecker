@@ -413,11 +413,6 @@ final class ConcolicTaskPlan {
         return admitted;
     }
 
-    boolean occupies(String rootHookGroupKey, OccurrenceAddress address) {
-        return AnswerOrder.occupies(tasks, nonNull(rootHookGroupKey),
-                address);
-    }
-
     private static RefusedCandidate unenclosedBody(RuntimeTask task,
                                                    SourceRef activationSource) {
         if (LoopAccounting.enclosingLoopRoot(task) != null) return null;

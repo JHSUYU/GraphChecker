@@ -2814,7 +2814,7 @@ rt_said=$(
   campaign_recorded_workload_s=10
   campaign_placed_host=gate-head
   campaign_host_poll_s=0
-  reproduce_runs=2
+  reproduce_runs=3
   reproduce_charge_pct=130
   reproduce_time_factor=3
   reproduce_min_s=60
@@ -2839,36 +2839,45 @@ rt_said=$(
   run_configured_workload() {
     local run=$1 trace=$1/runtime_trace.jsonl
     case "${run}" in
-      */control/*) echo '{"event":"PLANT_FATAL","atAnchor":false}' >"${trace}" ;;
+      */control/*) echo '{"event":"PLANT_FATAL","atAnchor":false,"byShape":false}' \
+        >"${trace}" ;;
       */run-1) printf '%s\n' \
         '{"event":"PLANT_APPLIED","row":0}' \
         '{"event":"PLANT_ANSWERED","planned":"P","plannedId":"anc","occurrenceAddress":"retry"}' \
-        '{"event":"PLANT_FATAL","atAnchor":true}' >"${trace}" ;;
-      *) printf '%s\n' '{"event":"PLANT_APPLIED","row":0}' \
+        '{"event":"PLANT_FATAL","atAnchor":true,"byShape":true}' >"${trace}" ;;
+      */run-2) printf '%s\n' '{"event":"PLANT_APPLIED","row":0}' \
         '{"event":"PLANT_ANSWERED","planned":"Q","plannedId":"other","occurrenceAddress":"elsewhere"}' \
-        '{"event":"PLANT_FATAL","atAnchor":true}' >"${trace}" ;;
+        '{"event":"PLANT_FATAL","atAnchor":true,"byShape":false}' >"${trace}" ;;
+      *) printf '%s\n' '{"event":"PLANT_APPLIED","row":0}' \
+        '{"event":"PLANT_ANSWERED","planned":"P","plannedId":"anc","occurrenceAddress":"quiet"}' \
+        '{"event":"PLANT_FATAL","atAnchor":true,"byShape":false}' >"${trace}" ;;
     esac
   }
   campaign_reproduce "${rt_root}/iteration-0000"
 )
 rt_dir=${rt_root}/final/reproduce
-jq -e '.runs == 2 and .atAnchor == 2 and .answeredByShape == 1
-    and .reproduced == 2 and .control.runs == 2 and .control.fatal == 2
-    and .control.atAnchor == 0 and .control.answeredByShape == 0' \
+jq -e '.runs == 3 and .atAnchor == 2 and .answeredByShape == 1
+    and .reproduced == 2 and .reproducedByShape == 1 and .control.runs == 3
+    and .control.fatal == 3 and .control.atAnchor == 0
+    and .control.answeredByShape == 0 and .control.reproducedByShape == 0' \
   "${rt_root}/final/reproduce.json" >/dev/null \
   || fail "REPRODUCE-TAIL: reproduce.json counts $(cat "${rt_root}/final/reproduce.json")"
-jq -e '.answeredByShape and .answeredBy == "retry"' \
+jq -e '.answeredByShape and .reproducedByShape and (.atAnchor | not)
+    and (.reproduced | not) and .answeredBy == "retry"' \
   "${rt_dir}/run-1/answer.json" >/dev/null \
-  && jq -e '(.answeredByShape | not) and .answeredBy == "" and .atAnchor' \
-    "${rt_dir}/run-2/answer.json" >/dev/null \
-  || fail "REPRODUCE-TAIL: a run answered by shape is the one whose \
-PLANT_ANSWERED names the anchor: $(cat "${rt_dir}"/run-*/answer.json)"
+  && jq -e '(.answeredByShape | not) and .answeredBy == "" and .atAnchor
+    and .reproduced' "${rt_dir}/run-2/answer.json" >/dev/null \
+  && jq -e '(.answeredByShape | not) and .answeredBy == "quiet" and .atAnchor
+    and .reproduced and (.reproducedByShape | not)' \
+    "${rt_dir}/run-3/answer.json" >/dev/null \
+  || fail "REPRODUCE-TAIL: a run is by shape only where its PLANT_FATAL at \
+the anchor says byShape: $(cat "${rt_dir}"/run-*/answer.json)"
 [[ "$(grep -c '^ADDRESS_UNSTABLE ' "${rt_dir}/plant.log")" == 1 ]] \
   && grep -q '^ADDRESS_UNSTABLE run-1: the fatal at the anchor, in the occurrence that answered it by its shape (IDENTITY 9), which this run computed at retry$' \
     "${rt_dir}/plant.log" \
   || fail "REPRODUCE-TAIL: plant.log names $(cat "${rt_dir}/plant.log")"
-[[ "${rt_said}" == *"2 at the anchor -- 1 of them in the occurrence that answered the anchor by its shape --"* \
-    && "${rt_said}" == *"control 0 of 2: the fatal at the anchor with nothing the model chose planted (0 answered by its shape, 2 fatal)"* ]] \
+[[ "${rt_said}" == *"reproduced in 2 of 3 native run(s): the fatal at the anchor"*"2 at the anchor, 0 an order unheld"* \
+    && "${rt_said}" == *"control 0 of 3: the fatal at the anchor with nothing the model chose planted (3 fatal); by its shape: reproduced in 1 of 3 native run(s) at the occurrence that answered the anchor by its shape (IDENTITY 9; 1 fatal there), control 0 of 3 (0 reproduced)"* ]] \
   || fail "REPRODUCE-TAIL: campaign_reproduce's last line said '${rt_said}'"
 
 echo "run_engine campaign helper tests passed"

@@ -91,8 +91,11 @@ the witness need a second moved root (`/bulk/analysis/buggy-detect-2026-10-26/HB
 - **CONFIRM:** realized. The witness session fec145b736276486-2804f1c3 is itself the run. Its preflight under the
   retry's anchor answered the declared address by shape (`ADDRESS_UNSTABLE`: "the planned occurrence ran at
   ...Anchor:3bb35a7d...") and observed the fatal.
-- **REPRODUCE** (`final/reproduce.json`): planted 10, fatal 10, atAnchor 10, answeredByShape 10, reproduced 10;
-  control fatal 0, atAnchor 0, answeredByShape 0 (of 10). Each planted run's trace has
+- **REPRODUCE** (`final/reproduce.json`, counted by 93a168e87, where atAnchor and reproduced still included a
+  fatal in the shape-bound activation): planted 10, fatal 10, atAnchor 10, answeredByShape 10, reproduced 10;
+  control fatal 0, atAnchor 0, answeredByShape 0 (of 10). The counts were later split (see "Exact and
+  by-shape counts" below). Each run's trace has exactly one activation at the anchor's address, and it is the
+  shape-bound one, so the fatal is by shape in all 10. Each planted run's trace has
   - `PLANT_APPLIED` (the lost reply),
   - then `PLANT_ANSWERED` (the planned `...Anchor:eb4017bed67364cb...`, plannedId e5af9d703477be2b, which the run
     computed at `...Anchor:3bb35a7d1bfd5a5e...`),
@@ -106,6 +109,17 @@ the witness need a second moved root (`/bulk/analysis/buggy-detect-2026-10-26/HB
   3. `new DisableTableProcedure(...)` (HMaster:2931) runs `preflightChecks(env, true)` (DisableTableProcedure:78).
   4. The first procedure has set the table DISABLING/DISABLED, so `!ts.isEnabledOrEnabling()` holds and
      AbstractStateMachineTableProcedure:163 throws `TableNotEnabledException(causynth_disable_first)`.
+
+**Exact and by-shape counts (the review of 93a168e87; the lead's decision).** Which native activation answers
+the anchor by shape is decided by that run's arrival order. So for a shape-answered run, REPRODUCE is no longer an
+independent exact-identity check: it checks that the planted world threw in the activation §9 binds to the
+anchor, not that it threw at the recorded address. REPRODUCE therefore keeps the two apart:
+- `PLANT_FATAL` states `byShape`: whether its enclosing anchor activation is the one bound by shape.
+- `atAnchor`, `reproduced` and the "reproduced in N of M" line stay exact-only.
+- `answeredByShape` and `reproducedByShape` count the by-shape fatals and reproductions, the control's too.
+- The lead reports both numbers for this case to the owner, who decides whether the by-shape count is accepted.
+- HB20642e's PLANT_FATAL rows predate the `byShape` field, so its counts cannot be recomputed with the new jq;
+  HB20642f gives them under the split rule.
 
 **The engine support for the native answer (93a168e87).** `runtime/AnswerOrder` holds the select loop (own address
 first; otherwise the earliest open task by recorded root call whose shape the context has) and `answeredHere` (an
