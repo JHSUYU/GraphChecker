@@ -39,6 +39,14 @@ plus:
   `BlockPoolSliceStorage#upgradeTaskDelayMs` (0 unless a test sets it; the test sets 10 s and resets it), makes each upgrade
   task sleep before its upgrade, so natively every volume's VERSION is read before any task writes the shared layout. It
   adds no happens-before and never decides the throw. Natively 20/20 passes.
+- **be29cd3c074, the same workaround: the tasks wait in load order.** With one wait for every task, every VERSION was read
+  first, but the tasks still raced one another: in B14311e's recording volume 2's own task wrote the layout before volume
+  1's (blocker 1 below). `BlockPoolSliceStorage#upgradeTaskStaggerMs` (test-only, 0 unless a test sets it; the test sets
+  5 s and resets it) makes the n-th task to start (counted in `UPGRADE_TASKS_STARTED`, which the test resets) wait n times
+  5 s longer, so volume 1's task writes first (10 s), then volume 2's (15 s), then volume 3's (20 s). The code is in the
+  task's `call()`, under the existing `upgradeTaskDelayMs > 0` guard, so the loader (the reader occurrence) gains no read or
+  branch. It adds no happens-before and never decides the throw. Natively 20/20 passes, each run in that order and with no
+  "is newer" throw (`/bulk/gc-out/hdfs-buggy/14311/native-b14311-4/summary.txt`).
 
 ## The engine support it needed (system/hdfs-buggy-detect branches only; independently reviewed)
 
@@ -86,7 +94,9 @@ Rationale, tests and the review: `/bulk/analysis/buggy-detect-2026-10-26/14311-n
 
 ## Result
 
-**Not detected; not accepted.** GraphChecker's only witness was the race happening by timing in one replay.
+**Not detected; recorded as a capability limit** (the owner, 2026-10-26: a check truly beyond GraphChecker is not
+forced). GraphChecker's only witness was the race happening by timing in one replay (B14311d). The last round, B14311f,
+hit blocker 1 below and was stopped there.
 
 | Round | Engine | Tree | Outcome |
 | --- | --- | --- | --- |
@@ -94,6 +104,7 @@ Rationale, tests and the review: `/bulk/analysis/buggy-detect-2026-10-26/14311-n
 | B14311b, B14311c | 131bf16d9, 7f562ef37 | c3f0661bedc | stopped before any obligation: superseded by the reviews (the hold cycled) |
 | B14311d | 252ed18da | c3f0661bedc | SAT_CANDIDATE, `MARKER_FLIPPED` on a `Storage$StorageDirectory#tryLock` marker (#u31#3): under the flipped lock the third volume was not loaded, and volume 1's task wrote `layoutVersion = cur` between volume 2's reads **by timing**. CONFIRM saw the throw in that session; REPRODUCE planted the marker 10 times with 0 fatal (control 1/10); report.py FAIL (`MARKER_FLIPPED != STATE_PAIRING_FLIPPED`). The intended flip (volume 2's `#u112#2`) was NOT_ADMITTED: `ADMISSION_GAP`, no variable of its own, because the task write was a later alternative (now 838b0c888). |
 | B14311e | 838b0c888 | 1bc07a3e76a (native delay) | stopped at the seed: volume 2's OWN task still wrote `layoutVersion` before volume 1's task (blocker 1) |
+| B14311f | 4e1c228aa (838b0c888 merged) | be29cd3c074 (delay in load order) | seed as intended: the three `readProperties` (19554, 19788, 20013), then the task writes 20650 (submit `#u36@0`, volume 1's), 21049 (`#u36@1`, volume 2's own), 21429 (`#u36@2`). Volume 2's `#u112#2` flip is now UNSAT: the flip query keeps volume 2's earlier decisions on the same value as recorded (`layoutVersion == current` false, `layoutVersion > current` true). The first decision on that value, `#u96#2`, is SAT with one planted pairing, but z3 chose version 21049, the write of volume 2's OWN task (blocker 1). The replay was NOT_ADMITTED ("wrong decision at `#u96#2` ... took true"), and the re-solve asked the same world. Stopped with stop-run.sh at 14:19, per the lead. No verdict. |
 
 What the engine now supports (independently reviewed): an earlier (ba6580331) or later (838b0c888) concurrent writer
 re-paired past a write the reader cannot pass, one write choice per observed version (131bf16d9), and CONFIRM/EXPLORE holds
@@ -104,13 +115,29 @@ The two blockers that remain, both confirmed by the review:
 
 1. **The carried-anchor over-approximation.** Each upgrade task's context carries the handshake's IPC anchor, not an anchor
    to its submit, so `Arms#concurrent` counts volume 2's own task -- submitted by the reader occurrence after volume 2's
-   doTransition -- as concurrent with volume 2's reads. In both three-volume seeds volume 2's task wrote `layoutVersion`
-   before volume 1's task (B14311d: 20186 < 20197; B14311e: 20743 < 20766). That write is then ordered before the chosen
-   writer, which cannot happen, so every alternative cycles until the order's 300 s timeout.
+   doTransition -- as concurrent with volume 2's reads. It bites in two ways:
+   - **as an intervening write.** In both earlier three-volume seeds, volume 2's task wrote `layoutVersion` before volume
+     1's task (B14311d: 20186 < 20197; B14311e: 20743 < 20766). That write is then ordered before the chosen writer, which
+     cannot happen, so every alternative cycles until the order's 300 s timeout. be29cd3c074 removes this form.
+   - **as the chosen writer itself (B14311f).** With the tasks in load order, all three task writes of the current layout
+     are later alternatives of volume 2's reads, all "concurrent", and the flip query lets the solver pick any of them.
+     In obligation 06735091127740cf (`doTransition#u96#2`; three of its four write choices give `-57`), the model chose
+     version 21049, written by volume 2's own task (`4dbd6035`, submit `#u36@1`). In that world the reader waits for a
+     writer it has not created yet. The STATE edge reads `"writer":"9a0bac52e3b04a85","version":21049`,
+     with ORDER `4dbd6035 doUpgrade exit -> 11fb7b34 .../doUpgrade@0/getLayoutVersion@0`. The replay took the recorded
+     arm at `#u96#2` and was refused before it reached that hold (the decision's own reads are not held; see below). The re-solve (`obligations-0010`) asked the identical world, because nothing
+     excludes a writer whose world failed, so volume 1's task write (20650) was never tried.
 2. **An order that times out after the fatal refutes.** In the fatal world, volume 2's IOException is caught per volume, so
    volume 3 still loads, and the loader waits for volume 3's task inside the occurrence. The pairing's block-mode order
    "reader occurrence close before volume 3's task" then times out after the fatal. `Confirmation` turns that into a
    `CONFIRM_MISMATCH` that refutes the claim. Confirmation is the false-positive filter and is not changed without the
    owner.
 
-The native workload races about 1/10 without the workaround, and passes 20/20 with it.
+Also seen in B14311f (not a named blocker, and inferred rather than run): the planted pairing names one read, the
+representative of the value symbol `st_32_e8d8b03f6387941b`: `doUpgrade`'s `getLayoutVersion` (seq 19826), the last of
+volume 2's reads of version 19788. The decisions it feeds (`#u96`, `#u112`) read the same value earlier, in
+`doTransition` (19805-19818), and they are neither paired nor held. So the reader's hold point falls after those
+decisions. By the hold rule, the same would hold with volume 1's task as the writer.
+
+The native workload races about 1/10 without the workaround, and passes 20/20 with it (1bc07a3e76a, and be29cd3c074 in
+load order).
