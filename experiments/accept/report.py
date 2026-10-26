@@ -64,6 +64,7 @@ EXPECTED_MECHANISM = {
                          "value": "false"},
     "hdfs-buggy-17383": RPC_FAILURE,
     "hdfs-buggy-14075": {"kinds": ("MARKER_FLIPPED",),
+                         "clocks": False},
     "hdfs-buggy-14311": {"kinds": ("STATE_PAIRING_FLIPPED",),
                          "clocks": False},
     "hdfs-11741":      {"kinds": ("CLOCK_SKEW", "MARKER_FLIPPED")},
