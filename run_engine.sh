@@ -2116,8 +2116,8 @@ campaign_replay_means=()
 campaign_replay_typical_mb=0
 campaign_replay_spike_mb=0
 campaign_replay_spikes=4
-campaign_replay_cores=1
-campaign_replay_seed_cores=1
+campaign_replay_cores=100
+campaign_replay_seed_cores=100
 campaign_replay_cores_x100=()
 campaign_replay_typical_after=8
 
@@ -2200,8 +2200,8 @@ campaign_replay_cores_measured() {
   read -r x100 2>/dev/null <"$1/workload_cores_x100" || return 0
   [[ "${x100}" =~ ^[0-9]+$ ]] || return 0
   if (( $2 )); then
-    campaign_replay_seed_cores=$(( (x100 + 99) / 100 ))
-    (( campaign_replay_seed_cores >= 1 )) || campaign_replay_seed_cores=1
+    campaign_replay_seed_cores=$(( (x100 + 99) / 100 * 100 ))
+    (( campaign_replay_seed_cores >= 100 )) || campaign_replay_seed_cores=100
     cores=${campaign_replay_seed_cores}
   else
     campaign_replay_cores_x100+=("${x100}")
@@ -2215,14 +2215,19 @@ campaign_replay_cores_measured() {
     # the nearest core admits more and is measured lower again (hbase-adhoc-10:
     # replays measured 2.16-2.31, nodes at load 100-123 on 64 cores).
     cores=$(( ($(campaign_percentile_90 "${campaign_replay_cores_x100[@]}") \
-      + 99) / 100 ))
-    (( cores >= 1 )) || cores=1
+      + 99) / 100 * 100 ))
+    (( cores >= 100 )) || cores=100
   fi
   (( cores != campaign_replay_cores )) || return 0
   campaign_replay_cores=${cores}
-  campaign_log "a replay keeps ${cores} core(s) busy (the seed's alone: \
-${campaign_replay_seed_cores}; ${#campaign_replay_cores_x100[@]} after it \
-returned): a host takes as many replays as its cores hold at that"
+  campaign_log "a replay keeps $(campaign_cores_text "${cores}") core(s) busy \
+(the seed's alone: $(campaign_cores_text "${campaign_replay_seed_cores}"); \
+${#campaign_replay_cores_x100[@]} after it returned): a host takes as many \
+replays as its cores hold at that"
+}
+
+campaign_cores_text() {
+  printf '%d.%02d\n' "$(( $1 / 100 ))" "$(( $1 % 100 ))"
 }
 
 campaign_replay_life_mb() {
@@ -2998,10 +3003,10 @@ campaign_host_max_cores_pct=${CAUSYNTH_HOST_MAX_CORES_PCT}
         && campaign_host_max_cores_pct <= 100 )) \
   || die "CAUSYNTH_HOST_MAX_CORES_PCT must be a percentage in 1..100: \
 ${campaign_host_max_cores_pct}"
-campaign_solve_cores=2
-campaign_engine_cores=1
-campaign_reproduce_cores=1
-campaign_fanout_job_cores=1
+campaign_solve_cores=200
+campaign_engine_cores=100
+campaign_reproduce_cores=100
+campaign_fanout_job_cores=100
 campaign_host_poll_s=5
 campaign_host_reading_keep_s=30
 campaign_ssh_patience_s=300
@@ -3175,8 +3180,9 @@ campaign_host_refused() {
 held for a head; one needs $5 MB${beside} and at most $7 MB \
 (${campaign_host_max_used_pct}% of $8 MB) may be charged or in use"
   campaign_host_cores_fit "$9" "${10}" "${11}" \
-    || reason+="${reason:+; }$1 has $9 cores charged to what it runs; one \
-needs ${10} and at most ${11} (${campaign_host_max_cores_pct}% of its cores) \
+    || reason+="${reason:+; }$1 has $(campaign_cores_text "$9") cores charged \
+to what it runs; one needs $(campaign_cores_text "${10}") and at most \
+$(campaign_cores_text "${11}") (${campaign_host_max_cores_pct}% of its cores) \
 may be charged"
   campaign_host_wait_reason=${reason}
 }
@@ -3184,8 +3190,8 @@ may be charged"
 campaign_host_core_limit() {
   local cores
   cores=$(campaign_host_cores "$1") || return 1
-  cores=$(( cores * campaign_host_max_cores_pct / 100 ))
-  printf '%s\n' "$(( cores > 0 ? cores : 1 ))"
+  cores=$(( cores * campaign_host_max_cores_pct ))
+  printf '%s\n' "$(( cores > 100 ? cores : 100 ))"
 }
 
 campaign_host_limit_mb() {
