@@ -85,6 +85,48 @@ bug (a lost `KeyUpdateCommand` reply, as hdfs-17897) is what the case asks for.
 
 The run's budget is `hdfs-buggy-cases.tsv`'s 21600 s.
 
-## Result
+## Result: SAT, MARKER_FLIPPED by a lost key-update heartbeat request, confirmed and reproduced 10/10 (B10609a, PASS)
 
-Pending.
+Round B10609a (2026-10-26, snapshot `/bulk/gc-run/hb10609-1` = GraphChecker 1355227ba, tree set
+`/bulk/trees/b10609` = bec4a7e0e52, `/bulk/gc-out/hdfs-buggy/10609`): 768 s, `SAT_CANDIDATE`
+`FINAL_READY`, `report.py` **PASS**: `MARKER_FLIPPED` at valuation 1, `polarityDecides` true (the
+recorded valuation, ordinal 0, is unsat), no gap, no defect, nothing bounded, `cone.json` unbound
+empty; EXPLORE ended `WITNESSED` after 3 rounds (72 obligation verdicts, 30 planned tasks: the
+DataStreamer and the second DataNode make the closure about twice hdfs-buggy-12931's).
+`round-verify.sh`: `end=(WITNESSED) z3=timeout moved=1 polarityDecides=True leaves=203 confirmed`.
+
+- **The moved root** is `REGION.763d087e-....in.48ceee4c-...` = true: the `FAULT:HADOOP_IPC:REQUEST`
+  door (`ipc.Client$Connection.sendRpcRequest`) of dn0's key-update heartbeat
+  (`DatanodeProtocol.sendHeartbeat` under the workload's `heartbeat#1` on dn0): the request never
+  reaches nn0; dn1's heartbeat runs as recorded.
+- **The chain in the formula** (`final/candidate.smt2`, read by hand): `path_fatal__0` (the selected
+  path, its own run's session 05117422, every arm attested there) is `allKeys.get(keyId) == null` on
+  dn0's map (BlockTokenSecretManager :582-584), the map built by `container_dag` puts of the two pinned
+  keys only (202421 = S+1, 202422 = S+2): with the marker true no heartbeat answer's keys are put;
+  `keyId` is the SASL handoff of the client's key id (`data-encryption-key-id`,
+  `message_family__0__919c5dedca8c`), bound by `message_family__0__cf882a483546` to the client's
+  received key 202423 (S+3: nn0's `generateDataEncryptionKey` from its current key, over
+  `cache-encryption-key`).
+- **CONFIRM**: "the selected session 0511742251622289-4c08054a is itself the run: it took every edge the
+  model chose (2 arm(s), all its own deliveries), ran every moved root at the model's value, and
+  observed the fatal at the anchor".
+- **REPRODUCE**: 10/10 natively (the plant: the REQUEST fault on dn0's heartbeat; the fatal at the
+  anchor in every run), control 0/10. In the native runs the throw is met on the transfer's connection
+  (the client logs "Error transferring data from" dn0 to dn1): HDFS-10609's path, the client's first
+  connection to dn0 in the request.
+- **The moved root is necessary**: z3 on the exported file with the selected path asserted: sat; with
+  the marker pinned to its recorded false as well: unsat. z3 alone on the whole exported file (9
+  paths, 575 KB) does not decide within `round-verify.sh`'s 300 s; COMPOSE's path-scoped asks decided
+  it, as for hdfs-buggy-11741.
+
+**What the check detects here, and what it does not.** As for hdfs-buggy-12931: the point's throw is
+on dn0, upstream of the client code the bug lives in, so the same world fires it with or without the
+fix. Natively, with a scratch program (not committed) that drops dn0's key-update answer, refreshes
+dn1 and then appends: on this tree, one throw on dn0, "Error transferring data from" dn0 to dn1, then
+"Failed to replace a bad datanode on the existing pipeline due to no more good datanodes being
+available to try" (the second try excludes dn1) and the append fails; with the fixed client
+(graphchecker/hdfs-checks' `hadoop-hdfs-client` classes first on the class path), two throws on dn0
+(the policy's retry presents a refetched key, nn0's current one, which dn0 still lacks), then the same
+failure. The witness shows the bug's trigger reaching the point's own throw on the bug's own path (the
+transfer); it does not separate the put-back writer from the fixed one, which differs only after the
+throw.
