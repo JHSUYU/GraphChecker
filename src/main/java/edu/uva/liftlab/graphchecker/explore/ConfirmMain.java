@@ -381,6 +381,7 @@ public final class ConfirmMain {
         PlantSites sites = PlantSites.read(
                 iteration.resolve("execution_task_plan.jsonl"));
         List<JsonObject> rows = new ArrayList<JsonObject>();
+        Map<String, String> fields = new LinkedHashMap<String, String>();
         for (Map.Entry<String, String> assigned
                 : world.assignments.entrySet()) {
             String value = assigned.getValue().trim();
@@ -388,8 +389,18 @@ public final class ConfirmMain {
             if (category == RootCategory.FAULT && "false".equals(value)) {
                 continue;
             }
-            rows.add(assignedRoot(assigned.getKey(), value, category, world,
-                    sites));
+            JsonObject row = assignedRoot(assigned.getKey(), value, category,
+                    world, sites);
+            String field = optionalString(row, RecordingPlant.FIELD);
+            String other = field.isEmpty() ? null
+                    : fields.put(field, assigned.getKey());
+            if (other != null) {
+                throw new Refused("NATIVE_PLANT_UNSUPPORTED: roots " + other
+                        + " and " + assigned.getKey() + " are both read from "
+                        + "field " + field + "; a native run plants one value"
+                        + " at a field's reads");
+            }
+            rows.add(row);
         }
         for (Map.Entry<String, String> skew : world.clockDeltas.entrySet()) {
             rows.add(clockRoot(skew.getKey(), skew.getValue().trim(), world,
@@ -493,8 +504,8 @@ public final class ConfirmMain {
         boolean planted = mint != null && (category == RootCategory.HOOK
                 || category == RootCategory.FAULT && marked.size() == 1
                 && ("true".equals(value) || "false".equals(value))
-                || category == RootCategory.CONFIG && (!calls.isEmpty()
-                || fields.size() == 1)
+                || category == RootCategory.CONFIG && (fields.isEmpty()
+                ? !calls.isEmpty() : calls.isEmpty() && fields.size() == 1)
                 || category == RootCategory.READ && calls.size() == 1);
         if (!planted) {
             throw new Refused("NATIVE_PLANT_UNSUPPORTED: root " + rootId
@@ -505,7 +516,8 @@ public final class ConfirmMain {
                     + " of one call site at true or false, a tree hook's "
                     + "field, the return of a configuration getter or an "
                     + "accessor call, at an occurrence it is minted at, or "
-                    + "one configuration field at its planned reads");
+                    + "the planned reads of one configuration field (not "
+                    + "both a getter and a field)");
         }
         JsonObject row = root(category, rootId, mint);
         if (category == RootCategory.FAULT) {
@@ -517,7 +529,7 @@ public final class ConfirmMain {
             row.addProperty(RecordingPlant.SITE, call.siteId);
             row.addProperty(RecordingPlant.CALLEE, call.callee);
             row.addProperty(RecordingPlant.JAVA_TYPE, call.javaType);
-        } else if (category == RootCategory.CONFIG && !calls.isEmpty()) {
+        } else if (category == RootCategory.CONFIG && fields.isEmpty()) {
             JsonArray getters = new JsonArray();
             for (PlantSites.Call call : calls) {
                 getters.add(callRow(null, call));

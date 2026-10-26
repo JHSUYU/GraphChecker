@@ -762,9 +762,11 @@ public class ConfirmMainTest {
         Path iteration = iteration();
         List<RootMintRow> roots = new ArrayList<RootMintRow>(
                 SessionReader.read(iteration, "seed").roots());
-        roots.add(RootMintRow.of("seed", 2L, mint, "CONFIG:k==true",
-                "M_Z_field_SRC.k", RootKind.MARKER, RootCategory.CONFIG,
-                "true", null, null, true, null, 0L));
+        for (String config : new String[]{"CONFIG:k==true", "CONFIG:j==true"}) {
+            roots.add(RootMintRow.of("seed", 2L, mint, config,
+                    "M_Z_field_SRC." + config, RootKind.MARKER,
+                    RootCategory.CONFIG, "true", null, null, true, null, 0L));
+        }
         RowCodec.writeAll(SessionDir.of(iteration, "seed").roots(), roots,
                 RowCodec::writeRootMint);
         Path focus = iteration.resolve("obligations-0000").resolve("w1")
@@ -776,33 +778,37 @@ public class ConfirmMainTest {
         }
         RowCodec.writeJsonl(focus, Collections.singletonList(world));
         Path scopeMap = targetScopeMap();
+        String k = "CONFIG:k==true";
         String field = "<a.Flag: boolean on>";
         String read = "<a.Flag: boolean read(a.Reader)>#u5";
         String other = "<a.Flag: boolean read(a.Other)>#u3";
         String config = "EXACT_RUNTIME_CONFIG_READ_EXECUTION_V1";
         String hook = "EXACT_RUNTIME_SOURCE_HOOK_EXECUTION_V1";
+        String fieldRow = "{\"kind\":\"ROOT\",\"category\":\"CONFIG\","
+                + "\"rootId\":\"CONFIG:k==true\",\"occurrence\":\""
+                + mint.id() + "\",\"field\":\"" + field + "\",\"reads\":"
+                + "[\"" + read + "\"],\"value\":\"false\",\"row\":0}";
         Object[][] plans = {
-                {task(phase(config, field, read), phase(config, field, read))
-                        + task(phase(config, field, other)),
-                        "{\"kind\":\"ROOT\",\"category\":\"CONFIG\","
-                                + "\"rootId\":\"CONFIG:k==true\","
-                                + "\"occurrence\":\"" + mint.id() + "\","
-                                + "\"field\":\"" + field + "\","
-                                + "\"reads\":[\"" + read + "\",\"" + other
-                                + "\"],\"value\":\"false\",\"row\":0}"},
-                {task(phase(config, field, read), phase(config,
-                        "<a.Flag: boolean off>", other)), null},
-                {task(phase(hook, field, read)), null},
-                {"", null},
-                {task(phase(config, field, read)).replace("\"inputActions\":[]",
-                        "\"inputActions\":[{\"portId\":"
-                                + "\"REGION.08ab84c9.in.p\","
-                                + "\"configSource\":\"CONFIG:k==true\","
-                                + "\"location\":\"CALL_RETURN\","
-                                + "\"siteId\":\"<a.Manager: void tick()>#u4\","
-                                + "\"declaredCallee\":"
-                                + "\"<a.Conf: boolean on()>\","
-                                + "\"javaType\":\"boolean\"}]"),
+                {task(phase(k, config, field, read), phase(k, config, field,
+                        read)) + task(phase(k, config, field, other)),
+                        fieldRow.replace("\"" + read + "\"]", "\"" + read
+                                + "\",\"" + other + "\"]"), ""},
+                {task(phase(k, config, field, read), phase(k, config,
+                        "<a.Flag: boolean off>", other)), "read from fields ["
+                        + field + ", <a.Flag: boolean off>]", ""},
+                {task(phase(k, hook, field, read)), "read from fields []", ""},
+                {"", "read from fields []", ""},
+                {task(phase(k, config, field, read)).replace(
+                        "\"inputActions\":[]", "\"inputActions\":["
+                                + getter("REGION.08ab84c9.in.p", k) + "]"),
+                        fieldRow, ""},
+                {task(phase(k, config, field, read)).replace(
+                        "\"inputActions\":[]", "\"inputActions\":["
+                                + getter(k, "") + "]"),
+                        "called at [<a.Manager: void tick()>#u4], read from "
+                                + "fields [" + field + "]", ""},
+                {task().replace("\"inputActions\":[]", "\"inputActions\":["
+                        + getter(k, "") + "]"),
                         "{\"kind\":\"ROOT\",\"category\":\"CONFIG\","
                                 + "\"rootId\":\"CONFIG:k==true\","
                                 + "\"occurrence\":\"" + mint.id() + "\","
@@ -810,21 +816,32 @@ public class ConfirmMainTest {
                                 + "\"<a.Manager: void tick()>#u4\",\"callee\":"
                                 + "\"<a.Conf: boolean on()>\",\"javaType\":"
                                 + "\"boolean\"}],\"javaType\":\"boolean\","
-                                + "\"value\":\"false\",\"row\":0}"}};
+                                + "\"value\":\"false\",\"row\":0}", ""},
+                {task(phase(k, config, field, read), phase("CONFIG:j==true",
+                        config, field, other)), "roots CONFIG:k==true and "
+                        + "CONFIG:j==true are both read from field " + field,
+                        "CONFIG:j==true"}};
         for (Object[] plan : plans) {
             Files.write(iteration.resolve("execution_task_plan.jsonl"),
                     ((String) plan[0]).getBytes(StandardCharsets.UTF_8));
+            Path claim = claim(k, "false");
+            if (!((String) plan[2]).isEmpty()) {
+                JsonObject document = ExploreCodec.readObject(claim);
+                document.getAsJsonObject("claim").getAsJsonObject(
+                        "movedRoots").addProperty((String) plan[2], "false");
+                Files.write(claim, document.toString()
+                        .getBytes(StandardCharsets.UTF_8));
+            }
             Path plant = folder.newFile().toPath();
             try {
-                ConfirmMain.writePlant(iteration, claim("CONFIG:k==true",
-                        "false"), manifest(), scopeMap,
+                ConfirmMain.writePlant(iteration, claim, manifest(), scopeMap,
                         iteration.resolve("sessions").resolve("sel"), plant);
-                if (plan[1] == null) fail("planted " + plan[0]);
+                assertTrue("planted " + plan[0],
+                        ((String) plan[1]).startsWith("{"));
             } catch (ConfirmMain.Refused refused) {
                 assertTrue(refused.getMessage(), refused.getMessage()
-                        .startsWith("NATIVE_PLANT_UNSUPPORTED: root "
-                                + "CONFIG:k==true"));
-                assertEquals(refused.getMessage(), null, plan[1]);
+                        .startsWith("NATIVE_PLANT_UNSUPPORTED: root")
+                        && refused.getMessage().contains((String) plan[1]));
                 continue;
             }
             List<JsonObject> rows = RowCodec.readJsonl(plant);
@@ -842,12 +859,22 @@ public class ConfirmMainTest {
                 + String.join(",", phases) + "]}\n";
     }
 
-    private static String phase(String authority, String field,
-                                String site) {
+    private static String phase(String source, String authority,
+                                String field, String site) {
         return "{\"kind\":\"CONFIGURED_SOURCE_PHASE\",\"authority\":\""
-                + authority + "\",\"sourceId\":\"CONFIG:k==true\","
+                + authority + "\",\"sourceId\":\"" + source + "\","
                 + "\"fieldSignature\":\"" + field + "\",\"siteId\":\""
                 + site + "\",\"sourceOccurrenceId\":\"" + MINT + "\"}";
+    }
+
+    private static String getter(String port, String config) {
+        return "{\"portId\":\"" + port + "\","
+                + (config.isEmpty() ? ""
+                : "\"configSource\":\"" + config + "\",")
+                + "\"location\":\"CALL_RETURN\","
+                + "\"siteId\":\"<a.Manager: void tick()>#u4\","
+                + "\"declaredCallee\":\"<a.Conf: boolean on()>\","
+                + "\"javaType\":\"boolean\"}";
     }
 
     private Path targetScopeMap() throws Exception {

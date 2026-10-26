@@ -143,12 +143,6 @@ final class PlantSites {
         if (call != null) {
             calls.computeIfAbsent(port, key -> new ArrayList<Call>())
                     .add(call);
-            String config = optionalString(action,
-                    InputActionCatalog.DECLARED_CONFIG_SOURCE);
-            if (!config.isEmpty()) {
-                calls.computeIfAbsent(config, key -> new ArrayList<Call>())
-                        .add(call);
-            }
         }
     }
 

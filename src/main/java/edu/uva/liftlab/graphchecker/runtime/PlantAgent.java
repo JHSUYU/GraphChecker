@@ -11,6 +11,10 @@ import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.Instrumentation;
 import java.nio.file.Paths;
 import java.security.ProtectionDomain;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -57,15 +61,39 @@ public final class PlantAgent {
 
     static byte[] rewrite(byte[] bytes, final Set<String> callees) {
         ClassReader reader = new ClassReader(bytes);
+        final Map<String, List<String>> reads =
+                new HashMap<String, List<String>>();
+        reader.accept(new ClassVisitor(Opcodes.ASM5) {
+            @Override
+            public MethodVisitor visitMethod(int access, String name,
+                                             String descriptor,
+                                             String signature,
+                                             String[] exceptions) {
+                final List<String> fields = new ArrayList<String>();
+                reads.put(name + descriptor, fields);
+                return new MethodVisitor(Opcodes.ASM5) {
+                    @Override
+                    public void visitFieldInsn(int opcode, String owner,
+                                               String field, String desc) {
+                        if (opcode == Opcodes.GETFIELD) {
+                            fields.add(field(owner, field, desc));
+                        }
+                    }
+                };
+            }
+        }, 0);
         ClassWriter writer = new ClassWriter(reader, ClassWriter.COMPUTE_MAXS);
         reader.accept(new ClassVisitor(Opcodes.ASM5, writer) {
             @Override
-            public MethodVisitor visitMethod(int access, final String name,
-                                             final String descriptor,
+            public MethodVisitor visitMethod(int access, String name,
+                                             String descriptor,
                                              String signature,
                                              String[] exceptions) {
                 MethodVisitor method = super.visitMethod(access, name,
                         descriptor, signature, exceptions);
+                final Map<String, Boolean> planned = planned(
+                        name + descriptor, reads.get(name + descriptor),
+                        callees);
                 return new MethodVisitor(Opcodes.ASM5, method) {
                     @Override
                     public void visitMethodInsn(int opcode, String owner,
@@ -82,16 +110,23 @@ public final class PlantAgent {
                     @Override
                     public void visitFieldInsn(int opcode, String owner,
                                                String field, String desc) {
-                        String read = "<" + owner.replace('/', '.') + ": "
-                                + Type.getType(desc).getClassName() + " "
-                                + field + ">";
-                        if (opcode == Opcodes.GETFIELD && callees.contains(
-                                name + descriptor + " " + read)) {
-                            super.visitInsn(Opcodes.DUP);
-                            super.visitLdcInsn(read);
+                        String read = field(owner, field, desc);
+                        for (Map.Entry<String, Boolean> planted
+                                : planned.entrySet()) {
+                            if (opcode != Opcodes.GETFIELD
+                                    || !sameField(planted.getKey(), read)) {
+                                continue;
+                            }
+                            if (planted.getValue()) {
+                                super.visitInsn(Opcodes.DUP);
+                            }
+                            super.visitLdcInsn(planted.getKey());
                             super.visitMethodInsn(Opcodes.INVOKESTATIC, PLANT,
-                                    "fieldRead", "(Ljava/lang/Object;"
-                                            + "Ljava/lang/String;)V", false);
+                                    planted.getValue() ? "fieldRead"
+                                            : "fieldUnwritten",
+                                    planted.getValue() ? "(Ljava/lang/Object;"
+                                            + "Ljava/lang/String;)V"
+                                            : "(Ljava/lang/String;)V", false);
                         }
                         super.visitFieldInsn(opcode, owner, field, desc);
                     }
@@ -99,6 +134,40 @@ public final class PlantAgent {
             }
         }, 0);
         return writer.toByteArray();
+    }
+
+    static Map<String, Boolean> planned(String method, List<String> reads,
+                                        Set<String> callees) {
+        Map<String, Integer> sites = new LinkedHashMap<String, Integer>();
+        for (String key : callees) {
+            if (key.startsWith(method + " <")) {
+                sites.merge(key.substring(method.length() + 1,
+                        key.indexOf("> ", method.length()) + 1), 1,
+                        Integer::sum);
+            }
+        }
+        Map<String, Boolean> planned = new LinkedHashMap<String, Boolean>();
+        for (Map.Entry<String, Integer> field : sites.entrySet()) {
+            int found = 0;
+            int exact = 0;
+            for (String read : reads) {
+                if (sameField(field.getKey(), read)) found++;
+                if (field.getKey().equals(read)) exact++;
+            }
+            planned.put(field.getKey(), found == field.getValue()
+                    && exact == found);
+        }
+        return planned;
+    }
+
+    private static String field(String owner, String name, String desc) {
+        return "<" + owner.replace('/', '.') + ": "
+                + Type.getType(desc).getClassName() + " " + name + ">";
+    }
+
+    private static boolean sameField(String planned, String read) {
+        return planned.substring(planned.indexOf(": ")).equals(
+                read.substring(read.indexOf(": ")));
     }
 
     static void handOff(MethodVisitor method, Type type) {

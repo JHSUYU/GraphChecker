@@ -15,6 +15,7 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.InvocationTargetException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -22,8 +23,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -136,8 +139,8 @@ public class RecordingPlantTest {
         }
     }
 
-    public static final class Holder {
-        private boolean flag = true;
+    public static class Holder {
+        public boolean flag = true;
 
         public boolean read() {
             return flag;
@@ -146,11 +149,33 @@ public class RecordingPlantTest {
         public boolean other() {
             return flag;
         }
+
+        public boolean twice() {
+            return flag && flag;
+        }
+
+        public boolean through(Sub sub) {
+            return sub.flag;
+        }
+
+        public static boolean of(Holder holder) {
+            return holder.flag;
+        }
+    }
+
+    public static final class Sub extends Holder {
     }
 
     private static final String HOLDER = Holder.class.getName();
+    private static final String SUB = Sub.class.getName();
     private static final String FLAG = "<" + HOLDER + ": boolean flag>";
     private static final String READ = "<" + HOLDER + ": boolean read()>#u2";
+    private static final String TWICE =
+            "<" + HOLDER + ": boolean twice()>#u2";
+    private static final String THROUGH = "<" + HOLDER
+            + ": boolean through(" + SUB + ")>#u3";
+    private static final String OF = "<" + HOLDER + ": boolean of("
+            + HOLDER + ")>#u1";
 
     private static String field(String field, String reads, int row) {
         return row("{'kind':'ROOT','category':'CONFIG','rootId':"
@@ -162,19 +187,26 @@ public class RecordingPlantTest {
     @Test
     public void aConfigurationFieldIsWrittenBeforeEachPlannedRead()
             throws Exception {
-        String planted = field(FLAG, "'" + READ + "'", 0)
-                + target(ID, "false", 1);
+        String reads = "'" + READ + "','" + TWICE + "','" + THROUGH + "','"
+                + OF + "'";
+        String planted = field(FLAG, reads, 0) + target(ID, "false", 1);
         RecordingPlant.Plant plant = read(planted);
         RecordingPlant.Configured configured = plant.fields.get(FLAG);
         assertEquals(Collections.singleton(FLAG), plant.fields.keySet());
         assertEquals(new RecordingPlant.Root(0, "false"), configured.root);
         assertEquals("CONFIG:flag==true", configured.rootId);
-        assertEquals(Collections.singleton(READ), configured.reads);
+        assertEquals(new LinkedHashSet<>(Arrays.asList(READ, TWICE,
+                THROUGH, OF)), configured.reads);
         assertTrue(plant.calls.isEmpty());
         assertEquals(Collections.singleton(ID), plant.focused);
-        String key = "read()Z " + FLAG;
-        assertEquals(Collections.singletonMap(HOLDER.replace('.', '/'),
-                Collections.singleton(key)),
+        String holder = "L" + HOLDER.replace('.', '/') + ";";
+        Set<String> keys = new LinkedHashSet<>(
+                Arrays.asList("read()Z " + FLAG + " " + READ,
+                        "twice()Z " + FLAG + " " + TWICE,
+                        "through(L" + SUB.replace('.', '/') + ";)Z " + FLAG
+                                + " " + THROUGH,
+                        "of(" + holder + ")Z " + FLAG + " " + OF));
+        assertEquals(Collections.singletonMap(HOLDER.replace('.', '/'), keys),
                 RecordingPlant.interceptions(plant));
         for (String refused : new String[] {
                 field(FLAG, "'" + READ + "'", 0) + field(FLAG, "'" + READ
@@ -194,6 +226,29 @@ public class RecordingPlantTest {
         } catch (IOException expected) {
         }
 
+        String viaSub = "<" + SUB + ": boolean flag>";
+        Object[][] methods = {
+            {"read()Z", Arrays.asList(FLAG), Collections.singletonMap(FLAG,
+                    true)},
+            {"twice()Z", Arrays.asList(FLAG, FLAG),
+                    Collections.singletonMap(FLAG, false)},
+            {"through(L" + SUB.replace('.', '/') + ";)Z",
+                    Arrays.asList(viaSub), Collections.singletonMap(FLAG,
+                    false)},
+            {"other()Z", Arrays.asList(FLAG), Collections.emptyMap()}};
+        for (Object[] method : methods) {
+            @SuppressWarnings("unchecked")
+            List<String> found = (List<String>) method[1];
+            assertEquals((String) method[0], method[2], PlantAgent.planned(
+                    (String) method[0], found, keys));
+        }
+        Set<String> twoSites = new LinkedHashSet<>(keys);
+        twoSites.add("twice()Z " + FLAG + " <" + HOLDER
+                + ": boolean twice()>#u6");
+        assertEquals("one GETFIELD per planned site",
+                Collections.singletonMap(FLAG, true), PlantAgent.planned(
+                        "twice()Z", Arrays.asList(FLAG, FLAG), twoSites));
+
         Path file = folder.newFile().toPath();
         Files.write(file, planted.getBytes(StandardCharsets.UTF_8));
         ClassLoader parent = RecordingPlantTest.class.getClassLoader();
@@ -208,23 +263,47 @@ public class RecordingPlantTest {
             }
             bytes = Arrays.copyOf(buffer, length);
         }
-        final byte[] rewritten = PlantAgent.rewrite(bytes,
-                Collections.singleton(key));
+        final byte[] rewritten = PlantAgent.rewrite(bytes, keys);
         Class<?> rewrittenHolder = new ClassLoader(parent) {
             Class<?> define() {
                 return defineClass(HOLDER, rewritten, 0, rewritten.length);
             }
         }.define();
-        Object holder = rewrittenHolder.getDeclaredConstructor().newInstance();
+        Object instance = rewrittenHolder.getDeclaredConstructor()
+                .newInstance();
         System.setProperty(RecordingPlant.PROPERTY, file.toString());
+        RecordingWindow.open();
         try {
             assertEquals("a read outside the planned reads is as it was",
-                    true, rewrittenHolder.getMethod("other").invoke(holder));
+                    true, rewrittenHolder.getMethod("other").invoke(instance));
+            assertEquals("an extra read in a planned method: none planted",
+                    true, rewrittenHolder.getMethod("twice").invoke(instance));
+            assertEquals(Collections.singleton(0),
+                    RecordingPlant.UNWRITTEN_ROWS);
+            RecordingPlant.UNWRITTEN_ROWS.clear();
+            assertEquals("a read through a subclass: not planted", true,
+                    rewrittenHolder.getMethod("through", Sub.class)
+                            .invoke(instance, new Sub()));
+            assertEquals(Collections.singleton(0),
+                    RecordingPlant.UNWRITTEN_ROWS);
+            RecordingPlant.UNWRITTEN_ROWS.clear();
             assertEquals("the planned read reads the world's value", false,
-                    rewrittenHolder.getMethod("read").invoke(holder));
+                    rewrittenHolder.getMethod("read").invoke(instance));
             assertEquals("written into the field, as in the VM", false,
-                    rewrittenHolder.getMethod("other").invoke(holder));
+                    rewrittenHolder.getMethod("other").invoke(instance));
+            assertTrue(RecordingPlant.UNWRITTEN_ROWS.isEmpty());
+            RecordingPlant.fieldRead(null, FLAG);
+            try {
+                rewrittenHolder.getMethod("of", rewrittenHolder)
+                        .invoke(null, (Object) null);
+                fail("read a field of no object");
+            } catch (InvocationTargetException thrown) {
+                assertTrue(String.valueOf(thrown.getCause()),
+                        thrown.getCause() instanceof NullPointerException);
+            }
+            assertTrue(RecordingPlant.UNWRITTEN_ROWS.isEmpty());
         } finally {
+            RecordingWindow.reset();
             System.clearProperty(RecordingPlant.PROPERTY);
         }
         Holder unplanted = new Holder();

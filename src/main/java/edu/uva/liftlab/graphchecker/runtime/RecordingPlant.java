@@ -67,6 +67,7 @@ public final class RecordingPlant {
     private static final AtomicLong PLACES = new AtomicLong();
     private static final Set<String> CLOCKED = ConcurrentHashMap.newKeySet();
     private static final Set<Integer> STATED = ConcurrentHashMap.newKeySet();
+    static final Set<Integer> UNWRITTEN_ROWS = ConcurrentHashMap.newKeySet();
     private static volatile boolean gaveWay;
     private static final Map<String, Integer> INVOCATIONS =
             new ConcurrentHashMap<String, Integer>();
@@ -248,14 +249,29 @@ public final class RecordingPlant {
     }
 
     public static void fieldRead(Object owner, String field) {
+        if (owner == null) return;
         Configured configured = plant().fields.get(field);
-        boolean written = RootMint.writeModeledField(owner, field, "",
-                configured.root.value);
+        if (!RootMint.writeModeledField(owner, field, "",
+                configured.root.value)) {
+            fieldUnwritten(field);
+        } else if (RecordingWindow.opened()) {
+            stateOnce(APPLIED, configured.root.row, configured.rootId,
+                    innermost(), configured.root.value);
+        }
+    }
+
+    public static void fieldUnwritten(String field) {
         if (!RecordingWindow.opened()) return;
+        Configured configured = plant().fields.get(field);
+        if (UNWRITTEN_ROWS.add(configured.root.row)) {
+            CausynthTraceRecorder.plantRoot(UNWRITTEN, configured.root.row,
+                    configured.rootId, innermost(), configured.root.value);
+        }
+    }
+
+    private static String innermost() {
         List<String> enclosing = CausynthTraceRecorder.enclosingOccurrences();
-        stateOnce(written ? APPLIED : UNWRITTEN, configured.root.row,
-                configured.rootId, enclosing.isEmpty() ? ""
-                        : enclosing.get(0), configured.root.value);
+        return enclosing.isEmpty() ? "" : enclosing.get(0);
     }
 
     public static long returned(long value) {
@@ -752,7 +768,8 @@ public final class RecordingPlant {
                 }
                 intercepted.computeIfAbsent(reader[0],
                         key -> new LinkedHashSet<String>())
-                        .add(reader[1] + reader[2] + " " + field.getKey());
+                        .add(reader[1] + reader[2] + " " + field.getKey()
+                                + " " + read);
             }
         }
         return intercepted;
