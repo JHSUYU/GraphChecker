@@ -61,14 +61,63 @@ preflight runs.
 
 The run's budget is `../hbase-buggy-cases.tsv`'s.
 
-## Result: SAT confirmed in the VM; natively the bug fires 10/10 at :163, but not at the declared address
+## Result: SAT, PASS: confirmed in the VM, reproduced natively 10/10 at the anchor (control 0/10)
 
-**Verdict.** SAT confirmed in the VM: the lost reply to the first DisableTable makes the client retry with a new
-nonce, and the retry's DisableTableProcedure throws at the point's own throw (:163). Natively the planted lost reply
-gives the same throw in 10 of 10 runs, with 0 of 10 in the controls. REPRODUCE's exact-anchor check still counts 0 of
-10 "at the anchor": the throw happens in the retry's handler, which only the VM answers to the declared occurrence by
-its shape (IDENTITY §9). A native counterpart of that rule (455a6dd66) was rejected by the independent review and
-reverted (017dcf890), so by CHECKING's bar (native REPRODUCE k/N at the anchor) the SAT is not accepted.
+**Verdict.** SAT: the reply to the first DisableTable is lost, the client retries with a new nonce, and the retry's
+DisableTableProcedure throws at the point's own throw (:163). CONFIRM realized it in the VM. Native REPRODUCE counts
+10 of 10 planted runs at the anchor and 0 of 10 controls, and report.py gives PASS (HB20642e, below). The retry's
+handler answers the declared occurrence by its shape (IDENTITY §9) in the VM and natively alike. It does so through
+the one implementation of §9's order rule (`runtime/AnswerOrder`, GC 93a168e87) that `ConcolicTaskPlan#select`
+and `RecordingPlant#opened` both call.
+
+**No workload gives the retry the declared address.** The retry's preflight differs from the declared one only in
+its anchor, the client's DisableTable SEND endpoint. That endpoint's occurrence index is the request's start chain.
+Every first attempt stands at `Root:CLIENT/test#1 | addListener#u3:AsyncMasterRequestRpcRetryingCaller.doCall@k/...`,
+where k counts the test's DDL operations (create 0, create 1, disable 2, disable 3). The retry stands under the first
+attempt's callback and the retry timer:
+`HMaster$lambda_run_0.run@0/addListener#u3:doCall@2/accept@0/addListener#u3:lambda$doCall$5@0/accept@0/tryScheduleRetry#u23@0/run(Timeout)@0/addListener#u3:doCall@0/...`.
+HBase does not count sends per verb (the Hadoop IPC request level does), so the retry cannot be made "the Nth send".
+Only a recording that itself retried a DisableTable at that position could open the address. A fault-free recording
+has no failed attempt: a natural failure after the procedure is built fires the bug natively, and one before it makes
+the witness need a second moved root (`/bulk/analysis/buggy-detect-2026-10-26/HBASE-20642-notes.md`, H2).
+
+**HB20642e** (snapshot `/bulk/gc-run/hbase-b20642-5` = 93a168e87, tree set `/bulk/trees/hbb20642` = 1ba966bb6c;
+`/bulk/gc-out/hbase-buggy/20642/accept-HB20642e-hbase-buggy-20642`, 866 s, head node1):
+- **Claim** (valuation 1): `SAT_CANDIDATE` `MARKER_FLIPPED`, `polarityDecides` true. The one moved root is
+  `REGION.678dfe9c...in.bb037ad5` = true: a fault marker of `RpcConnection.finishCall` (#u39) in client0's occurrence
+  a5fe07ecef0b627e, which reads the master's reply (endpoint 1ed2bbc8a1b3d6c9) to the first DisableTable
+  (c3a356c8). This is the same reply reader as HB20642c's claim 1, at another marker unit of the RESPONSE door. The
+  legend (`tools/analysis/smt-legend.py`) has 8 leaves, all RESPONSE-door markers of `finishCall`.
+- **CONFIRM:** realized. The witness session fec145b736276486-2804f1c3 is itself the run. Its preflight under the
+  retry's anchor answered the declared address by shape (`ADDRESS_UNSTABLE`: "the planned occurrence ran at
+  ...Anchor:3bb35a7d...") and observed the fatal.
+- **REPRODUCE** (`final/reproduce.json`): planted 10, fatal 10, atAnchor 10, answeredByShape 10, reproduced 10;
+  control fatal 0, atAnchor 0, answeredByShape 0 (of 10). Each planted run's trace has
+  - `PLANT_APPLIED` (the lost reply),
+  - then `PLANT_ANSWERED` (the planned `...Anchor:eb4017bed67364cb...`, plannedId e5af9d703477be2b, which the run
+    computed at `...Anchor:3bb35a7d1bfd5a5e...`),
+  - then `PLANT_FATAL` at the anchor, with `TableNotEnabledException: causynth_disable_first` at
+    AbstractStateMachineTableProcedure.java:163 in its log.
+  `plant.log` names each of the 10 runs `ADDRESS_UNSTABLE`.
+- **report.py:** PASS (`summary.tsv`: `MARKER_FLIPPED ... reproduced 10/10 natively`).
+- **The chain, on the bug tree:**
+  1. RawAsyncHBaseAdmin.disableTable's per-attempt action builds a DisableTableRequest with a fresh `ng.newNonce()`.
+  2. The master's `NonceProcedureRunnable` finds no procedure for that nonce (ProcedureExecutor.registerNonce).
+  3. `new DisableTableProcedure(...)` (HMaster:2931) runs `preflightChecks(env, true)` (DisableTableProcedure:78).
+  4. The first procedure has set the table DISABLING/DISABLED, so `!ts.isEnabledOrEnabling()` holds and
+     AbstractStateMachineTableProcedure:163 throws `TableNotEnabledException(causynth_disable_first)`.
+
+**The engine support for the native answer (93a168e87).** `runtime/AnswerOrder` holds the select loop (own address
+first; otherwise the earliest open task by recorded root call whose shape the context has) and `answeredHere` (an
+address the recording opened, a context a task of the group plans the region in, a folded entry). CONFIRM's
+behaviour is unchanged: AnswerOrderTest checks the loop against a verbatim copy of the parent's on 20000 random
+tables. ConfirmMain recomputed on HB20642c and HB15039b with the parent and the new build gives identical CONFIRM
+tasks, ORDER edges, decisions and plant rows, apart from the TARGET rows' new plan facts. ConfirmMain writes the
+anchor's root hook group onto the plant's TARGET rows. `RecordingPlant#opened` answers each entry of that region and
+root method as a replay would, and the occurrence answering the anchor takes the planned address (`Identity#answer`).
+A loop-body anchor, an anchor with no shape, and a group whose roots are selected by argument types stay exact-only,
+and plant.log says which. Independent review: pending at the time of writing (the run counts only if it passes
+unchanged).
 
 **HB20642a**, the engine as published (stopped, `accept-HB20642aSTOP-baseline-hbase-buggy-20642`): the plan held the
 test turn's 19 REQUEST doors and no reply reader, and round 0 asked 38 REQUEST flips and 0 RESPONSE flips. A REQUEST
@@ -76,6 +125,8 @@ fault keeps the first DisableTable from the master, so the retry runs one proced
 Engine support 948e4779f (lead-approved and reviewed) admits the reply legs of the demanded message's doors as control
 producers: 19 `finishCall` occurrences planned, and 57 RESPONSE flips in round 0
 (`/bulk/analysis/buggy-detect-2026-10-26/HBASE-20642-notes.md`).
+
+Earlier runs:
 
 **HB20642c** (snapshot `/bulk/gc-run/hbase-b20642-3` = f82385bcc on 948e4779f, tree set `/bulk/trees/hbb20642` =
 1ba966bb6c; `/bulk/gc-out/hbase-buggy/20642/accept-HB20642cSTOP-claim1-hbase-buggy-20642`; its claim 1 is in
