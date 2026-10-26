@@ -85,7 +85,11 @@ EXPECTED_MECHANISM = {
     "solr-buggy-6197": {"kinds": ("MARKER_FLIPPED",),
                         "root": "CONFIG:legacyCloud==true",
                         "value": "false"},
-    "solr-buggy-9440": {"kinds": ("STATE_PAIRING_FLIPPED",)},
+    "solr-buggy-9440": {
+        "kinds": ("MARKER_FLIPPED",),
+        "fault": ("org.apache.solr.common.cloud.SolrZkClient",
+                  "org.apache.zookeeper.ZooKeeper"),
+        "clocks": False},
     "zk-bugs-quota-init": {"kinds": ("MARKER_FLIPPED",),
                            "fault": ("org.apache.zookeeper.ZooKeeper",),
                            "clocks": False},
