@@ -21,7 +21,8 @@ coreNodeName missing"; the study's row names this bug (and SOLR-6101) as the poi
   node through `asyncRequestTracker(asyncId)`, responses processed with the same error message -- the pre-fix shape.
   The imports only that block used (`HashMap`, `ADDREPLICA`) are removed.
 - **The workload and the target** (3b70166099): `TestCausynthMigrateLegacy`, and `solr-buggy-6197` added to the
-  marker on `CoreContainer.create`'s throw.
+  marker on `CoreContainer.create`'s throw. (afa0476204 made the collections the legacy way for the node-only world;
+  reverted in 0df157b070, so the branch head is 3b70166099's content, the tree the case runs.)
 
 ## The workload
 
@@ -39,18 +40,22 @@ reads `legacyCloud=false` at that core's creation.
 | Declaration | Where | What it says |
 | --- | --- | --- |
 | the failure | the tree's marker | `@CausynthExceptionTarget("solr-adhoc-19,solr-buggy-6197")` on `CoreContainer.create`'s throw, `CoreContainer.java:1330` |
-| the occurrence | `target_occurrence` in `case.sh` | `auto0/node1#epoch0/region/REGION.05d95c18-...#2`: the temporary collection's second replica on the target leader (node1's #2; the seed's node1 #1 is the target collection's core, node0 #2 the temp collection's first core) |
-| the config root | the program text | `CONFIG:legacyCloud==true`, a MARKER, minted at `Overseer.isLegacy` in `CoreContainer.create` (`#u51`) |
-| scope | `case.sh` | `CoreContainer`, `MigrateCmd` |
+| the occurrence | `target_occurrence` in `case.sh` | `auto0/node1#epoch0/region/REGION.05d95c18-...#2`: the temporary collection's second replica, on the target leader (node1's #2; node1's #1 is the target collection's own core) |
+| the config root | the program text | `CONFIG:legacyCloud==true`, a MARKER, the `Overseer.isLegacy` wrapper's return, one root for every read of it in the scope |
+| scope | `case.sh` | `CoreContainer`, `MigrateCmd`, and the other readers of `legacyCloud` on the workload's path: `CreateCollectionCmd` (also MIGRATE's temporary collection), `AddReplicaCmd`, `ReplicaMutator`, `ZkController` (exact); not `Overseer` |
 | world depth | `case.sh` | `CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0` |
 | mechanism | `experiments/accept/report.py` | `solr-buggy-6197`: `MARKER_FLIPPED`, root `CONFIG:legacyCloud==true` to `false` |
 
-Budget 21600 s.
+Budget 21600 s. Why this scope, and why `Overseer` stays out: as solr-buggy-6101's README (the first run, S6197a,
+UNSAT_CLOSED for the same reason: in the node-only world the target collection's own CREATE threw first, at node1's
+#1).
 
 ## Native check of the bug's own world (scratch, not committed)
 
-`TestCausynthS2Scratch#migrateWithoutLegacy` (MIGRATE with `legacyCloud` unset): fixed tree succeeds; `solr-bug-6197`
-fails at the temp-collection replica's CREATE with "non legacy mode coreNodeName missing".
+The workload with only its `legacyCloud=true` lines removed (`TestCausynthS2NoLegacyMigrate`, the cluster-wide
+world): the fixed tree passes (5.3 s); `solr-bug-6197` fails, `Error CREATEing SolrCore
+'split_shard1_temp_shard1_shard1_replica_n3': non legacy mode coreNodeName missing` -- the temporary collection's
+replica on the target leader, solr-adhoc-19's own throw at `CoreContainer.java:1330`.
 
 ## Result
 
