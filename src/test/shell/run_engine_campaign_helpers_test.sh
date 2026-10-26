@@ -2421,33 +2421,33 @@ campaign_host_max_used_pct=70
 campaign_host_poll_s=0
 memory_charges=()
 for memory_start in 1 2 3; do
-  campaign_host_try_start lift14 6000 1 \
+  campaign_host_try_start lift14 6000 100 \
     || fail "start ${memory_start} of 6000 MB was refused: \
 ${campaign_host_wait_reason}"
   memory_charges+=("${campaign_host_charge_id}")
 done
-run_capturing_status campaign_host_try_start lift14 6000 1
+run_capturing_status campaign_host_try_start lift14 6000 100
 [[ "${status}" -eq 1 ]] \
   || fail "three starts charged 18000 MB, and a fourth was admitted over \
 the 22221 MB ceiling while the host used 1744 MB"
 [[ "${campaign_host_wait_reason}" == *"18000 MB charged"*"1744 MB in use"* ]] \
   || fail "the wait does not say what is charged and used: \
 ${campaign_host_wait_reason}"
-( run_capturing_status campaign_host_try_start lift14 6000 1
+( run_capturing_status campaign_host_try_start lift14 6000 100
   exit "${status}" ) \
   && fail "another campaign's start ignored the charges on the host"
-[[ "$(campaign_host_room lift14)" == "4221 5" ]] \
+[[ "$(campaign_host_room lift14)" == "4221 500" ]] \
   || fail "the room is not what the charges leave: \
 $(campaign_host_room lift14)"
-run_capturing_status campaign_host_try_start lift14 2000 1 3000
+run_capturing_status campaign_host_try_start lift14 2000 100 3000
 [[ "${status}" -eq 1 && "${campaign_host_wait_reason}" \
     == *"2000 MB and 3000 MB room beside it"* ]] \
   || fail "a start of 2000 MB leaving 3000 MB was admitted beside 18000 MB \
 under a 22221 MB ceiling, or not said so: ${campaign_host_wait_reason}"
-campaign_host_try_start lift14 2000 1 2000 \
+campaign_host_try_start lift14 2000 100 2000 \
   || fail "a start of 2000 MB leaving 2000 MB was refused: \
 ${campaign_host_wait_reason}"
-[[ "$(campaign_host_room lift14)" == "2221 4" ]] \
+[[ "$(campaign_host_room lift14)" == "2221 400" ]] \
   || fail "the room left beside a start was charged: \
 $(campaign_host_room lift14)"
 campaign_host_release lift14 "${campaign_host_charge_id}"
@@ -2455,7 +2455,7 @@ for memory_charge in "${memory_charges[@]}"; do
   campaign_host_release lift14 "${memory_charge}"
 done
 memory_available=10000
-run_capturing_status campaign_host_try_start lift14 6000 1
+run_capturing_status campaign_host_try_start lift14 6000 100
 [[ "${status}" -eq 1 \
     && "${campaign_host_wait_reason}" == *"0 MB charged"*"21744 MB in use"* ]] \
   || fail "a host using 21744 MB admitted 6000 MB more: \
@@ -2464,16 +2464,16 @@ memory_available=30000
 memory_lease=("${campaign_host_lease_s}" "${campaign_host_renew_s}")
 campaign_host_lease_s=5
 campaign_host_renew_s=1
-( campaign_host_try_start lift14 6000 1 ) || fail "a subshell's start failed"
+( campaign_host_try_start lift14 6000 100 ) || fail "a subshell's start failed"
 memory_gone=$(live_charges "${campaign_host_gate_root}/lift14")
-campaign_host_try_start lift14 6000 1 || fail "a held start failed"
+campaign_host_try_start lift14 6000 100 || fail "a held start failed"
 memory_held=${campaign_host_charge_id}
 memory_files="${campaign_host_gate_root}/lift14/charges"
 touch -d '1 minute ago' "${memory_files}/${memory_gone}" \
   "${memory_files}/${memory_held}"
 sleep 2
 [[ "$(campaign_host_charged "${campaign_host_gate_root}/lift14" \
-    "$(date +%s)")" == "6000 1" \
+    "$(date +%s)")" == "6000 100" \
     && -e "${memory_files}/${memory_held}" ]] \
   || fail "a held charge lapsed, or one whose shell is gone still counts: \
 $(ls -l --time-style=+%s "${memory_files}")"
@@ -2493,14 +2493,14 @@ campaign_host_try_start localhost 6000 1 \
 mkdir "${campaign_host_gate_root}/lift15"
 mkdir "${campaign_host_gate_root}/lift15/lock"
 touch -d '10 minutes ago' "${campaign_host_gate_root}/lift15/lock"
-run_capturing_status campaign_host_try_start lift15 6000 1
+run_capturing_status campaign_host_try_start lift15 6000 100
 [[ "${status}" -eq 3 && ! -e "${campaign_host_gate_root}/lift15/lock" ]] \
   || fail "a lock a dead campaign left was not broken"
-campaign_host_try_start lift15 6000 1 \
+campaign_host_try_start lift15 6000 100 \
   || fail "the host stayed locked"
 mkdir "${campaign_host_gate_root}/lift15/lock"
 ( sleep 1; rmdir "${campaign_host_gate_root}/lift15/lock" ) &
-campaign_host_try_charge lift15 6000 1
+campaign_host_try_charge lift15 6000 100
 wait
 [[ "${status}" -eq 0 ]] || fail "a held lock was answered as ${status}"
 cores_dir="${campaign_host_gate_root}/lift16/charges"
@@ -2530,11 +2530,12 @@ was not admitted and charged (${status}): ${campaign_host_wait_reason}"
 was not refused by its cores (${status}): ${campaign_host_wait_reason}"
   fi
 done <<'EOF'
-512.2.n.1.1.1@0,0.0.n.2.1.1@0,1024.3.n.3.1.1.solver@0,700.foreign@0|100|3|2236 5|admit
-512.6.n.1.1.1@0|100|3|512 6|lift16 has 6 cores charged to what it runs; one needs 3 and at most 8 (100% of its cores) may be charged
-900.0.n.1.1.1@0|100|12|900 0|admit
-512.6.n.1.1.1@200,256.4.n.2.1.1@0|100|4|256 4|admit
-256.2.n.1.1.1@0|50|3|256 2|lift16 has 2 cores charged to what it runs; one needs 3 and at most 4 (50% of its cores) may be charged
+512.200.n.1.1.1@0,0.0.n.2.1.1@0,1024.300.n.3.1.1.solver@0,700.foreign@0|100|300|2236 500|admit
+512.600.n.1.1.1@0|100|300|512 600|lift16 has 6.00 cores charged to what it runs; one needs 3.00 and at most 8.00 (100% of its cores) may be charged
+512.550.n.1.1.1@0|100|250|512 550|admit
+900.0.n.1.1.1@0|100|1200|900 0|admit
+512.600.n.1.1.1@200,256.400.n.2.1.1@0|100|400|256 400|admit
+256.200.n.1.1.1@0|50|250|256 200|lift16 has 2.00 cores charged to what it runs; one needs 2.50 and at most 4.00 (50% of its cores) may be charged
 EOF
 rm -rf -- "${cores_dir}"
 while IFS='|' read -r order_need order_rows order_want; do
@@ -2587,23 +2588,40 @@ EOF
   for cores_step in start foreign start release start; do
     case "${cores_step}" in
       start)
-        campaign_stream_try_charge lift16 100 2
+        campaign_stream_try_charge lift16 100 200
         cores_said+="${status} "
         cores_n=${#stream_jobs[@]}
         (( status != 0 )) || stream_jobs[${cores_n}]="REPLAY r A lift16 -"
         (( status != 0 )) \
           || stream_job_charge[${cores_n}]=${campaign_host_charge_id} ;;
-      foreign) : >"${cores_dir}/0.2.other.1.1.1" ;;
+      foreign) : >"${cores_dir}/0.200.other.1.1.1" ;;
       release) campaign_stream_release 0 ;;
     esac
     read -r _ _ _ _ _ cores_busy <<<"${stream_host_view[lift16]}"
     cores_said+="${cores_busy} "
   done
-  [[ "${cores_said}" == "0 2 2 1 4 2 0 4 " \
-     && "${campaign_host_wait_reason}" == "lift16 has 4 cores charged"* ]] \
+  [[ "${cores_said}" == "0 200 200 1 400 200 0 400 " \
+     && "${campaign_host_wait_reason}" == "lift16 has 4.00 cores charged"* ]] \
     || fail "STREAM-CORES: the head's view took, refused and gave back cores \
 as ${cores_said}(${campaign_host_wait_reason})"
 ) || fail "STREAM-CORES failed"
+cores_measure=${test_tmp}/cores-measured
+mkdir -p "${cores_measure}"
+(
+  campaign_log() { :; }
+  printf '180\n' >"${cores_measure}/workload_cores_x100"
+  campaign_replay_cores_measured "${cores_measure}" 1
+  cores_seen=${campaign_replay_cores}
+  for cores_x100 in 90 80 100 60 70 95 85 5; do
+    printf '%s\n' "${cores_x100}" >"${cores_measure}/workload_cores_x100"
+    campaign_replay_cores_measured "${cores_measure}" 0
+    cores_seen+=" ${campaign_replay_cores}"
+  done
+  [[ "${cores_seen}" == "200 200 200 200 200 200 200 200 100" ]] \
+    || fail "REPLAY-CORES: the seed's 1.80 cores rounded up to 2.00, then once \
+eight replays returned their own p90 of 1.00 rounded up, never the seed's, \
+were charged ${cores_seen}"
+) || fail "REPLAY-CORES failed"
 unset -f hostname campaign_host_available_mb campaign_host_total_mb \
   campaign_host_cores
 reset_config
