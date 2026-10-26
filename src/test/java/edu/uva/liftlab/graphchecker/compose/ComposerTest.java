@@ -2772,7 +2772,9 @@ public class ComposerTest {
         Object[][] table = {
                 {"overtakes the reader's own write", true},
                 {"an alternative on the reader's thread", false},
-                {"a later alternative past the reader's own write", false},
+                {"a later alternative ahead of the reader's own write", true},
+                {"a later alternative on the reader's thread", false},
+                {"a later alternative past a constructor write", false},
                 {"a constructor write in between", false},
                 {"overtakes one, the other passes the read", true},
                 {"overtakes one, the other neither", false},
@@ -2792,7 +2794,8 @@ public class ComposerTest {
             OccurrenceAddress other = occurrence("case/dn0", "REGION.other",
                     CausalContext.of(Role.of("HEARTBEAT_TICK"), "", 1),
                     frame("Heartbeat#run#1", 0));
-            boolean onReaderThread = shape.startsWith("an alternative");
+            boolean onReaderThread = shape.startsWith("an alternative")
+                    || shape.endsWith("on the reader's thread");
             Session session = new Session(iteration, "s0", false);
             session.occurrence = reader;
             session.activation(reader, "thread#reader", false);
@@ -2808,7 +2811,9 @@ public class ComposerTest {
                     frame("Storage#apply#1", 0));
             session.activation(prior, "thread#reader", false);
             boolean later = shape.startsWith("a later");
-            long own = later ? 2L : shape.startsWith("overtakes one")
+            boolean built = shape.endsWith("a constructor write");
+            long own = built ? 4L : later ? 2L
+                    : shape.startsWith("overtakes one")
                     || shape.startsWith("a constructor") ? 3L : 2L;
             long alternative = later ? 3L : 1L;
             long observed = later ? 1L : own;
@@ -2816,6 +2821,11 @@ public class ComposerTest {
             if (later) {
                 session.write(Endpoint.of(other, "Heartbeat#set#2:WRITE",
                         at("w#2", 0), 0), field, 1L, "EXPR.v1.k");
+                if (built) {
+                    session.write(Endpoint.of(other,
+                            "Holder#<init>()V#6:WRITE", at("w#6", 0), 0),
+                            field, 2L, "EXPR.v1.k");
+                }
             } else if (shape.startsWith("a constructor")) {
                 session.write(Endpoint.of(other, "Holder#<init>()V#2:WRITE",
                         at("w#2", 0), 0), field, 2L, "EXPR.v1.k");

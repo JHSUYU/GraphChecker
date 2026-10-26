@@ -1187,6 +1187,34 @@ public final class ConfirmMain {
                     other.endpoint().occurrence());
         }
 
+        private boolean undertaken(WriteRow other, WriteRow held,
+                                   ReadRow read) {
+            return !held.initial()
+                    && held.version() > read.observedVersion()
+                    && other.version() > read.observedVersion()
+                    && other.version() < held.version()
+                    && !concurrent(read.endpoint().occurrence(),
+                    other.endpoint().occurrence());
+        }
+
+        private boolean unpassable(ReadRow read, WriteRow other) {
+            return !concurrent(read.endpoint().occurrence(),
+                    other.endpoint().occurrence());
+        }
+
+        private Hold heldAfter(Exit first, Endpoint event, long seq,
+                               long bound) {
+            Hold hold = held(first, event, seq);
+            if (hold.frames != null && hold.occurrence.id().equals(
+                    event.occurrence().id()) && !enteredBefore(
+                    placed.getOrDefault(event.occurrence().id(),
+                            Collections.<Placed>emptyList()), hold.frames,
+                    bound)) {
+                return hold;
+            }
+            return holdAfter(event, seq, bound);
+        }
+
         private boolean overtakes(WriteRow held, WriteRow other) {
             return concurrent(held.endpoint().occurrence(),
                     other.endpoint().occurrence());
@@ -1313,18 +1341,25 @@ public final class ConfirmMain {
             private final OccurrenceAddress occurrence;
             private final String activation;
             private final boolean checked;
+            private final List<Frame> frames;
 
             private Hold(OccurrenceAddress occurrence, List<Frame> frames,
                          boolean checked) {
                 this(occurrence, Confirmation.activation(occurrence,
-                        ExecutionIndex.of(frames)), checked);
+                        ExecutionIndex.of(frames)), checked, frames);
             }
 
             private Hold(OccurrenceAddress occurrence, String activation,
                          boolean checked) {
+                this(occurrence, activation, checked, null);
+            }
+
+            private Hold(OccurrenceAddress occurrence, String activation,
+                         boolean checked, List<Frame> frames) {
                 this.occurrence = occurrence;
                 this.activation = activation;
                 this.checked = checked;
+                this.frames = frames;
             }
         }
 
@@ -1746,13 +1781,16 @@ public final class ConfirmMain {
                     || chosenAt.contains(location);
             WriteRow passed = null;
             long ends = Long.MIN_VALUE;
+            boolean overtaking = false;
             for (WriteRow other : closure.byLocation.get(location)) {
-                if (other.endpoint().equals(held.endpoint())
-                        || other.initial()
-                        || !closure.overtaken(other, held, read)) {
+                if (held.initial() || other.endpoint().equals(held.endpoint())
+                        || other.initial()) {
                     continue;
                 }
-                if (!closure.overtakes(held, other)) {
+                boolean overtaken = closure.overtaken(other, held, read);
+                boolean undertaken = closure.undertaken(other, held, read);
+                if ((overtaken || undertaken)
+                        && !closure.overtakes(held, other)) {
                     throw new Refused("PAIRING_UNHELD: read "
                             + Confirmation.id(read.endpoint()) + " of "
                             + held.location() + " is paired with writer "
@@ -1762,6 +1800,13 @@ public final class ConfirmMain {
                             + " reader cannot pass it and the writer cannot"
                             + " overtake it");
                 }
+                if (!overtaken && (undertaken
+                        || RowOrder.compare(other, held) >= 0)
+                        || !closure.unpassable(read, other)
+                        || !RowOrder.before(other, read)) {
+                    continue;
+                }
+                overtaking |= overtaken;
                 long exited = closure.exited(closure.exit(other.endpoint(),
                         other.seq()));
                 if (passed == null || exited > ends) {
@@ -1776,19 +1821,23 @@ public final class ConfirmMain {
                     holding.order(closure.order(holding, written,
                             read.endpoint(), read.seq()), model);
                 } else {
-                    StateClosure.Hold after = closure.holdAfter(
-                            read.endpoint(), read.seq(), ends);
+                    StateClosure.Hold after = overtaking
+                            ? closure.holdAfter(read.endpoint(), read.seq(),
+                            ends)
+                            : closure.heldAfter(written, read.endpoint(),
+                            read.seq(), ends);
                     if (after == null) {
                         throw new Refused("PAIRING_UNHELD: read "
                                 + Confirmation.id(read.endpoint()) + " of "
                                 + held.location() + " is paired with writer "
                                 + Confirmation.writer(held) + ", which"
-                                + " overtakes write "
+                                + " follows write "
                                 + Confirmation.writer(passed) + " at version "
-                                + passed.version() + ", and no activation of"
-                                + " the reader begins after the activation"
-                                + " that write is in exits and before the"
-                                + " read, so no hold lets it run first");
+                                + passed.version() + ", a write the reader"
+                                + " cannot pass, and no activation of the"
+                                + " reader begins after the activation that"
+                                + " write is in exits and before the read, so"
+                                + " no hold lets the writer run first");
                     }
                     holding.order(closure.order(holding, written, after,
                             read.endpoint(), read.seq()), model);
@@ -1800,6 +1849,7 @@ public final class ConfirmMain {
                     continue;
                 }
                 if (!held.initial() && (RowOrder.compare(other, held) < 0
+                        && !closure.undertaken(other, held, read)
                         || closure.overtaken(other, held, read))) {
                     holding.order(closure.order(holding, closure.exit(
                             other.endpoint(), other.seq()), held.endpoint(),

@@ -407,8 +407,6 @@ public final class Arms {
         long high = Math.max(state.version(), observedVersion);
         Long between = unrowed(session, location, writes).higher(low);
         if (between != null && between < high) return false;
-        boolean overtaking = !state.initial()
-                && state.version() < observedVersion;
         for (WriteRow write : writes) {
             if (write.initial() || write.version() <= low
                     || write.version() > high) {
@@ -417,7 +415,7 @@ public final class Arms {
             if (constructs(write)) return false;
             OccurrenceAddress occurrence = write.endpoint().occurrence();
             if (concurrent(reader, occurrence, session)) continue;
-            if (overtaking && concurrent(state.endpoint().occurrence(),
+            if (!state.initial() && concurrent(state.endpoint().occurrence(),
                     occurrence, session)) {
                 continue;
             }

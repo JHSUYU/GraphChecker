@@ -856,8 +856,9 @@ are counted, never dropped silently: `concreteAnchors` states how many
   version, and every other the one eligibility rule `Arms#eligible` admits: a write of the same
   session the read could have run right after -- its occurrence HB-concurrent, `Arms.concurrent`: not
   the same thread key, neither an anchor-chain ancestor of the other, both chains reaching a Root,
-  neither Lost; every write between the two an HB-concurrent occurrence's, or, for a write earlier
-  than the observed version, one it can overtake (its occurrence HB-concurrent with that write's);
+  neither Lost; every write between the two an HB-concurrent occurrence's, or one the write can
+  overtake (its occurrence HB-concurrent with that write's), whether earlier or later than the
+  observed version;
   none of them under
   construction, a constructor or class initializer anywhere on its frame chain; no version between
   them a read observed and no row states -- or the location's INITIAL by the same test, whose
@@ -3901,7 +3902,15 @@ with it is a `RUN_DEFECT`.
   where the overtaken write ends, as early as the order allows, and every later event of the reader
   stays after it, as recorded (hdfs-buggy-14311: vol1's upgrade task writes `layoutVersion` and
   `cTime` while vol2's `readProperties` is held at `setNamespaceID`, after its `setLayoutVersion`,
-  so vol2's `setcTime` still follows the task's) -- and
+  so vol2's `setcTime` still follows the task's). For a writer LATER than the version the read
+  observed, a write between them that the reader cannot pass (`StateClosure#undertaken`) is one
+  the writer moves ahead of: it stays after the reader (read before it), not before the writer, and
+  the writer must be able to overtake it, else `PAIRING_UNHELD`. Every write ordered before the
+  writer that the reader cannot pass and that precedes the read bounds the reader's hold the same
+  way (for a later writer: the observed write itself, the reader's own write in a sub-frame,
+  where `holdBefore` would cycle); there `holdBefore`'s frame stands when it already begins after
+  the bound, else the first such activation (`StateClosure#heldAfter`). The earlier-writer case
+  keeps the first activation after the bound -- and
   for an INITIAL the model chose every writer of the location after the reader. Only a write row of
   the selected session names such a writer. A store that ran outside every activation in that
   session (`UNATTRIBUTED_STORE`) has no row, so no order holds it, and the run's read of its version
