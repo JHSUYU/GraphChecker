@@ -38,22 +38,38 @@ As zk-buggy-710: marker `@CausynthExceptionTarget("zk-adhoc-02,zk-buggy-2886")` 
 zk-adhoc-02's scope; `causynth_scope_growth_budget=0`; world depth 2, 20 claims, 120 s CONFIRM order
 timeout; `client_fault_transports=(ZK_QUORUM)`; report.py `STATE_PAIRING_FLIPPED`. Budget 21600 s.
 
-## Result: SAT_UNCONFIRMED (as zk-buggy-710)
+## Result: SAT (confirmed, reproduced 10/10 natively, control 0/10), the plain world
 
-Runs (snapshots `/bulk/gc-run/zb2886-<n>`, GC_OUT `/bulk/gc-out/zk-buggy/2886`):
+ZB6 (snapshot `/bulk/gc-run/zb2886-3` = system/zookeeper-buggy-detect bba07d7d1, tree set `/bulk/trees/zb2886d` =
+b8b7149f, GC_OUT `/bulk/gc-out/zk-buggy/2886`, 363 s): EXPLORE stopped WITNESSED after 5 rounds and 101 obligation
+verdicts; claim `SAT_CANDIDATE` `STATE_PAIRING_FLIPPED` at valuation 0, no root moved, `polarityDecides` true; CONFIRMED
+("every edge the model chose was taken, and the claim's anchor observed the fatal"); REPRODUCE 10 of 10 native runs
+(every order held), control 0 of 10; report.py PASS; `round-verify.sh`: z3 sat, end WITNESSED, 0 BOUNDED, 0 UNBOUND,
+0 HOLD, 4 leaves, confirmed; no BLOCKING gap, no ORDER_UNHELD.
+
+The chain, as zk-buggy-710's: the second setData multi's `checkSession` reads of `SessionImpl.owner` (lines 301 and
+414) are paired with the takeover's REVALIDATE `setOwner` (the leader's LearnerHandler region, version 666) instead of
+the createSession's (version 42, the request's own owner F), so `checkSession` throws `SessionMovedException` at line
+367 in that multi's occurrence. CONFIRM held the leader's Prep at its claim of the multi
+(`CLAIM auto0/peer5#epoch0|Anchor:d1b3ac4c...`) until the takeover's `setOwner` exited. Necessity: excluding the
+takeover's arm on every path of the exported formula makes it unsat.
+
+**The caveat** (as zk-buggy-710's): the witness is the plain world -- in the native reproductions the first setData
+multi completes with an ordinary reply and the second throws once. ZOOKEEPER-2886's fix (rethrow a multi's
+`SessionMoved` so 710's teardown runs) changes only what follows a throw, so the fixed tree reaches the same occurrence;
+"two throws from one stale owner" is a relation between two occurrences, which a single-occurrence target cannot
+express. Evidence: zk-buggy-710's fixed-tree controls ZC1 (old engine: the same composed world) and ZC2 (SAT, confirmed,
+10/10), and this case's own fixed-tree control (below).
 
 | run | GC / tree | result |
 | --- | --- | --- |
-| ZB1 | 5488f8701 / da71129a (v1) | FIXED_POINT 8 rounds / 315 verdicts; claim 0000 (the target's `Request.owner` read as null) refuted by ORDER (LearnerHandler sets it before submitting: zk-adhoc-02's false positive), 0001-0004 NOT_ADMITTED on an unminted Prep clock (`pRequestHelper#u91`); stopped (lead) |
-| ZB2 | 5488f8701 / b7515c14 (v2) | stopped after its first claim (the same null-owner world); cause as zk-buggy-710's ZB2 |
-| ZB3 | b4af526ca / b7515c14 | UNSAT_CLOSED (FIXED_POINT 6 / 74): the per-writer arm coupling (`isClosing` from the test's own closeSession) |
-| ZB4 | b4af526ca / 3dd47e98 (v3) | **SAT_UNCONFIRMED** (FIXED_POINT 7 / 64): the intended pairing, CONFIRM's hold on the client's API root |
-| ZB5 | b4af526ca / b8b7149f (v4) | **SAT_UNCONFIRMED** (FIXED_POINT 9 / 110, 508 s): the intended pairing, the hold on the target thread's start, not applied |
+| ZB1 | 5488f8701 / da71129a (v1) | FIXED_POINT 8 rounds / 315 verdicts; claim 0000 (`Request.owner` read as null) refuted by ORDER, 0001-0004 NOT_ADMITTED on an unminted Prep clock; stopped |
+| ZB2 | 5488f8701 / b7515c14 (v2) | stopped after its first claim (the same null-owner world) |
+| ZB3 | b4af526ca / b7515c14 | UNSAT_CLOSED (6 / 74): the per-writer arm coupling (`isClosing` from the test's own closeSession) |
+| ZB4 | b4af526ca / 3dd47e98 (v3) | SAT_UNCONFIRMED (7 / 64): the intended pairing, CONFIRM's hold on the client's API root |
+| ZB5 | b4af526ca / b8b7149f (v4) | SAT_UNCONFIRMED (9 / 110): the hold on the target thread's start, not applied |
+| **ZB6** | **bba07d7d1 / b8b7149f (v4)** | **SAT, confirmed, 10/10, control 0/10, PASS** |
+| ZC1 | bba07d7d1 / control 328765d1 | fixed tree (graphchecker/zk-bug-2886-control = 92c0f2b5 + this workload and marker, the fix intact; `/bulk/gc-out/zk-buggy/2886ctl`): the same SAT -- WITNESSED (5 / 111), confirmed, reproduced 10/10, report.py PASS: the caveat's direct evidence |
 
-ZB5's claim: `STATE_PAIRING_FLIPPED` at valuation 0, no root moved, `polarityDecides` true, z3 sat: the target's
-two `SessionImpl.owner` reads (natively version 42, the createSession's F) take the takeover's REVALIDATE
-`setOwner` (version 863) = G, so `checkSession` throws `SessionMovedException` at line 367 in the second setData
-multi. CONFIRM refuted it twice (the read observed version 42; no hold waited), for the reason zk-buggy-710's
-README gives: the hold for "the takeover's `setOwner` before the target" lands on a client-rooted activation the
-runtime never holds. The same caveat holds: a confirmed witness would be the plain world (the first multi passes,
-the second throws once), which the fixed tree reaches too; the fix changes only the teardown after a throw.
+The engine step bba07d7d1 (CONFIRM holds the reader at the nearest instrumented claim on its chain when its submitter
+is an uninstrumented root; reviewed and approved unchanged) and its residual notes are in zk-buggy-710's README.

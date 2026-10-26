@@ -79,46 +79,59 @@ fatal outcome):
 
 Budget 21600 s (`zookeeper-buggy-cases.tsv`).
 
-## Result: SAT_UNCONFIRMED (the bug's world is composed; CONFIRM cannot realize its order)
+## Result: SAT (confirmed, reproduced 10/10 natively, control 0/10), the plain world
 
-Runs (snapshots `/bulk/gc-run/zb710-<n>`, GC_OUT `/bulk/gc-out/zk-buggy/710`, image
-`/bulk/vm/zookeeper/j2sdk-image`):
+ZB6 (snapshot `/bulk/gc-run/zb710-4` = system/zookeeper-buggy-detect bba07d7d1, tree set `/bulk/trees/zb710d` =
+4260614d, GC_OUT `/bulk/gc-out/zk-buggy/710`, image `/bulk/vm/zookeeper/j2sdk-image`, 361 s): EXPLORE stopped
+WITNESSED after 4 rounds and 113 obligation verdicts (an admitted replay observed the fatal at the declared
+occurrence); claim `SAT_CANDIDATE` `STATE_PAIRING_FLIPPED` at valuation 0, no root moved, `polarityDecides` true;
+CONFIRMED ("every edge the model chose was taken, and the claim's anchor observed the fatal"); REPRODUCE 10 of 10
+native runs (every order held, none unheld), control 0 of 10; report.py PASS; `round-verify.sh`: z3 sat on
+`candidate.smt2`, end WITNESSED, 0 BOUNDED, 0 UNBOUND, 0 HOLD, 7 leaves, confirmed; no BLOCKING gap, no ORDER_UNHELD.
+
+The chain (`candidate.smt2`, CONFIRM's expected edges, the selected session's rows): w2's `checkSession` reads
+`SessionImpl.owner` twice (line 301, the null check; line 414, the compare). The model pairs both reads with
+`SessionTrackerImpl.setOwner` (line 270) in the leader's LearnerHandler region (`Leader.revalidateSession`, version
+629 in the selected session) -- the takeover's REVALIDATE, owner = G's LearnerHandler -- instead of the createSession's
+`setOwner` (version 42, owner = F's LearnerHandler, which is also `request.getOwner()` for the forwarded w2);
+`isClosing` stays the constructor's false. So `session.owner != owner` and `checkSession` throws
+`SessionMovedException` at line 367, the point's own throw, in w2's occurrence. CONFIRM realized the order by holding
+the leader's Prep at its claim of w2 (`CLAIM auto0/peer5#epoch0|Anchor:8be7d344...|<Leader.submitLearnerRequest>...`)
+until the takeover's `setOwner` exited; the REVALIDATE runs on the LearnerHandler thread for G, not on Prep, so the
+hold does not block it. Necessity: excluding the takeover's arm on every path of the exported formula makes it unsat.
+
+**What it shows, and the caveat.** The confirmed witness is the plain world: in the native reproductions w1 completes
+with an ordinary reply and w2 throws once (the run ends at the anchor). ZOOKEEPER-710's fix changes only what follows
+a throw (the connection's teardown), so the fixed tree reaches this same occurrence: the fixed-tree control ZC2
+(graphchecker/zk-bug-710-control c0488b9b = 92c0f2b5 + this workload and marker, the fix intact; snapshot
+`zb710-4`; `/bulk/gc-out/zk-buggy/710ctl`) ends the same way -- SAT_CANDIDATE, the same pairing, confirmed, reproduced
+10/10, report.py PASS. "Two throws from one stale owner", the permanence the bug adds, is a relation between two
+occurrences of the throw, which a single-occurrence target cannot express. So this case counts as SAT at the point's
+own throw on the buggy tree with the bug's workload (the acceptance the hdfs-adhoc-11 buggy cases use), and the check
+does not separate the buggy tree from the fixed one.
+
+**How it got here** (every run; snapshots `/bulk/gc-run/zb710-<n>`):
 
 | run | GC / tree | result |
 | --- | --- | --- |
 | ZS1 | f117d1a16 / dfc0cee9 (v1) | SEED only: the target resolves (peer5's forwarded Prep, third old request) |
-| ZB1 | aa0bfee3b / dfc0cee9 (v1) | stopped; same claims as 2886's v1 (Request.owner read as null, refuted by ORDER; unminted Prep clocks) |
-| ZB2 | aa0bfee3b / 43ff1cb2 (v2) | FIXED_POINT 14 rounds / 372 verdicts; claims spurious; stopped: COMPOSE never offered the takeover's REVALIDATE as a writer (no chain to a ROOT); explored replays did hit the fatal (observedFatal) but were NOT_ADMITTED |
-| ZB3 | b4af526ca / 43ff1cb2 | UNSAT_CLOSED (FIXED_POINT 7 / 74): the takeover arm offered, but coupled to `isClosing` (the test's own closeSession): unsat by construction |
-| ZB4 | b4af526ca / 5da76416 (v3) | **SAT_UNCONFIRMED** (FIXED_POINT 8 / 111): the intended pairing; CONFIRM's hold on the client's API root deferred nothing |
-| ZB5 | b4af526ca / 4260614d (v4) | **SAT_UNCONFIRMED** (FIXED_POINT 6 / 63, 512 s): the intended pairing; the hold now on w2's thread start, still not applied |
+| ZB1 | aa0bfee3b / dfc0cee9 (v1) | stopped: as 2886's v1, the takeover was causally after the synchronous writes, nothing realizable |
+| ZB2 | aa0bfee3b / 43ff1cb2 (v2) | FIXED_POINT 14 rounds / 372 verdicts, claims spurious, stopped: the takeover's REVALIDATE had no chain to a ROOT (scope growth), so COMPOSE never offered it; explored replays hit the fatal but were NOT_ADMITTED |
+| ZB3 | b4af526ca / 43ff1cb2 | UNSAT_CLOSED (7 / 74): the takeover arm offered, but coupled to `isClosing` by the test's own closeSession |
+| ZB4 | b4af526ca / 5da76416 (v3) | SAT_UNCONFIRMED (8 / 111): the intended pairing; CONFIRM's hold on the client's API root deferred nothing |
+| ZB5 | b4af526ca / 4260614d (v4) | SAT_UNCONFIRMED (6 / 63): the hold on w2's thread start, still not applied (a client root is never entered) |
+| ZC1 | b4af526ca / control c0488b9b | fixed tree, old engine: the same composed world, SAT_UNCONFIRMED the same way |
+| **ZB6** | **bba07d7d1 / 4260614d (v4)** | **SAT, confirmed, 10/10, control 0/10, PASS** |
+| ZC2 | bba07d7d1 / control c0488b9b | fixed tree: the same SAT, confirmed, 10/10, PASS (the caveat's evidence) |
 
-ZB5's claim: `STATE_PAIRING_FLIPPED` at valuation 0, no root moved, `polarityDecides` true, z3 sat
-(EXACT_REACHABLE), one repaired arm on the seed path. The chain, read off `candidate.smt2` and CONFIRM's
-expected edges: the target's two reads of `SessionImpl.owner` (`checkSession` #301, the null check, and
-#414, the compare; natively version 42, written by the createSession's `setOwner` = F) take the
-takeover's REVALIDATE `SessionTrackerImpl.setOwner` (version 807, the LearnerHandler region on peer5:
-`Leader.revalidateSession`) = G; `isClosing` stays the constructor's false; so `session.owner` (G) !=
-`request.getOwner()` (F) and `checkSession` throws `SessionMovedException` at line 367 in w2's occurrence.
-That is the world the bug lives in, at the point's own throw.
-
-CONFIRM refuted it twice ("the run took an edge the model did not choose: the read observed
-INSTANCE/7#40@42 written by the createSession"), each replay in about 37 s with no hold waiting: the order
-"the takeover's `setOwner` exits before w2" was never applied. `ConfirmMain.held` puts that hold at the
-reader's submitter (`Confirmation.submitter` walks the anchor producers: w2's Prep <- F's role occurrence
-<- the old client's root). In ZB4 that was `auto0/client1#epoch0/region/ROLE.CLIENT/ctx:Root:CLIENT/test#1`
-with an empty index (the handle's API root, running since the handle was made: nothing to defer); in ZB5
-it is w2's own thread start. The runtime holds an activation only where an instrumented entry calls
-`Confirmation.waited` -- a client root is no planned occurrence, so the hold is never applied and the
-replay keeps the recorded order. Realizing this order needs CONFIRM to hold w2 where it is instrumented
-(its Prep claim on the leader) when the submitter chain ends in a client root: engine support, not done
-here (owner's rule: send the design to the lead first).
-
-The witness, if confirmed, would be the plain world: w1 passes and w2 throws once (only w2's read is
-re-paired). The fixed tree reaches that same occurrence: ZOOKEEPER-710's fix changes only what follows
-a throw (the teardown), and "two throws from one stale owner" is a relation between two occurrences,
-which a single-occurrence target cannot express. The fixed-tree control (graphchecker/zk-bug-710-control
-c0488b9b = 92c0f2b5 + this workload, fix intact; run ZC1 under `/bulk/gc-out/zk-buggy/710ctl`) ends exactly as
-the buggy tree: COMPOSE sat, the same `STATE_PAIRING_FLIPPED` world (w2's `SessionImpl.owner` reads paired with the
-takeover's REVALIDATE `setOwner`, version 807), CONFIRM refuting it the same way -- SAT_UNCONFIRMED. The fixed tree
-composes the same world at line 367.
+The engine step (bba07d7d1; the independent review approved it unchanged, so ZB6 and ZC2 count):
+`ConfirmMain.StateClosure.held()` placed the hold for "writer before reader" at the reader's submitter; when that send's
+occurrence is uninstrumented (a client's API root, a test thread's start) the hold went on an activation the runtime
+never enters, and the order was silently not held. It now walks the reader's own anchor-producer chain and holds at
+the instrumented ITEM/HANDOFF_TASK claim nearest that send (here w2's Prep claim on the leader), under the existing
+guards; where none qualifies the old hold stays and is reported (ORDER_UNHELD: CONFIRM's summary, EXPLORE's DIAGNOSTIC
+gap rows). CONFIRM's checking is unchanged. The review recomputed every past CONFIRM plant under `/bulk/gc-out`: only
+F7-11741 and Z10 container-reuse have the affected shape, both with identical edges (container-reuse gains
+ORDER_UNHELD notes only). Residual costs it named: a writer that waits on unrelated work queued behind the held claim
+on a single-threaded worker (Prep) waits out the 300 s order timeout -- time, no outcome change; and a long hold
+stalls later Prep requests, which could expire sessions (the automatic cluster's sessions never expire, `NEVER_MS`).
