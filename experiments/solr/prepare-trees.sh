@@ -17,7 +17,7 @@ while IFS=$'\t' read -r id _; do
     _ "${graphchecker}/experiments/lib/case-env.sh" "${dir}" "${arg}")
   key="$(basename "${repo}") ${seed}"
   [[ " ${workloads[${key}]:-} " == *" ${spec} "* ]] || workloads[${key}]+=" ${spec}"
-done <"${here}/solr-cases.tsv"
+done < <(cat "${here}"/solr-*cases.tsv)
 
 names=("$@")
 ((${#names[@]} > 0)) || mapfile -t names < <(awk -F'\t' '$1 !~ /^#/ && NF {print $1}' "${here}/trees.tsv")

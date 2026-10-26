@@ -14,6 +14,10 @@
 # store reads at their calls and watch events into their callbacks), and gc/solr-zktrace2 12d23091d1
 # (the automatic cluster's test client keeps its live nodes in node order, CausynthRandom#order, and an
 # unbatched Overseer removes each state message's queue item in its own turn, never where
-# ZkStateWriter#maybeFlushAfter's nanoTime put it), pushed under this name.
+# ZkStateWriter#maybeFlushAfter's nanoTime put it), pushed under this name.  The solr-bug-<jira> trees are
+# graphchecker/solr-checks with one old bug put back by hand (solr-buggy-cases.tsv).
 # name	fork branch	what it is
 lucene-solr-checks	graphchecker/solr-checks	every Solr case: the adapter (CausynthSolrCluster; the message, store-write and store-read doors, a store read's lost reply; ZooKeeper store versions and their JSON content; the node's views of cluster state and aliases), the 12 study checks' markers and the eight bug checks' markers and workloads, with the automatic cluster's determinism patches, the per-collection refresh lock, and the workloads of solr-adhoc-13 and -38 cut after their declared occurrence, the CacheCleaner workaround, the Overseer's batching wait, makePath's creates through create, snapshot-no-active's search as loops, and the expirer a planted SessionExpired calls
+solr-bug-6101	graphchecker/solr-bug-6101	solr-buggy-6101 only: graphchecker/solr-checks with SOLR-6101 put back by hand and its workload
+solr-bug-6197	graphchecker/solr-bug-6197	solr-buggy-6197 only: graphchecker/solr-checks with SOLR-6197 put back by hand and its workload
+solr-bug-9440	graphchecker/solr-bug-9440	solr-buggy-9440 only: graphchecker/solr-checks with SOLR-9440 put back by hand and its workload
