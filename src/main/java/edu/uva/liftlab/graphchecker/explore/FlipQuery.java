@@ -387,7 +387,6 @@ final class FlipQuery {
                 new LinkedHashMap<String, ReadRow>();
         private final Map<String, String> observedDelivery =
                 new LinkedHashMap<String, String>();
-        private final Set<String> ineligible = new LinkedHashSet<String>();
         private int exactlyOne;
         private boolean recordedDeliversNothing;
         private boolean asHappened;
@@ -1147,7 +1146,7 @@ final class FlipQuery {
             }
             String location = SmtLowering.locationKey(row.location());
             String choiceKey = row.endpoint().occurrence().id() + "|"
-                    + location;
+                    + location + "|v" + row.observedVersion();
             WriterChoice choices = choicesByReader.get(choiceKey);
             if (choices == null) {
                 choices = new WriterChoice(choiceKey,
@@ -1175,22 +1174,9 @@ final class FlipQuery {
                 assertions.add(Arms.exactlyOne(new ArrayList<String>(
                         choices.writes.keySet())));
             }
-            boolean another = !choices.reads.isEmpty()
-                    && choices.reads.get(0).observedVersion()
-                    != row.observedVersion();
-            choices.asHappened |= another || corpus.writeOf(row.sessionId(),
-                    location, row.observedVersion()) == null;
+            choices.asHappened |= corpus.writeOf(row.sessionId(), location,
+                    row.observedVersion()) == null;
             choices.reads.add(row);
-            for (Choice choice : another ? choices.alternatives
-                    : Collections.<Choice>emptyList()) {
-                WriteRow write = choice.alternative.write();
-                if (write != null && !corpus.arms().eligible(choices.reader,
-                        row.sessionId(), location, corpus.writesOf(
-                                row.sessionId(), location),
-                        row.observedVersion(), write)) {
-                    choices.ineligible.add(choice.selector);
-                }
-            }
             String sort = sorts.get(variable);
             Arms.Arm seen = null;
             String own = null;
@@ -1264,8 +1250,7 @@ final class FlipQuery {
                 }
                 boolean alternative = false;
                 for (Choice writer : choice.alternatives) {
-                    alternative |= !choice.ineligible.contains(writer.selector)
-                            && corpus.arms().concurrent(choice.reader,
+                    alternative |= corpus.arms().concurrent(choice.reader,
                             writer.alternative.producer(),
                             choice.reads.get(0).sessionId());
                 }
@@ -1277,7 +1262,6 @@ final class FlipQuery {
                     runOnly.add(choice.key);
                     continue;
                 }
-                List<String> no = new ArrayList<String>(choice.ineligible);
                 String run = names.name("choice|" + choice.key + "|run",
                         "wchoice_" + choice.location.slot() + "_run");
                 declare(run, "Bool", "these reads take " + choice.location
@@ -1285,12 +1269,8 @@ final class FlipQuery {
                 for (String held : own) {
                     assertions.add("(=> " + run + " " + held + ")");
                 }
-                if (choice.recordedDeliversNothing
-                        && !no.contains(choice.recorded)) {
-                    no.add(choice.recorded);
-                }
-                for (String selector : no) {
-                    assertions.add("(not " + selector + ")");
+                if (choice.recordedDeliversNothing) {
+                    assertions.add("(not " + choice.recorded + ")");
                 }
                 choice.writes.put(run, null);
                 choice.recorded = run;

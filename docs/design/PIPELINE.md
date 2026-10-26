@@ -1446,13 +1446,16 @@ names gets one rule:
   Another run's arrival never binds it.
 - READ: the eligible writers (`Arms.stateArms`, the location's INITIAL among them, the writer at
   version 0) become one Bool selector each (`wchoice_*`, exactly one), one choice per (reader
-  occurrence, location) binding every read of it, so a writer's choice is the run only where every
-  read saw that writer's one write; where the reads saw several writes, or a version no row wrote,
-  one more selector, the run's own (`wchoice_*_run`, `FlipQuery#choices`), holds each read to the
-  value it read (its observed write's delivery, else its row's `concreteValue`; neither refuses
-  `UNSTATED_VALUE`) and is the recorded pairing, as COMPOSE's observed arm is (§8): a model taking it
-  plants nothing, `heldToRecording` asserts it, and the writer choices stay beside it, less those a
-  read of another version could not have seen (`Arms#eligible`); by COMPOSE's gate, only where a
+  occurrence, location, observed version) binding every read of it that saw that one write, so reads
+  of one occurrence that saw different writes -- a loop that reads a field again after another
+  writer moved it -- are proposed apart, each choice with the writers its own reads could have seen
+  (`Arms#eligible`); coherence between two such choices of one occurrence (a later read seeing an
+  older write) is not enforced, an over-approximation CONFIRM guards. Where the reads saw a version
+  no row wrote, one more selector, the run's own (`wchoice_*_run`, `FlipQuery#choices`), holds each
+  read to the value it read (its observed write's delivery, else its row's `concreteValue`; neither
+  refuses `UNSTATED_VALUE`) and is the recorded pairing, as COMPOSE's observed arm is (§8): a model
+  taking it plants nothing, `heldToRecording` asserts it, and the writer choices stay beside it; by
+  COMPOSE's gate, only where a
   writer left is HB-concurrent with the reader, else the block is no choice and each read is held
   to the value it read; a writer
   whose write lowers to another sort than the read delivers nothing it could be and is no choice
