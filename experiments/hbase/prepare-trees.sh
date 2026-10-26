@@ -26,7 +26,7 @@ for name in "${names[@]}"; do
       _ "${graphchecker}/experiments/lib/case-env.sh" "${dir}" "${arg}")
     [[ "$(basename "${repo}")" == "${name}" ]] || continue
     [[ " ${specs[*]-} " == *" ${spec} "* ]] || specs+=("${spec}")
-  done <"${here}/hbase-cases.tsv"
+  done < <(cat "${here}"/hbase-*cases.tsv)
   bash "${here}/build.sh" "${tree}" "${specs[@]+"${specs[@]}"}"
   echo "== ${name}: ready $(date +%T)"
 done

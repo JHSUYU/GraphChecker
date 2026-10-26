@@ -1,5 +1,9 @@
 # The HBase trees the cases run (each case.sh's repo=, under GC_TREES): the directory name and the branch of the
 # HBase fork (HBASE_FORK, prepare-trees.sh) it is checked out at.  It stands on Apache HBase master 1790942bb2
-# backported to Java 8 (the cluster's gc/hbase-unified), with the adapter, the cases' target markers and workloads.
+# backported to Java 8 (the cluster's gc/hbase-unified), with the adapter, the cases' target markers and workloads;
+# the hbase-bug-<jira> trees are graphchecker/hbase-checks with one old bug put back.
 # name	fork branch	what it is
 hbase-checks	graphchecker/hbase-checks	every HBase case: the automatic mini cluster on the local filesystem (CausynthHBaseCluster; no HDFS), HBase RPC's causal context (CausynthRpc), the cases' target markers and workloads
+hbase-bug-20642	graphchecker/hbase-bug-20642	hbase-buggy-20642 only: graphchecker/hbase-checks with HBASE-20642 put back by hand and its workload
+hbase-bug-28533	graphchecker/hbase-bug-28533	hbase-buggy-28533 only: graphchecker/hbase-checks with HBASE-28533 put back by hand and its workload
+hbase-bug-15039	graphchecker/hbase-bug-15039	hbase-buggy-15039 only: graphchecker/hbase-checks with HBASE-15039 put back by hand and its workload
