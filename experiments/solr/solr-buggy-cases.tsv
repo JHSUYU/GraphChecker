@@ -7,3 +7,4 @@
 # case	branch	budget_s	jira	point(s)
 solr-buggy-6101	system/solr-buggy-detect	21600	SOLR-6101	solr-adhoc-19
 solr-buggy-6197	system/solr-buggy-detect	21600	SOLR-6197	solr-adhoc-19
+solr-buggy-9440	system/solr-buggy-detect	21600	SOLR-9440	solr-adhoc-31
