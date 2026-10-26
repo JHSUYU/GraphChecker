@@ -159,7 +159,7 @@ public class EndOfRunTest {
             if ("native".equals(args[0])) {
                 CausynthTraceRecorder.startRecording();
                 CausynthTraceRecorder.plantFatal("<a.B: void run()>#u8",
-                        "", true);
+                        "", true, false);
                 System.out.println("planted");
                 parkForever();
             } else if ("recording".equals(args[0])) {

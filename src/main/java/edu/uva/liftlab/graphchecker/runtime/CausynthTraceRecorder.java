@@ -209,6 +209,7 @@ public final class CausynthTraceRecorder {
             String node = RuntimeTraceContext.activationSource(receiver).key();
             address = occurrenceAddress(node, region);
             folded = Identity.openedNone();
+            if (!folded) RecordingPlant.opened(address);
         }
         calls.push(new ActiveCall(id, parentCallId, parentSiteId, method,
                 receiver, context.spanId, parent == null,
@@ -1089,7 +1090,7 @@ public final class CausynthTraceRecorder {
     }
 
     static void plantFatal(String siteId, String occurrence,
-                           boolean atAnchor) {
+                           boolean atAnchor, boolean atAnchorByShape) {
         synchronized (LOCK) {
             writePlantRow(
                     "schemaVersion", 3,
@@ -1097,7 +1098,19 @@ public final class CausynthTraceRecorder {
                     "seq", EVENT_COUNTER.incrementAndGet(),
                     "siteId", siteId,
                     "occurrenceAddress", occurrence,
-                    "atAnchor", atAnchor);
+                    "atAnchor", atAnchor,
+                    "atAnchorByShape", atAnchorByShape);
+        }
+    }
+
+    static void plantAnswered(String anchor, String occurrence) {
+        synchronized (LOCK) {
+            writePlantRow(
+                    "schemaVersion", 3,
+                    "event", RecordingPlant.ANSWERED_BY_SHAPE_EVENT,
+                    "seq", EVENT_COUNTER.incrementAndGet(),
+                    "anchor", anchor,
+                    "occurrenceAddress", occurrence);
         }
     }
 

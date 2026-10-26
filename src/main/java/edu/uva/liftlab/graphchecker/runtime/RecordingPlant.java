@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.Clock;
+import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
@@ -21,6 +22,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
@@ -33,6 +35,7 @@ public final class RecordingPlant {
     static final String OBSERVED = "PLANT_OBSERVED";
     static final String UNWRITTEN = "PLANT_UNWRITTEN";
     static final String FATAL = "PLANT_FATAL";
+    static final String ANSWERED_BY_SHAPE_EVENT = "PLANT_ANSWERED";
     public static final String ROOT = "ROOT";
     public static final String ORDER = "ORDER";
     public static final String VIEW_HOLD = "VIEW_HOLD";
@@ -60,6 +63,9 @@ public final class RecordingPlant {
     public static final String REGIONS = "regions";
     public static final String ENDPOINT = "endpoint";
     public static final String PORT = "port";
+    public static final String ANCHOR_ADDRESS = "anchorAddress";
+    public static final String SHAPE = "shape";
+    public static final String RECORDED_BESIDE = "recordedBeside";
 
     private static final boolean PLANTING = !file().isEmpty();
     private static volatile Plant plant;
@@ -72,6 +78,9 @@ public final class RecordingPlant {
             new ConcurrentHashMap<String, Integer>();
     private static final ThreadLocal<Object[]> ANSWERED =
             new ThreadLocal<Object[]>();
+    private static volatile boolean anchorRan;
+    private static final AtomicReference<String> ANSWERED_BY_SHAPE =
+            new AtomicReference<String>();
 
     private RecordingPlant() {
     }
@@ -177,17 +186,35 @@ public final class RecordingPlant {
         final Set<String> focused;
         final Map<String, Boolean> fatalArms;
         final String anchor;
+        final OccurrenceAddress anchorAddress;
+        final List<String> anchorShape;
+        final Set<String> recordedBeside;
 
         Plant(Map<String, Map<String, Map<Integer, Root>>> markers,
               Map<String, Root> hooks, Map<String, Call> calls,
               Set<String> focused, Map<String, Boolean> fatalArms,
-              String anchor) {
+              String anchor, OccurrenceAddress anchorAddress,
+              List<String> anchorShape, Set<String> recordedBeside) {
             this.markers = markers;
             this.hooks = hooks;
             this.calls = calls;
             this.focused = focused;
             this.fatalArms = fatalArms;
             this.anchor = anchor;
+            this.anchorAddress = anchorAddress;
+            this.anchorShape = anchorShape;
+            this.recordedBeside = recordedBeside;
+        }
+
+        boolean answeredByShape(OccurrenceAddress observed,
+                                List<String> observedShape) {
+            return anchorAddress != null && !anchorShape.isEmpty()
+                    && !observed.id().equals(anchor)
+                    && !recordedBeside.contains(observed.id())
+                    && observed.regionId().equals(anchorAddress.regionId())
+                    && observed.node().equals(anchorAddress.node())
+                    && ContextShape.answers(observed, anchorAddress,
+                    observedShape, anchorShape);
         }
     }
 
@@ -406,6 +433,26 @@ public final class RecordingPlant {
         CausynthTraceRecorder.plantOrdered(event, row, after, waitingFor);
     }
 
+    static void opened(String address) {
+        if (!PLANTING || address.isEmpty() || !RecordingWindow.opened()) {
+            return;
+        }
+        Plant rows = plant();
+        OccurrenceAddress observed = OccurrenceAddress.parse(address);
+        if (observed.id().equals(rows.anchor)) {
+            anchorRan = true;
+            return;
+        }
+        if (anchorRan || ANSWERED_BY_SHAPE.get() != null
+                || !rows.answeredByShape(observed,
+                ScheduleLog.shape(observed.context()))) {
+            return;
+        }
+        if (ANSWERED_BY_SHAPE.compareAndSet(null, address)) {
+            CausynthTraceRecorder.plantAnswered(rows.anchor, address);
+        }
+    }
+
     static void decided(String siteId, Boolean outcome) {
         if (!PLANTING || outcome == null) return;
         Plant rows = plant();
@@ -415,10 +462,15 @@ public final class RecordingPlant {
         }
         List<String> enclosing = CausynthTraceRecorder.enclosingOccurrences();
         String anchor = anchorOf(enclosing, rows.anchor);
-        CausynthTraceRecorder.plantFatal(siteId, anchor != null ? anchor
-                : enclosing.isEmpty() ? "" : enclosing.get(0), anchor != null);
-        if (anchor != null && ENDED.compareAndSet(false, true)) {
-            end(siteId, anchor);
+        String byShape = anchor != null ? null
+                : enclosing.contains(ANSWERED_BY_SHAPE.get())
+                ? ANSWERED_BY_SHAPE.get() : null;
+        String at = anchor != null ? anchor : byShape;
+        CausynthTraceRecorder.plantFatal(siteId, at != null ? at
+                : enclosing.isEmpty() ? "" : enclosing.get(0), anchor != null,
+                byShape != null);
+        if (at != null && ENDED.compareAndSet(false, true)) {
+            end(siteId, at);
         }
     }
 
@@ -524,6 +576,9 @@ public final class RecordingPlant {
         Set<String> focused = new LinkedHashSet<String>();
         Map<String, Boolean> fatalArms = new LinkedHashMap<String, Boolean>();
         String anchor = null;
+        OccurrenceAddress anchorAddress = null;
+        List<String> anchorShape = Collections.<String>emptyList();
+        Set<String> recordedBeside = Collections.<String>emptySet();
         for (JsonObject row : ArtifactIO.readJsonl(file)) {
             String kind = optionalString(row, KIND);
             if (!row.has(ROW) || !row.get(ROW).isJsonPrimitive()
@@ -565,6 +620,19 @@ public final class RecordingPlant {
                 anchor = occurrence;
                 fatalArms.put(optionalString(row, SITE),
                         row.get(VALUE).getAsBoolean());
+                String address = optionalString(row, ANCHOR_ADDRESS);
+                if (!address.isEmpty()) {
+                    anchorAddress = OccurrenceAddress.parse(address);
+                    if (!anchorAddress.id().equals(occurrence)) {
+                        throw new IOException("a target row whose anchor "
+                                + "address is not its occurrence: " + row);
+                    }
+                    anchorShape = Collections.unmodifiableList(
+                            new ArrayList<String>(texts(row, SHAPE)));
+                    recordedBeside = Collections.unmodifiableSet(
+                            new LinkedHashSet<String>(texts(row,
+                                    RECORDED_BESIDE)));
+                }
             } else if (!VIEW_HOLD.equals(kind)
                     && (!ORDER.equals(kind) || !ordered(row))) {
                 throw new IOException("not a plant row: " + row);
@@ -578,7 +646,8 @@ public final class RecordingPlant {
                 Collections.unmodifiableMap(hooks),
                 Collections.unmodifiableMap(calls),
                 Collections.unmodifiableSet(focused),
-                Collections.unmodifiableMap(fatalArms), anchor);
+                Collections.unmodifiableMap(fatalArms), anchor, anchorAddress,
+                anchorShape, recordedBeside);
     }
 
     private static String root(JsonObject row, int number,
