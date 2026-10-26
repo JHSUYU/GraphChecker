@@ -79,6 +79,43 @@ the fix rescues a key that expired on the DataNode. The study's mechanism for th
 
 The run's budget is `hdfs-buggy-cases.tsv`'s 21600 s.
 
-## Result
+## Result: SAT, MARKER_FLIPPED by a lost key-update heartbeat request, confirmed and reproduced 10/10 (B5766a, PASS)
 
-Pending.
+Round B5766a (2026-10-26, snapshot `/bulk/gc-run/hb5766-1` = GraphChecker 0c3de7a23, tree set
+`/bulk/trees/b5766` = a8f16edc154, `/bulk/gc-out/hdfs-buggy/5766`): 610 s, `SAT_CANDIDATE`
+`FINAL_READY`, `report.py` **PASS**: `MARKER_FLIPPED` at valuation 1, `polarityDecides` true (the
+recorded valuation, ordinal 0, is unsat), no gap, no defect, nothing bounded, `cone.json` unbound
+empty; EXPLORE ended `WITNESSED` after 3 rounds (16 obligation verdicts, 14 planned tasks).
+`round-verify.sh`: `end=(WITNESSED) z3=sat moved=1 polarityDecides=True leaves=87 confirmed`.
+
+- **The moved root** is `REGION.763d087e-....in.8f25770d-...` = true: the `FAULT:HADOOP_IPC:REQUEST`
+  door (`ipc.Client$Connection.sendRpcRequest`) of dn0's key-update heartbeat
+  (`DatanodeProtocol.sendHeartbeat` under the workload's `heartbeat#1`): the request never reaches
+  nn0, and no other heartbeat of dn0 runs in the window. hdfs-buggy-12931's witness failed the other
+  direction (the answer); both are the study's lost key update.
+- **The chain in the formula** (`final/candidate.smt2`, read by hand): `path_fatal__1` (the selected
+  path, its own run's session b648a318, every arm attested there) is `allKeys.get(keyId) == null` on
+  dn0's map (BlockTokenSecretManager :582-584), the map built by `container_dag` puts of the two pinned
+  keys only (372440 = S+1, 372441 = S+2): with the marker true no heartbeat answer's keys are put;
+  `keyId` is the SASL handoff of the client's key id (`data-encryption-key-id`,
+  `message_family__1__698a5cf49693`), bound by `message_family__1__8049a0558300` to the client's received
+  key 372442 (S+3: nn0's `generateDataEncryptionKey` from its current key, over
+  `cache-encryption-key`).
+- **CONFIRM**: "the selected session b648a318658afe1a-1ea6b601 is itself the run: it took every edge the
+  model chose (2 arm(s), all its own deliveries), ran every moved root at the model's value, and
+  observed the fatal at the anchor".
+- **REPRODUCE**: 10/10 natively (the plant: the REQUEST fault on dn0's heartbeat; the fatal at the
+  anchor in every run), control 0/10.
+- **The moved root is necessary**: z3 on the exported file with the selected path asserted: sat; with
+  the marker pinned to its recorded false as well: unsat.
+
+**What the check detects here, and what it does not.** As for hdfs-buggy-12931: the point's throw is
+on dn0, upstream of the client code the bug lives in, so the same world fires it with or without the
+fix. Natively, with a scratch program (not committed) that drops dn0's key-update answer and then
+reads at a position: on this tree, one throw on dn0, "Will fetch a new encryption key and retry" and at
+once "Failed to read block ... Retry with the next available datanode" (dn0 taken for dead), then
+`BlockMissingException`; with the fixed client (graphchecker/hdfs-checks' `hadoop-hdfs-client` classes
+first on the class path), two throws on dn0 (the retry of the same DataNode presents a refetched key,
+nn0's current one, which dn0 still lacks), then the same dead node and `BlockMissingException`. The
+witness shows the bug's trigger reaching the point's own throw; it does not separate the put-back
+client from the fixed one, which differs only after the throw.
