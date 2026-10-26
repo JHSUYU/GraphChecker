@@ -17,7 +17,7 @@ mechanism of the point: flip `legacyCloud` to non-legacy and the split's CREATE 
 
 ## What was put back, on graphchecker/solr-bug-6101
 
-The fork branch is `graphchecker/solr-checks` (12d23091d1, the Solr 8.11 tree every check runs) plus two commits:
+The fork branch is `graphchecker/solr-checks` (12d23091d1, the Solr 8.11 tree every check runs) plus:
 
 - **The bug, by hand** (b0fffb0fcd): in `SplitShardCmd.split`'s `createSubSlicesAndLeadersInState` loop, the
   ADDREPLICA message and `ocmh.addReplica(...)` are replaced by a core-admin CREATE (name, collection, shard, the
@@ -28,35 +28,136 @@ The fork branch is `graphchecker/solr-checks` (12d23091d1, the Solr 8.11 tree ev
   too, and they are not needed to fire the point.
 - **The workload and the target** (a4e7d3e0ba): `TestCausynthSplitShardLegacy`, and `solr-buggy-6101` added to the
   marker on `CoreContainer.create`'s throw (beside `solr-adhoc-19`).
-- **The collection made the legacy way** (ea10a5b0a7, the branch head and the tree the case runs): its one core is
-  created by a core-admin CREATE naming its `coreNodeName`, so the first CREATE without one on node0 is the split's
-  (below, "the first run").
+- **The collection made the legacy way** (ea10a5b0a7): its one core created by a core-admin CREATE naming its
+  `coreNodeName`, for the node-only world (S6101e below; there a Collections-API collection's own CREATE was refused
+  first).
+- **The workaround: legacyCloud field-backed** (fb0c5878b2, below): every read of `legacyCloud` through one field.
+- **The collection through the Collections API again** (040ae6d4c6, the branch head and the tree S6101f runs):
+  ea10a5b0a7 undone, the workload is a4e7d3e0ba's again. In the cluster-wide world `CreateCollectionCmd` takes its
+  non-legacy branch and names the core's `coreNodeName`, so the first CREATE node0 refuses is the split's; a
+  self-registering core-admin create would itself be refused there by non-legacy registration (`checkStateInZk`).
+
+## The workaround: every read of `legacyCloud` through one field-backed value (fb0c5878b2)
+
+`legacyCloud` was a getter-returned configuration: `Overseer.isLegacy` (`"true".equals(getClusterProperty("legacyCloud",
+"false"))`) is a recognized wrapper, and a world moving it is planted only at a getter return that a *symbolic*
+occurrence reads (`RootMint#materializePrimitive`): the node's `CoreContainer.create` read moved, the Overseer's reads
+(`CreateCollectionCmd`, `AddReplicaCmd`, ...) kept the recording's legacy value (S6101d below). A configuration that a
+*field* holds is different (SYMBOL-SCOPE §4.3): when every writer of an instance field stores one key's value in one
+shape, the field's reads are declared (`EXACT_STATIC_CONFIG_READ_SITE_V1`), INSTRUMENT weaves
+`ConcolicRegionRuntime.readConfiguration` before each, and `RootMint#configuration` writes the world's value into the
+field at every read, in every thread, whatever occurrence runs it (a symbol is minted only where a symbolic occurrence
+reads it; elsewhere the read is the world's value, concretely).
+
+So the tree routes every read through one field (`// GraphChecker:` on each line):
+
+- `org.apache.solr.cloud.CausynthLegacyCloud` (new): `isLegacy(ZkStateReader)` and `isLegacy(ClusterStateProvider)`
+  each make a fresh holder, store `Overseer.isLegacy(...)` into its `boolean legacyCloud` and return that field.
+- every caller of `Overseer.isLegacy` in solr-core calls it instead: on the node `CoreContainer.create` (the target
+  guard at `:1328`; its `Overseer` import is swapped for this one, so no line of `CoreContainer` moves and the throw
+  stays `:1330`) and `ZkController` (`register`, `publish`, `isPublishAsDownOnStartup`, `checkStateInZk`); on the
+  Overseer `CreateCollectionCmd.call`, `AddReplicaCmd`, `OverseerCollectionMessageHandler.modifyCollection` and
+  `ReplicaMutator.setState`.
+
+Natively nothing changes: each call reads the cluster property exactly as before, at the same moment, and returns
+that answer; the holder is local to the call (nothing shared, no lock, no ordering added). It is an instance field
+because GraphChecker's configuration fields are instance fields only (`ConfigRoots#fieldValue` refuses a static one,
+`CausynthPipeline#instrumentConfigurationRead` needs an `InstanceFieldRef`); none is needed for the cluster: the plant
+is keyed by the field's signature, not by its owner, and a `MiniSolrCloudCluster` runs every node and the Overseer in
+one JVM, so one world value reaches every read on every node. `Overseer` stays out of the scope, so `isLegacy` stays
+the recognized wrapper whose return the field's two writers store (the getter call a writer stores is the field's own
+read, never a concrete one), and the slice stops there (with `Overseer` in the scope it entered `isLegacy` and
+`ZkStateReader.getClusterProperty`, an application class in every Solr case, and reached the parsed
+`/clusterprops.json` map: S6101c).
+
+The seed's scope map: `CONFIG_KEY CONFIG:legacyCloud==true`, `mintedAt <CausynthLegacyCloud: boolean legacyCloud>`,
+`concreteReads []`; `root_demand.jsonl` chose the field (`CONFIG_FIELD`, distance 3); `CoreContainer.create`'s region
+declares the field's read in `CausynthLegacyCloud.isLegacy` (and the two `isLegacy` methods are regions of their own,
+the field's writers); the plan's three `CoreContainer.create` occurrences on node0 each carry five `legacyCloud`
+read phases.
 
 ## The workload
 
 `org.apache.solr.cloud.TestCausynthSplitShardLegacy#splitUnderLegacyCloud` (one node, SplitShardTest#doTest's shape):
-it sets the cluster property `legacyCloud=true` and waits until every node's `ZkStateReader` holds it; makes a 1x1
-collection the legacy way (one core-admin CREATE of `causynthSplitLegacy_shard1_replica_n1` naming `core_node1`, which
-the node registers into the cluster state); indexes four documents, splits `shard1`, waits for
-`activeClusterShape(2, 3)`, asserts the four documents are in the sub-shards, and unsets `legacyCloud`. In legacy mode
-the split's core-admin CREATE without a `coreNodeName` is valid, so the split succeeds natively (7.6 s). Solr 8.11's
-default is non-legacy (`Overseer.isLegacy` = `"true".equals(getClusterProperty("legacyCloud", "false"))`), so the
-workload runs legacy for the put-back to pass natively. No workaround touches the bug or the fatal.
+it sets the cluster property `legacyCloud=true` and waits until every node's `ZkStateReader` holds it; creates a 1x1
+collection through the Collections API, indexes four documents, splits `shard1`, waits for `activeClusterShape(2, 3)`,
+asserts the four documents are in the sub-shards, and unsets `legacyCloud`. In legacy mode the split's core-admin
+CREATE without a `coreNodeName` is valid, so the split succeeds natively (7.5 s on the tree set; 20/20 passes, below).
+Solr 8.11's default is non-legacy (`Overseer.isLegacy` = `"true".equals(getClusterProperty("legacyCloud", "false"))`),
+so the workload runs legacy for the put-back to pass natively. No workaround touches the bug or the fatal.
 
 ## What this case declares
 
 | Declaration | Where | What it says |
 | --- | --- | --- |
 | the failure | the tree's marker | `@CausynthExceptionTarget("solr-adhoc-19,solr-buggy-6101")` on `CoreContainer.create`'s throw, `CoreContainer.java:1330` |
-| the occurrence | `target_occurrence` in `case.sh` | `auto0/node0#epoch0/region/REGION.05d95c18-...#2`: the first sub-shard leader's `CoreContainer.create` (the seed's #1 is the collection's own core-admin create; #2 and #3 the split's two sub-shard leaders, under OVERSEER_TASK#1) |
-| the config root | the program text (`causynth/ConfigRoots`) | `CONFIG:legacyCloud==true`, a MARKER, minted at the `Overseer.isLegacy` wrapper's return in `CoreContainer.create` (`#u51`; `Overseer` is outside the scope, so its return is the frontier) |
-| scope | `case.sh` | `CoreContainer`, `SplitShardCmd` |
+| the occurrence | `target_occurrence` in `case.sh` | `auto0/node0#epoch0/region/REGION.05d95c18-...#2`: the first sub-shard leader's `CoreContainer.create` (#1, anchor `45db8fb77fc51b17`, is the collection's own core; #2 and #3 the split's two sub-shard leaders) |
+| the config root | the program text (`causynth/ConfigRoots`) | `CONFIG:legacyCloud==true`, a MARKER, a configuration *field*: minted at the read of `CausynthLegacyCloud.legacyCloud`, whose writers store the `Overseer.isLegacy` wrapper's return; the world's value written at every read of the field |
+| scope | `case.sh` | `CoreContainer`, `SplitShardCmd`, `CausynthLegacyCloud` (exact) |
 | world depth | `case.sh` | `CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0` (as solr-adhoc-19) |
-| mechanism | `experiments/accept/report.py` | `solr-buggy-6101`: `MARKER_FLIPPED`, root `CONFIG:legacyCloud==true` to `false` |
+| mechanism | `experiments/accept/report.py` | `solr-buggy-6101`: `MARKER_FLIPPED`, root `CONFIG:legacyCloud==true` to `false` (unchanged: the field's root has the wrapper's key and view) |
 
+The Overseer-side callers (`CreateCollectionCmd`, `AddReplicaCmd`, ...) need not be in the scope for the world to
+reach them: the plant is woven into `CausynthLegacyCloud`'s body, which they call. Left out, the formula is the
+node-only runs' size (S6101d's larger scope ended in z3 timeouts); their reads are planted, concretely, never minted.
 The run's budget is `solr-buggy-cases.tsv`'s 21600 s.
 
-## Result: SAT in the node-only world, confirmed in the VM (S6101e) -- with a caveat
+## Result: SAT in the bug's own cluster-wide world, confirmed in the VM (S6101f)
+
+**Where it stands against the acceptance**: CONFIRM yes, `report.py` PASS, the witness discriminates (cluster-wide);
+GraphChecker's native REPRODUCE does not run (`NATIVE_PLANT_UNSUPPORTED`: a configuration minted at a field's read has no
+native planter -- an engine capability limit, CHECKING trap 21); the native evidence is the scratch reproduction of the
+same world below, 10/10 on the buggy tree, 0/10 on the fixed one, control 0/20. `configurationOnly` is a valid world:
+`legacyCloud=false` is a value the cluster accepts (Solr 8.11's default), the bug report's own setting.
+
+Round S6101f (2026-10-26, snapshot `/bulk/gc-run/solr-b6101-6` = GraphChecker 59ae37bfb, tree set
+`/bulk/trees/sb6101-3` = 040ae6d4c6, `/bulk/gc-out/solr-buggy/6101`): 901 s, `SAT_CANDIDATE` `FINAL_READY`,
+`MARKER_FLIPPED` at valuation 12 moving `CONFIG:legacyCloud==true` to `false`, `polarityDecides` true, no gap, no
+defect, `cone.json` 0 unbound, BOUNDED by world depth 0 (57 task rounds cut, the declared bound), `configurationOnly`;
+`report.py` **PASS**. FORCE: `FORCED_TARGET` at `create#u55#1`, and its forced flip `6d4b102b3889362b` -- the flip
+S6101a and S6101d had NOT_ADMITTED ("the declared occurrence never reached") -- now **ADMITTED**.
+
+- **CONFIRM**: the selected session `6d4b102b3889362b-17473dc2` is itself the run (every moved root at the model's
+  value, the fatal observed at the declared anchor `944ad028333f2969`, node0 #2). The world is cluster-wide: the root
+  is minted `false` at node0's three creates, and the Overseer's reads -- outside every planned occurrence ("fired under
+  none": the field holds the world's value, concretely) -- read it too: `CreateCollectionCmd` took its non-legacy branch
+  and the collection's CREATE carries `coreNodeName=core_node2` (the recording's carried none), so node0 accepts the
+  collection's core (#1); then the split's bare core-admin CREATEs of `causynthSplitLegacy_shard1_0_replica_n3` and
+  `_1_replica_n4` are refused, "non legacy mode coreNodeName missing" -- solr-adhoc-19's own throw at
+  `CoreContainer.java:1330`.
+- **The chain** (`final/candidate.smt2`, one path): `path_fatal__0` is the door markers on the way unfired, `CFG =
+  false` and the guard's `!isLegacy` arm, where `CFG` (`M_Z_field_SRC.7ba8e801..._CausynthLegacyCloud`) is the
+  configuration field read in `CausynthLegacyCloud.isLegacy` under `CoreContainer.create#u51`; `coreNodeName == null`
+  (`#u55`) is concrete on the path (the CREATE comes from the put-back split). Pinned at its recorded `true`: unsat
+  (`polarityDecides`).
+- **It discriminates.** In this world the fixed split (ADDREPLICA, its Overseer read non-legacy too) names the
+  sub-shard replicas' `coreNodeName` and passes; only the put-back bare CREATE throws (native, below). The node-only
+  caveat of S6101e is gone.
+- **REPRODUCE**: no native run -- `NATIVE_PLANT_UNSUPPORTED` ("minted at ... at [], called at []"): the native planter
+  (`ConfirmMain#assignedRoot`, `RecordingPlant`) plants a configuration only at a getter call's return, and a root
+  minted at a field's read has none (CHECKING trap 21: "a root minted other than at a call's return"); the recording
+  build carries no `readConfiguration` hook. Planting a field configuration natively needs an engine change (not
+  made; the design is with the lead). Native evidence outside the engine, below.
+
+### Native checks (scratch, `/bulk/trees/s6scratch`, runner `/bulk/analysis/buggy-detect-2026-10-26/solr-logs/s6/`)
+
+Scratch worktrees of the committed trees (`bug6101` at 040ae6d4c6, `bug6197` at f5d86cbd8a, `fixed` at
+`graphchecker/solr-checks` 12d23091d1 with the same `CausynthLegacyCloud` change applied uncommitted and both workloads
+copied in); `run.sh`/`chain.sh` run each test by `ant test` with build.sh's flags; results in `s6/<tree>/results.txt`.
+
+- **No behaviour change**: the workload on the buggy tree, legacyCloud=true, **20/20 PASS**, no refusal at `:1330`
+  (the tree set's own build: PASSED 7.5 s).
+- **The bug's world, legacyCloud=false as a cluster property** (`TestCausynthS6FalseSplit`: the workload with `"true"`
+  set to `"false"`): `solr-bug-6101` **10/10 FAIL**, the split's `causynthSplitLegacy_shard1_0_replica_n3` /
+  `_1_replica_n4` refused, "non legacy mode coreNodeName missing" (`CoreContainer.java:1330` in the cause); the fixed
+  tree **10/10 PASS**.
+- **GraphChecker's world, natively** (a scratch patch makes `CausynthLegacyCloud`'s field take
+  `-Ds6.legacyCloud=false` at every read -- what `RootMint#configuration` does in the VM -- with the workload
+  unchanged, legacyCloud=true set): `solr-bug-6101` **10/10 FAIL** at `:1330` (the same two cores); the fixed tree
+  **10/10 PASS** (its collection's CREATE carries `core_node2`, the split's ADDREPLICAs `core_node5`/`core_node6`);
+  control (no plant) the 20 runs above, **0/20**.
+
+## Earlier: SAT in the node-only world, confirmed in the VM (S6101e) -- with a caveat
 
 Round S6101e (2026-10-26, snapshot `/bulk/gc-run/solr-b6101-3` = GraphChecker abc3e8ec9, tree set
 `/bulk/trees/sb6101-2` = ea10a5b0a7, `/bulk/gc-out/solr-buggy/6101`): 519 s, `SAT_CANDIDATE` `FINAL_READY`,
@@ -92,7 +193,7 @@ defect, nothing bounded, `cone.json` unbound empty; `report.py` **PASS**.
   cluster): the fixed tree passes (6.4 s); `solr-bug-6101` fails, `Error CREATEing SolrCore
   'causynthSplitLegacy_shard1_0_replica_n3': non legacy mode coreNodeName missing` (and `_shard1_1_replica_n4`).
 
-### The cluster-wide world: planned, not realized by today's runtime (S6101d)
+### The cluster-wide world with a getter-returned root: planned, not realized (S6101d; realized by the field, S6101f)
 
 To get the discriminating world inside GraphChecker, the readers of `legacyCloud` on both sides were put in the scope
 (GraphChecker ddcf7acaa: `CreateCollectionCmd`, `AddReplicaCmd`, `ReplicaMutator`, `ZkController`, with the
