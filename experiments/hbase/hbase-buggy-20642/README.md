@@ -61,14 +61,17 @@ preflight runs.
 
 The run's budget is `../hbase-buggy-cases.tsv`'s.
 
-## Result: SAT, PASS: confirmed in the VM, reproduced natively 10/10 at the anchor (control 0/10)
+## Result: SAT confirmed in the VM; native REPRODUCE 10/10 by shape at the anchor, 0/10 exact (control 0/10)
 
 **Verdict.** SAT: the reply to the first DisableTable is lost, the client retries with a new nonce, and the retry's
-DisableTableProcedure throws at the point's own throw (:163). CONFIRM realized it in the VM. Native REPRODUCE counts
-10 of 10 planted runs at the anchor and 0 of 10 controls, and report.py gives PASS (HB20642e, below). The retry's
-handler answers the declared occurrence by its shape (IDENTITY §9) in the VM and natively alike. It does so through
-the one implementation of §9's order rule (`runtime/AnswerOrder`, GC 93a168e87) that `ConcolicTaskPlan#select`
-and `RecordingPlant#opened` both call.
+DisableTableProcedure throws at the point's own throw (:163). CONFIRM realized it in the VM. Natively, the planted
+lost reply makes the retry's handler throw at :163 in 10 of 10 runs, with 0 of 10 controls. That handler answers
+the declared occurrence by its shape (IDENTITY §9), natively as in the VM. It does so through the one
+implementation of §9's order rule (`runtime/AnswerOrder`, GC 93a168e87, reviewed, follow-up 298508ffa) that
+`ConcolicTaskPlan#select` and `RecordingPlant#opened` both call. REPRODUCE counts it as reproducedByShape 10/10 and
+reproduced (exact) 0/10 (HB20642f). The exact count stays the campaign's default, so the claim is kept as the
+fallback; whether the by-shape count is accepted is the owner's decision. HB20642e, counted before the split, gave
+report.py PASS with "reproduced 10/10".
 
 **No workload gives the retry the declared address.** The retry's preflight differs from the declared one only in
 its anchor, the client's DisableTable SEND endpoint. That endpoint's occurrence index is the request's start chain.
@@ -121,6 +124,21 @@ anchor, not that it threw at the recorded address. REPRODUCE therefore keeps the
 - HB20642e's PLANT_FATAL rows predate the `byShape` field, so its counts cannot be recomputed with the new jq;
   HB20642f gives them under the split rule.
 
+**HB20642f** (snapshot `/bulk/gc-run/hbase-b20642-6` = 298508ffa; stopped after claim 1, as HB20642c was, because
+an exact-only REPRODUCE of 0/10 sends the campaign on to compose claim 2;
+`/bulk/gc-out/hbase-buggy/20642/accept-HB20642fSTOP-claim1-hbase-buggy-20642`, claim 1 in `final/unreproduced/0000`):
+- **Claim 1** (valuation 1): MARKER_FLIPPED, polarityDecides true, moved root `REGION.678dfe9c...in.f9d4e5a9` = true.
+  This is the reply reader of the first DisableTable, the same root as HB20642c's claim 1.
+- **CONFIRM:** realized, session 1ec4e01bc9896ff9-cd3e8abb.
+- **REPRODUCE:**
+  - planted 10, fatal 10;
+  - exact: atAnchor 0, reproduced 0;
+  - by shape: answeredByShape 10, reproducedByShape 10;
+  - control: fatal 0, atAnchor 0, answeredByShape 0, reproducedByShape 0 (of 10).
+  Every planted run's `PLANT_FATAL` states `atAnchor` true, `byShape` true, and plant.log names all 10
+  `ADDRESS_UNSTABLE`. The campaign line reads "reproduced in 0 of 10 ... by its shape: reproduced in 10 of 10 native
+  run(s) at the occurrence that answered the anchor by its shape (IDENTITY 9; 10 fatal there), control 0 of 10".
+
 **The engine support for the native answer (93a168e87).** `runtime/AnswerOrder` holds the select loop (own address
 first; otherwise the earliest open task by recorded root call whose shape the context has) and `answeredHere` (an
 address the recording opened, a context a task of the group plans the region in, a folded entry). CONFIRM's
@@ -130,8 +148,8 @@ tasks, ORDER edges, decisions and plant rows, apart from the TARGET rows' new pl
 anchor's root hook group onto the plant's TARGET rows. `RecordingPlant#opened` answers each entry of that region and
 root method as a replay would, and the occurrence answering the anchor takes the planned address (`Identity#answer`).
 A loop-body anchor, an anchor with no shape, and a group whose roots are selected by argument types stay exact-only,
-and plant.log says which. Independent review: pending at the time of writing (the run counts only if it passes
-unchanged).
+and plant.log says which. An independent review approved 93a168e87 with changes, which are
+made in 298508ffa (the exact and by-shape counts above).
 
 **HB20642a**, the engine as published (stopped, `accept-HB20642aSTOP-baseline-hbase-buggy-20642`): the plan held the
 test turn's 19 REQUEST doors and no reply reader, and round 0 asked 38 REQUEST flips and 0 RESPONSE flips. A REQUEST
