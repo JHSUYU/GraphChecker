@@ -8,7 +8,8 @@ hadoop-hdfs-21	graphchecker/hdfs-checks-adhoc21	hdfs-adhoc-21 only: r7 plus the 
 hadoop-hdfs-11741-r6	graphchecker/hdfs-11741	hdfs-11741 only: trunk with HDFS-11741's fix reverted (an old bug) and its own hook generation
 hadoop-hdfs-bug-11741	graphchecker/hdfs-bug-11741	hdfs-buggy-11741 only: graphchecker/hdfs-checks with HDFS-11741 put back by hand and its workload
 hadoop-hdfs-bug-17383	graphchecker/hdfs-bug-17383	hdfs-buggy-17383 only: graphchecker/hdfs-checks with HDFS-17383 put back by hand and its workload
-hadoop-hdfs-bug-16689	graphchecker/hdfs-bug-16689	hdfs-buggy-16689 only: graphchecker/hdfs-checks with HDFS-16689 put back by hand and its workload
-hadoop-hdfs-bug-15590	graphchecker/hdfs-bug-15590	hdfs-buggy-15590 only: graphchecker/hdfs-checks with HDFS-15590 put back by hand and its workload
-hadoop-hdfs-bug-11890	graphchecker/hdfs-bug-11890	hdfs-buggy-11890 only: graphchecker/hdfs-checks with HDFS-11890 put back by hand and its workload
-hadoop-hdfs-bug-13145	graphchecker/hdfs-bug-13145	hdfs-buggy-13145 only: graphchecker/hdfs-checks with HDFS-13145 put back by hand and its workload
+hadoop-hdfs-bug-12931	graphchecker/hdfs-bug-12931	hdfs-buggy-12931 only: graphchecker/hdfs-checks with HDFS-12931 put back by hand and its workload
+hadoop-hdfs-bug-5766	graphchecker/hdfs-bug-5766	hdfs-buggy-5766 only: graphchecker/hdfs-checks with HDFS-5766 put back by hand and its workload
+hadoop-hdfs-bug-10609	graphchecker/hdfs-bug-10609	hdfs-buggy-10609 only: graphchecker/hdfs-checks with HDFS-10609 put back by hand and its workload
+hadoop-hdfs-bug-14311	graphchecker/hdfs-bug-14311	hdfs-buggy-14311 only: graphchecker/hdfs-checks with HDFS-14311 put back by hand and its workload
+hadoop-hdfs-bug-14075	graphchecker/hdfs-bug-14075	hdfs-buggy-14075 only: graphchecker/hdfs-checks with HDFS-14075 put back by hand and its workload
