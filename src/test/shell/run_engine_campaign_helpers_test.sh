@@ -2622,40 +2622,6 @@ mkdir -p "${cores_measure}"
 eight replays returned their own p90 of 1.00 rounded up, never the seed's, \
 were charged ${cores_seen}"
 ) || fail "REPLAY-CORES failed"
-answer_dir=${test_tmp}/reproduce-answer
-mkdir -p "${answer_dir}"
-printf '%s\n' '{"kind":"ORDER","before":"a|","after":"b|","row":0}' \
-  '{"kind":"TARGET","occurrence":"anc","siteId":"s#u1","value":false,"row":1}' \
-  >"${answer_dir}/plant.jsonl"
-while IFS='|' read -r answer_rows answer_control answer_want; do
-  printf '%b\n' "${answer_rows}" >"${answer_dir}/trace.jsonl"
-  answer_got=$(campaign_reproduce_answer "${answer_dir}/trace.jsonl" \
-    "${answer_dir}/plant.jsonl" 0 "${answer_control}" \
-    | jq -c '[.atAnchor, .atAnchorByShape, .answeredBy, .reproduced]')
-  [[ "${answer_got}" == "${answer_want}" ]] \
-    || fail "REPRODUCE-ANSWER: rows ${answer_rows} (control ${answer_control}) \
-answered ${answer_got}, not ${answer_want}"
-done <<'EOF'
-{"event":"PLANT_FATAL","atAnchor":true,"atAnchorByShape":false}|false|[true,false,"",true]
-{"event":"PLANT_ANSWERED","occurrenceAddress":"retry"}\n{"event":"PLANT_FATAL","atAnchor":false,"atAnchorByShape":true}|false|[false,true,"retry",true]
-{"event":"PLANT_ANSWERED","occurrenceAddress":"retry"}\n{"event":"PLANT_FATAL","atAnchor":false,"atAnchorByShape":true}|true|[false,true,"retry",false]
-{"event":"PLANT_FATAL","atAnchor":false,"atAnchorByShape":false}|false|[false,false,"",false]
-EOF
-mkdir -p "${answer_dir}/run-1" "${answer_dir}/run-2" "${answer_dir}/control/run-1"
-printf '%s\n' '{"atAnchorByShape":true,"answeredBy":"retry"}' \
-  >"${answer_dir}/run-1/answer.json"
-printf '%s\n' '{"atAnchorByShape":false,"answeredBy":""}' \
-  >"${answer_dir}/run-2/answer.json"
-printf '%s\n' '{"atAnchorByShape":true,"answeredBy":"again"}' \
-  >"${answer_dir}/control/run-1/answer.json"
-: >"${answer_dir}/plant.log"
-campaign_reproduce_unstable "${answer_dir}" \
-  || fail "REPRODUCE-UNSTABLE: naming the runs answered by shape failed"
-[[ "$(cut -d: -f1 "${answer_dir}/plant.log" | tr '\n' ' ')" \
-    == "ADDRESS_UNSTABLE control/run-1 ADDRESS_UNSTABLE run-1 " \
-    && "$(grep -c 'the fatal at retry, which answers the anchor by its shape' \
-      "${answer_dir}/plant.log")" == 1 ]] \
-  || fail "REPRODUCE-UNSTABLE: plant.log named $(cat "${answer_dir}/plant.log")"
 unset -f hostname campaign_host_available_mb campaign_host_total_mb \
   campaign_host_cores
 reset_config

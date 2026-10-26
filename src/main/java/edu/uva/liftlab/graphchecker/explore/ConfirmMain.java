@@ -534,9 +534,6 @@ public final class ConfirmMain {
             }
         }
         int context = rows.size();
-        JsonObject planned = plannedRow(
-                iteration.resolve("execution_task_plan.jsonl"),
-                witness.anchor);
         for (StaticScopeMap.Site target
                 : StaticScopeMap.read(scopeMap).targetSites()) {
             for (int index = 0; index < target.guards.size()
@@ -548,14 +545,6 @@ public final class ConfirmMain {
                 row.addProperty(RecordingPlant.SITE, target.guards.get(index));
                 row.addProperty(RecordingPlant.VALUE,
                         target.guardOutcomes.get(index));
-                if (planned != null) {
-                    row.addProperty(RecordingPlant.ANCHOR_ADDRESS,
-                            witness.anchor.render());
-                    row.add(RecordingPlant.SHAPE,
-                            planned.get("contextShape"));
-                    row.add(RecordingPlant.RECORDED_BESIDE,
-                            planned.get("recordedBeside"));
-                }
                 rows.add(row);
             }
         }
@@ -773,22 +762,6 @@ public final class ConfirmMain {
             row.add(RecordingPlant.CLOCK, clock);
         }
         return row;
-    }
-
-    static JsonObject plannedRow(Path plan, OccurrenceAddress anchor)
-            throws IOException {
-        if (!Files.isRegularFile(plan)) return null;
-        for (JsonObject row : RowCodec.readJsonl(plan)) {
-            if (anchor.render().equals(optionalString(row, "occurrenceId"))
-                    && row.has("contextShape")
-                    && row.get("contextShape").isJsonArray()
-                    && row.getAsJsonArray("contextShape").size() > 0
-                    && row.has("recordedBeside")
-                    && row.get("recordedBeside").isJsonArray()) {
-                return row;
-            }
-        }
-        return null;
     }
 
     private static JsonArray textArray(Iterable<String> texts) {

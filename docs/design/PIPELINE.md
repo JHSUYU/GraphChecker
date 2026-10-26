@@ -4105,9 +4105,7 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
   empty natively, a request handler's sixth SEND, a select whose poll count differed). The plant's
   summary counts the rows (`realizedOrders`);
 - one `TARGET` per guard of the scope map's TARGET_SITE rows, `{occurrence: <the claim's anchor
-  id>, siteId: <guard>, value: <its fatal arm>}`, and, where the anchor's plan row states its context
-  shape, `anchorAddress`, `shape` and `recordedBeside` (the addresses the recording opened in its region
-  on its node under that shape, `ConfirmMain#plannedRow`): what a native run answers the anchor by.
+  id>, siteId: <guard>, value: <its fatal arm>}`.
 
 Refused, with no native run (`reproduce.json` `runs` 0 and the refusal as `reason`):
 - by CONFIRM's own reading of the claim (`CONFIRM refused:`, §10): a valuation that selects no
@@ -4187,27 +4185,20 @@ mapped to a bytecode offset; an invoke no context wraps matches no row. Inside t
   count the run did not make) -- what the run states, never a refutation;
 - every row applied is a `PLANT_APPLIED` trace row naming its number; a recorded branch at a TARGET
   row's guard that takes its fatal arm is a `PLANT_FATAL` row stating whether an enclosing
-  occurrence is the anchor's (`atAnchor`) or the occurrence that answers it by its shape
-  (`atAnchorByShape`) -- at either the run ends (`JUnitMethodRunner.exit`, as a focused replay ends at
-  its witness), its one question answered (`runtime.RecordingPlant`). The answer by shape is IDENTITY.md
-  §9's order rule, the one a replay realized the witness by: the first occurrence the run opens in the
-  anchor's region on its node, at an address the recording never opened (neither the anchor nor
-  `recordedBeside`), whose context's shape over this run's senders (`ScheduleLog#shape`) is the
-  anchor's hop for hop, before the anchor's own address ran; it is bound once (`RecordingPlant#opened`,
-  a `PLANT_ANSWERED` row) and named `ADDRESS_UNSTABLE` in `plant.log`. hbase-buggy-20642: the retried
-  DisableTable's preflight, a request the recording never sent, answers the second disable's.
+  occurrence is the anchor's -- at the anchor the run ends (`JUnitMethodRunner.exit`, as a focused
+  replay ends at its witness), its one question answered (`runtime.RecordingPlant`).
 
 A planted run is not the recording's world, so the workload's checks of that world are off in it
 as in a replay (`CausynthTraceRecorder.replaying()` is true under `causynth.plant`). Each run states
 its answer, whatever the workload's exit, as `run-<n>/answer.json` `{exit, rows, applied, unapplied,
-planted, rootsPlanted, ordersHeld, ordersChecked, ordersObserved, fatal, atAnchor, atAnchorByShape, answeredBy, control, reproduced}` (a control run never reproduced; `ordersChecked` the plant's checked ORDER rows, `ordersObserved` those the run observed in order, each unapplied row stating whether it was `checked`), read off its trace's plant rows
+planted, rootsPlanted, ordersHeld, ordersChecked, ordersObserved, fatal, atAnchor, control, reproduced}` (a control run never reproduced; `ordersChecked` the plant's checked ORDER rows, `ordersObserved` those the run observed in order, each unapplied row stating whether it was `checked`), read off its trace's plant rows
 (each flushed as it is written, `CausynthTraceRecorder#writePlantRow`, so a run its bound kills keeps
 them; the trace is closed only by the run's end, §5) against the plant: the rows to apply (ROOT, ANSWER and ORDER of either scope; CLOCK_SITE and TARGET
 rows are context), how many it applied, each it did not with why (an ORDER not held in time: `LATE`
 when what it waited for came after all, `MISSING` when it never came; `UNWRITTEN`, `HOLDING` at the
 run's end, `NOT_REACHED`), whether it applied every row, every ROOT and ANSWER row and held every
 ORDER, whether it took the fatal arm and at the anchor, and whether it **reproduced**: the fatal
-arm at the claim's anchor, or at the occurrence answering it by its shape, with every ROOT and ANSWER row applied (clock jumps, configurations and
+arm at the claim's anchor with every ROOT and ANSWER row applied (clock jumps, configurations and
 answers included) and no ORDER timed out. A run that did not plant the model's roots, or ran
 another order than the world CONFIRM saw, and reaches the fatal all the same is the program's own
 race, never a reproduction. **The control**: behind them go as many runs of a plant of the TARGET
@@ -4218,9 +4209,9 @@ take the fatal arm, and at the anchor, is the program's own rate of the fatal on
 timing, the evidence a reproduction's rate is read against (a plant whose rows hold little of the
 chain, a CLOCK root alone or a VIEW_HOLD alone, reproduces as often as the workload throws by
 itself), and never a gate. `final/reproduce.json`: `{schemaVersion 1, kind: REPRODUCTION, runs,
-planted, fatal, atAnchor, atAnchorByShape, reproduced, unheld, unheldLate, unheldMissing, holding, checked,
-checkedObserved, turnOrders, impliedOrders, reason, control: {runs, fatal, atAnchor, atAnchorByShape, reason}}` -- runs that applied the whole plant, took the fatal arm, took it at the
-anchor (planted or not), took it at an occurrence answering the anchor by its shape (counted apart, never in `atAnchor`), reproduced, could not hold an ORDER in time (of them, one whose
+planted, fatal, atAnchor, reproduced, unheld, unheldLate, unheldMissing, holding, checked,
+checkedObserved, turnOrders, impliedOrders, reason, control: {runs, fatal, atAnchor, reason}}` -- runs that applied the whole plant, took the fatal arm, took it at the
+anchor (planted or not), reproduced, could not hold an ORDER in time (of them, one whose
 before-event came late, one whose before-event never came; a checked ORDER not observed in order
 counts here), still held one when they ended, the plant's checked ORDER rows and the runs that
 observed every one in order, the plant's rows left out as turn-counted (`turnOrders`) and as implied by a client thread's replies (`impliedOrders`), the runs that stated no answer as `reason`, and the control's runs, fatal, at the anchor and its runs

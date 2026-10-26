@@ -162,59 +162,6 @@ public class RecordingPlantTest {
                 ExecutionIndex.empty()).render();
     }
 
-    private static OccurrenceAddress served(String region, String node,
-                                            String sender) {
-        return OccurrenceAddress.of(NodeId.parse(node), region,
-                CausalContext.of(sender, "HBASE_RPC/test"),
-                ExecutionIndex.empty());
-    }
-
-    @Test
-    public void anOccurrenceTheRecordingNeverOpenedAnswersTheAnchorByShape()
-            throws Exception {
-        String master = "auto0/master0#epoch0";
-        OccurrenceAddress anchor = served("REGION.pre", master, "second");
-        OccurrenceAddress first = served("REGION.pre", master, "first");
-        OccurrenceAddress retry = served("REGION.pre", master, "retry");
-        List<String> shape = java.util.Arrays.asList(
-                "HBASE_RPC/test@auto0/client0#epoch0", "Root:CLIENT/test");
-        String answering = row("{'kind':'TARGET','occurrence':'"
-                + anchor.id() + "','siteId':'" + GUARD + "','value':false,"
-                + "'anchorAddress':'" + anchor.render().replace("\"", "\\\"")
-                + "','shape':['" + shape.get(0) + "','" + shape.get(1)
-                + "'],'recordedBeside':['" + first.id() + "'],'row':0}");
-        String plain = target(anchor.id(), "false", 0);
-        Object[][] table = {
-            {"a retry at an address the recording never opened", answering,
-                    retry, shape, true},
-            {"the anchor itself", answering, anchor, shape, false},
-            {"an address the recording opened", answering, first, shape,
-                    false},
-            {"another region", answering, served("REGION.other", master,
-                    "retry"), shape, false},
-            {"another node", answering, served("REGION.pre",
-                    "auto0/rs0#epoch0", "retry"), shape, false},
-            {"another shape", answering, retry, java.util.Arrays.asList(
-                    "HBASE_RPC/test@auto0/rs0#epoch0", "Root:CLIENT/test"),
-                    false},
-            {"an unknown hop", answering, retry, java.util.Arrays.asList(
-                    "?"), false},
-            {"a plant stating no shape", plain, retry, shape, false},
-        };
-        for (Object[] row : table) {
-            assertEquals((String) row[0], row[4], read((String) row[1])
-                    .answeredByShape((OccurrenceAddress) row[2],
-                            (List<String>) row[3]));
-        }
-        try {
-            read(answering.replace(anchor.id(), first.id()));
-            fail("accepted a target row whose anchor address is not its"
-                    + " occurrence");
-        } catch (IOException refused) {
-            assertTrue(refused.getMessage().contains("anchor address"));
-        }
-    }
-
     @Test
     public void aPlantTheRunCannotMakeRealIsRefused() throws Exception {
         Path root = folder.getRoot().toPath();
