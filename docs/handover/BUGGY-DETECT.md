@@ -29,7 +29,7 @@ system's current tree, one fork branch each.
 | Solr | SOLR-6197 | solr-adhoc-19 | **SAT, native 10/10** (S6197g) | same, MIGRATE | -- |
 | Solr | SOLR-6763 | solr-adhoc-38 | not reachable on today's code (no run): masked by SOLR-7844 | -- | -- |
 
-Tally (16 put back): **13 fully accepted** (HDFS-11741, -17383, -12931, -5766, -10609, -14075; HBASE-15039;
+Tally (16 put back): **12 fully accepted** (HDFS-11741, -17383, -12931, -5766, -10609, -14075; HBASE-15039;
 ZOOKEEPER-710, -2886; SOLR-9440, -6101, -6197 -- of these 5 with the caveat that the fixed code also reaches the throw in
 the witness world); 1 SAT confirmed with native 10/10 by shape only (HBASE-20642, owner's call); 1 not detected, a
 capability limit (HDFS-14311); 2 not reachable on today's code (HBASE-28533, SOLR-6763). Plus 4 existing GraphChecker
