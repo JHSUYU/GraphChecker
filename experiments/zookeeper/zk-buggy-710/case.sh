@@ -8,7 +8,11 @@ repo=${GC_TREES}/zookeeper-bug-710
 # the fixed tree the first throw's connection teardown would have prevented. The target is that second throw.
 test_class=org.apache.zookeeper.test.CausynthSessionMoved710Test
 test_method=aMovedConnectionKeepsThrowing
-target_occurrence=first
+# the old connection's second setData at the leader (peer5 is the leader deterministically, highest id):
+# its leader-side forwarded Prep (REGION.3cfb4ed2, submitLearnerRequest path), the 3rd occurrence of that
+# region -- #1 the create of /sm710, #2 the first setData, #3 the second setData. The second setData is the
+# second SessionMoved on the never-closed connection: the bug's occurrence (SEED ZS1-buggy-710)
+target_occurrence="auto0/peer5#epoch0/region/REGION.3cfb4ed2-6604-303b-82a1-6cb936dd8da0#3"
 scope=(
   server:org/apache/zookeeper/server/SessionTrackerImpl
   server:org/apache/zookeeper/server/quorum/LeaderSessionTracker
