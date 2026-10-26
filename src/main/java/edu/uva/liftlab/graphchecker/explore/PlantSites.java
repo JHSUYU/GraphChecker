@@ -76,6 +76,7 @@ final class PlantSites {
             new LinkedHashMap<String, Integer>();
     private final Map<String, Map<String, Set<String>>> fields =
             new LinkedHashMap<String, Map<String, Set<String>>>();
+    private final Set<String> gotten = new LinkedHashSet<String>();
 
     private PlantSites() {
     }
@@ -109,6 +110,9 @@ final class PlantSites {
     }
 
     private void action(JsonObject action, String region) {
+        String config = optionalString(action,
+                InputActionCatalog.DECLARED_CONFIG_SOURCE);
+        if (!config.isEmpty()) gotten.add(config);
         String port = optionalString(action, "portId");
         if (port.isEmpty()) return;
         String site = optionalString(action, "siteId");
@@ -188,6 +192,10 @@ final class PlantSites {
 
     Set<String> sites(String port) {
         return sites.getOrDefault(port, Collections.<String>emptySet());
+    }
+
+    boolean gotten(String rootId) {
+        return gotten.contains(rootId);
     }
 
     Map<String, Set<String>> fields(String rootId) {

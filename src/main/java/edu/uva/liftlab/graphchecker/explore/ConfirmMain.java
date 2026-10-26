@@ -501,23 +501,24 @@ public final class ConfirmMain {
         Set<String> marked = sites.sites(rootId);
         List<PlantSites.Call> calls = sites.calls(rootId);
         Map<String, Set<String>> fields = sites.fields(rootId);
+        boolean gotten = sites.gotten(rootId);
         boolean planted = mint != null && (category == RootCategory.HOOK
                 || category == RootCategory.FAULT && marked.size() == 1
                 && ("true".equals(value) || "false".equals(value))
                 || category == RootCategory.CONFIG && (fields.isEmpty()
-                ? !calls.isEmpty() : calls.isEmpty() && fields.size() == 1)
+                ? !calls.isEmpty() : !gotten && fields.size() == 1)
                 || category == RootCategory.READ && calls.size() == 1);
         if (!planted) {
             throw new Refused("NATIVE_PLANT_UNSUPPORTED: root " + rootId
                     + " is " + category + " at '" + value + "', minted at '"
                     + world.mints.get(rootId) + "' at " + sites.locations(
                     rootId) + ", called at " + marked + ", read from fields "
-                    + fields.keySet() + "; a native run plants a fault marker"
-                    + " of one call site at true or false, a tree hook's "
-                    + "field, the return of a configuration getter or an "
-                    + "accessor call, at an occurrence it is minted at, or "
-                    + "the planned reads of one configuration field (not "
-                    + "both a getter and a field)");
+                    + fields.keySet() + (gotten ? " and returned by a getter"
+                    : "") + "; a native run plants a fault marker of one call"
+                    + " site at true or false, a tree hook's field, the "
+                    + "return of a configuration getter or an accessor call,"
+                    + " at an occurrence it is minted at, or the planned "
+                    + "reads of one configuration field no getter returns");
         }
         JsonObject row = root(category, rootId, mint);
         if (category == RootCategory.FAULT) {

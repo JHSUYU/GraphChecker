@@ -801,22 +801,11 @@ public class ConfirmMainTest {
                 {task(phase(k, config, field, read)).replace(
                         "\"inputActions\":[]", "\"inputActions\":["
                                 + getter("REGION.08ab84c9.in.p", k) + "]"),
-                        fieldRow, ""},
-                {task(phase(k, config, field, read)).replace(
-                        "\"inputActions\":[]", "\"inputActions\":["
-                                + getter(k, "") + "]"),
-                        "called at [<a.Manager: void tick()>#u4], read from "
-                                + "fields [" + field + "]", ""},
+                        "read from fields [" + field + "] and returned by a "
+                                + "getter", ""},
                 {task().replace("\"inputActions\":[]", "\"inputActions\":["
-                        + getter(k, "") + "]"),
-                        "{\"kind\":\"ROOT\",\"category\":\"CONFIG\","
-                                + "\"rootId\":\"CONFIG:k==true\","
-                                + "\"occurrence\":\"" + mint.id() + "\","
-                                + "\"sites\":[{\"siteId\":"
-                                + "\"<a.Manager: void tick()>#u4\",\"callee\":"
-                                + "\"<a.Conf: boolean on()>\",\"javaType\":"
-                                + "\"boolean\"}],\"javaType\":\"boolean\","
-                                + "\"value\":\"false\",\"row\":0}", ""},
+                        + getter("REGION.08ab84c9.in.p", k) + "]"),
+                        "read from fields [] and returned by a getter;", ""},
                 {task(phase(k, config, field, read), phase("CONFIG:j==true",
                         config, field, other)), "roots CONFIG:k==true and "
                         + "CONFIG:j==true are both read from field " + field,
@@ -868,10 +857,8 @@ public class ConfirmMainTest {
     }
 
     private static String getter(String port, String config) {
-        return "{\"portId\":\"" + port + "\","
-                + (config.isEmpty() ? ""
-                : "\"configSource\":\"" + config + "\",")
-                + "\"location\":\"CALL_RETURN\","
+        return "{\"portId\":\"" + port + "\",\"configSource\":\"" + config
+                + "\",\"location\":\"CALL_RETURN\","
                 + "\"siteId\":\"<a.Manager: void tick()>#u4\","
                 + "\"declaredCallee\":\"<a.Conf: boolean on()>\","
                 + "\"javaType\":\"boolean\"}";
