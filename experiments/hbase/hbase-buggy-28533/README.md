@@ -1,4 +1,4 @@
-# HBASE-28533 put back (hbase-buggy-28533, point hbase-adhoc-15) -- stub: no case yet
+# HBASE-28533 put back (hbase-buggy-28533, point hbase-adhoc-15) -- not reachable at its own throw
 
 ## The bug
 
@@ -51,8 +51,43 @@ What a workload must then satisfy (to be decided after hbase-buggy-20642 and -15
   shape where the bug's world is reached from that one adds the split's failure as a second root, and EXPLORE meets the
   fixed-code witness first unless the split cannot succeed in any world.
 
-## Result
+## Result: on the latest code HBASE-28533 does not reach its point's own throw (no case run)
 
-None yet. If no workload keeps the bug necessary at :507 without being contrived, the case is recorded as: on the
-latest code HBASE-28533 does not reach its point's own throw (the natural chain ends at the merge constructor's
-checkOnline, RegionStateNode:322).
+The lead's simpler shape -- a merge request that arrives while the split holds the parent's lock, built with the
+parent OPEN and queued behind the split, the split failing at its quota from a root, the buggy rollback leaving
+SPLITTING, the merge's prepare throwing at :507 -- checked against the procedure locks:
+
+- The split takes the parent's lock at its first execution (`acquireLock` -> `waitRegions`, SplitTableRegionProcedure
+  :162) and the step it then runs, SPLIT_TABLE_REGION_PREPARE, ends with `node.setState(State.SPLITTING)` (:589). The
+  merge constructor's `checkOnline` needs no lock (it runs in the master's RPC handler, HMaster:2374). So a merge
+  "built while the split holds the lock, the parent still OPEN" is the constructor's read of `RegionStateNode.state`
+  re-paired to before the SPLITTING write (root R2): realizable, since the handler holds nothing the split needs; the
+  merge's procedure then waits on the region lock, which the split holds for its life (`holdLock` true).
+- With R1, the split's read of the namespace region count re-paired to before a concurrent table deletion's release
+  (hbase-adhoc-22's device, `checkAndUpdateNamespaceRegionCount`), the split fails in PRE_OPERATION, the buggy rollback
+  leaves SPLITTING, and the queued merge's prepare throws at :507: a world of two roots, depth 1.
+- **R2 alone already reaches :507, on the fixed code.** The split then completes; `markRegionAsSplit` leaves the
+  parent's node in RegionStates as SPLIT (no CatalogJanitor in the automatic cluster); the queued merge's
+  `prepareMergeRegion` finds no merge qualifier, the state SPLIT, and throws at :507 -- nothing before it (snapshot,
+  table modification, the switches) refuses a split parent. That is point 15's own race: a merge built before a split
+  that then completes. EXPLORE asks depth-0 flips first and ends at the first witness, so a campaign would witness and
+  confirm that race.
+- Excluding it needs a split that cannot succeed in any world: a full quota (excluded: the workload must pass
+  natively with the split's failure from a root) or a further gate that refuses the split in PREPARE before :589
+  natively (the split switch, which the handler also checks at HMaster:2391, so it must flip between submission and
+  PREPARE; or a table modification in flight), re-paired open, with the quota failure a third root. That is a
+  contrived workload around a merge request timed into the split's first step.
+
+**What separates this from the accepted cases.** In hbase-buggy-15039, hbase-buggy-20642 and the HDFS and ZooKeeper
+buggy cases (e.g. hdfs-buggy-11741 at hdfs-adhoc-11), the witness world contains the bug's own trigger: the clock
+that outlives the cached key, the lost reply whose retry carries a new nonce, the token validated before the watcher
+applied the key. Here the lowest-depth world that reaches :507 never runs the buggy rollback at all: it is point 15's
+own merge-versus-split race, so a SAT there would not be HBASE-28533.
+
+**Recorded verdict:** on the latest code (graphchecker/hbase-checks b5d5cc6a20, and rel/2.6.6 the same) the bug does
+not reach its point's own throw. Its natural chain -- a split that fails after PREPARE, then a merge of the parent --
+ends at the merge constructor's `checkOnline` (RegionStateNode:321-322, "is not OPEN; state=SPLITTING"), a different
+guarded throw of the same exception class; :507 needs a merge built inside the split's first step, and every
+workload that reaches that world reaches :507 without the bug at a lower depth. The bug stays put back on
+graphchecker/hbase-bug-28533 (de71623820) for anyone who later builds a check at RegionStateNode:322; no case row is
+added to `hbase-buggy-cases.tsv`.
