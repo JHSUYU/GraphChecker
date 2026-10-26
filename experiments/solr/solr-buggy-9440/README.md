@@ -30,34 +30,43 @@ FORCELEADER is refused.
 
 ## The workload
 
-`org.apache.solr.cloud.TestCausynthForceLeaderStaleView#forceLeaderOnAWatchingNode` (two nodes): a 1x1 collection
-lives on node1; an `HttpSolrClient` to node0 sends every collection request. node0's `CollectionsHandler` waits for
-the new collection to be active (a state watch it drops once the replica is ACTIVE) -- with the bug its view keeps
-that state, the replica ACTIVE and leading. node1 is then stopped; once the test client sees the replica DOWN, node0
-waits until it sees node1 gone (one more watch of the collection, whose registration refreshes the state and which
-its predicate drops at once). FORCELEADER on node0 then finds the leader DOWN, so it is applicable; no live replica
-can take over, and after its wait it answers without a leader. Natively it passes on both trees (node0's last
-refresh does land). The bug is reached only in a world where that last refresh does not land: with the bug node0
-stays on the frozen ACTIVE view and FORCELEADER throws.
+`org.apache.solr.cloud.TestCausynthForceLeaderStaleView#forceLeaderOnAWatchingNode` (two nodes, 2e2acd32d6): a 1x1
+collection lives on node1; an `HttpSolrClient` to node0 sends every collection request. node0's `CollectionsHandler`
+waits for the new collection to be active (`waitForActiveCollection`, a state watch it drops once the replica is
+ACTIVE). node1 is then stopped; once the test client sees the replica DOWN, FORCELEADER goes to node0. It finds the
+leader DOWN, so it is applicable; no live replica can take over, and after its 9 x 5 s wait it answers without a
+leader. Natively it passes on both trees.
+
+Why natively the bug does not fire here (native probes on the buggy tree, scratch `TestCausynthS2Scratch#probeView*`):
+the CREATE's wait is satisfied at its registration (the replica is already ACTIVE when the CREATE returns), and in
+8.11 a registration refresh publishes twice -- `refreshAndWatchChildren` (per-replica states), then the state
+refresh. The first publication's notification drops the watcher; the second publish, of a collection no longer
+watched, removes the entry (`publishWatchedCollection`'s race resolution with `unregisterCore`, SOLR-8323,
+`ZkStateReader.java:2177-2181`). node0 then reads the collection lazily: `watched=false lazy=true` right after the
+CREATE, and after a register-and-drop of a watcher of its own. With the bug a node's view freezes only when its last
+watcher is dropped on a watch EVENT (one publication). The bug's own scenario: node0's CREATE wait registers before
+the replica is ACTIVE, the replica's ACTIVE event satisfies it, the watch is dropped on that single publication, and
+node0 keeps the replica ACTIVE and leading for good: FORCELEADER after node1 stopped refuses.
+
+An earlier form of the workload (42e4f16231) added a second watch on node0 (wait until node1 is gone) as the last
+refresh; the probes show such a registration evicts a frozen entry instead of refreshing it, so it was removed.
 
 ## What this case declares
 
 | Declaration | Where | What it says |
 | --- | --- | --- |
 | the failure | the tree's marker | `@CausynthExceptionTarget("solr-adhoc-31,solr-buggy-9440")` on FORCELEADER's throw, `CollectionsHandler.java:1477` |
-| the occurrence | `target_occurrence` in `case.sh` | the FORCELEADER request on node0 (named from the seed) |
+| the occurrence | `target_occurrence` in `case.sh` | `first`: the FORCELEADER request on node0 (`forceLeaderElection`'s region folds into the request's occurrence, as in solr-adhoc-31's seeds) |
 | scope | `case.sh` | `CollectionsHandler`; the ZooKeeper-state classes come from `system.sh` (ZkStateReader, ClusterState, DocCollection, Slice, Replica) |
 | world depth | `case.sh` | `CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0` |
-| mechanism | `experiments/accept/report.py` | `solr-buggy-9440`: `MARKER_FLIPPED` by a SolrZkClient/ZooKeeper store-read fault, no clock (the deferred refresh) -- revised to `STATE_PAIRING_FLIPPED` if the witness re-pairs the frozen `DocCollection` read directly |
+| mechanism | `experiments/accept/report.py` | `solr-buggy-9440`: `STATE_PAIRING_FLIPPED` (the study's: a node's view of the collection held at an older decode) |
 
 Budget 21600 s.
 
 ## Native check of the bug's own world (scratch, not committed)
 
-`TestCausynthS2Scratch#forceLeaderWithoutRefresh` (the workload without node0's second watch): on `solr-bug-9440`
-FORCELEADER throws "The shard already has an active leader" (node0's frozen ACTIVE view from the CREATE's wait);
-on the fixed tree the dropped watch left a lazy reference, so FORCELEADER reads ZooKeeper, sees the leader DOWN, and
-is accepted.
+`TestCausynthS2Scratch#probeView`, `#probeView2`, `#probeView3` on the buggy tree print node0's maps and view at
+each step (above). `#forceLeaderWithoutRefresh` (= this workload) passes on the buggy tree.
 
 ## Result
 
