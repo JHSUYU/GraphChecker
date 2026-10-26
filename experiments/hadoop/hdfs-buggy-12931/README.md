@@ -77,6 +77,45 @@ fix rescues a key that expired on the DataNode. The study's mechanism for this b
 
 The run's budget is `hdfs-buggy-cases.tsv`'s 21600 s.
 
-## Result
+## Result: SAT, MARKER_FLIPPED by a lost heartbeat answer, confirmed and reproduced 10/10 (B12931a, PASS)
 
-Pending.
+Round B12931a (2026-10-26, snapshot `/bulk/gc-run/hb12931-1` = GraphChecker 13f159482, tree set
+`/bulk/trees/b12931` = d9fde9f9480, `/bulk/gc-out/hdfs-buggy/12931`): 512 s, `SAT_CANDIDATE`
+`FINAL_READY`, `report.py` **PASS**: `MARKER_FLIPPED` at valuation 1, `polarityDecides` true (the
+recorded valuation, ordinal 0, is unsat), no gap, no defect, nothing bounded, `cone.json` unbound
+empty; EXPLORE ended `WITNESSED` after 1 round (11 obligation verdicts, 15 planned tasks).
+`round-verify.sh`: `end=(WITNESSED) z3=sat moved=1 polarityDecides=True leaves=62 confirmed`.
+
+- **The moved root** is `REGION.9ffdee3d-....in.90fb6885-...` = true: the `FAULT:HADOOP_IPC:RESPONSE`
+  door (`ipc.Client.getRpcResponse`) of dn0's key-update heartbeat (`DatanodeProtocol.sendHeartbeat`
+  under the workload's `heartbeat#1`): nn0 answered, clearing dn0's key-update mark, and the answer
+  with its `KeyUpdateCommand` was lost. The study's mechanism.
+- **The chain in the formula** (`final/candidate.smt2`, read by hand; `smt-legend.py` decodes the 13
+  clock leaves, the moved root is a door marker): `path_fatal__0` (the selected path, its own run's
+  session e2f77255, every arm attested there) is `allKeys.get(keyId) == null` on dn0's map
+  (BlockTokenSecretManager :582-584), the map built by `container_dag` puts of the two pinned keys only
+  (166073 = S+1, 166074 = S+2): with the marker true no put of the heartbeat answer's
+  `ExportedBlockKeys` runs; `keyId` is the handoff of the client's key id over the SASL user name
+  (`data-encryption-key-id`), bound by `message_family__0__76049b656e8d` to the client's received key
+  (166075 = S+3, nn0's `generateDataEncryptionKey` from its current key, over `cache-encryption-key`).
+  The other path (`path_selector__1`, dn0's answer delivered and its keys put) needs clocks off the
+  recording; the claim is path 0.
+- **CONFIRM**: "the selected session e2f772556fb7104f-db709b2f is itself the run: it took every edge
+  the model chose (2 arm(s), all its own deliveries), ran every moved root at the model's value, and
+  observed the fatal at the anchor".
+- **REPRODUCE**: 10/10 natively (the plant: the RESPONSE fault on dn0's heartbeat; the fatal at the
+  anchor in every run: "Can't re-compute encryption key for nonce, since the required block key
+  (keyID=166075) doesn't exist. Current key: 166073"), control 0/10.
+- **The moved root is necessary**: z3 on the exported file with the selected path asserted: sat; with
+  the marker pinned to its recorded false as well: unsat.
+
+**What the check detects here, and what it does not.** The point's throw is on dn0, upstream of the
+client code the bug lives in, so the same world fires it with or without the fix. Natively, with a
+scratch program (not committed) that drops dn0's key-update answer and then asks for the checksum: on
+this tree, one throw on dn0 and `PathIOException: Fail to get block MD5`; with the fixed client
+(graphchecker/hdfs-checks' `hadoop-hdfs-client` classes first on the class path), two throws on dn0
+(the retry presents a refetched key, nn0's current one, which dn0 still lacks) and the same
+`PathIOException`. The witness shows the bug's trigger -- a DataNode that cannot resolve the key the
+client presents, after a lost key update -- reaching the point's own throw; it does not separate the
+put-back client from the fixed one, which differs only after the throw (and recovers only when the
+refetched key is one the DataNode holds, as when the cached key expired there).
