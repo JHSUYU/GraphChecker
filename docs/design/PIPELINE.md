@@ -3894,8 +3894,10 @@ with it is a `RUN_DEFECT`.
   decided here on the session's own rows). The writer must overtake it (`Arms#concurrent` true for
   the two writers, else `PAIRING_UNHELD`), so it is held before the writer, and the reader is held
   not where `holdBefore` would hold it -- that sub-frame can contain the overtaken write, a cycle
-  that sits until the order's timeout -- but at its first activation entered after the last such
-  write (`StateClosure#holdAfter`; none before the read is `PAIRING_UNHELD`): the writer then runs
+  that sits until the order's timeout -- but at its first activation entered after the activation
+  the writer waits on (that write's frame, or the occurrence's close for a write at its shallowest
+  depth) has exited (`StateClosure#holdAfter` from `exited`; a hold nested in that frame cycles too;
+  none before the read is `PAIRING_UNHELD`): the writer then runs
   where the overtaken write ends, as early as the order allows, and every later event of the reader
   stays after it, as recorded (hdfs-buggy-14311: vol1's upgrade task writes `layoutVersion` and
   `cTime` while vol2's `readProperties` is held at `setNamespaceID`, after its `setLayoutVersion`,

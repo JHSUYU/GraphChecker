@@ -1745,6 +1745,7 @@ public final class ConfirmMain {
             boolean model = chosen.containsKey(reader)
                     || chosenAt.contains(location);
             WriteRow passed = null;
+            long ends = Long.MIN_VALUE;
             for (WriteRow other : closure.byLocation.get(location)) {
                 if (other.endpoint().equals(held.endpoint())
                         || other.initial()
@@ -1761,8 +1762,11 @@ public final class ConfirmMain {
                             + " reader cannot pass it and the writer cannot"
                             + " overtake it");
                 }
-                if (passed == null || RowOrder.compare(other, passed) > 0) {
+                long exited = closure.exited(closure.exit(other.endpoint(),
+                        other.seq()));
+                if (passed == null || exited > ends) {
                     passed = other;
+                    ends = exited;
                 }
             }
             if (!held.initial()) {
@@ -1773,7 +1777,7 @@ public final class ConfirmMain {
                             read.endpoint(), read.seq()), model);
                 } else {
                     StateClosure.Hold after = closure.holdAfter(
-                            read.endpoint(), read.seq(), passed.seq());
+                            read.endpoint(), read.seq(), ends);
                     if (after == null) {
                         throw new Refused("PAIRING_UNHELD: read "
                                 + Confirmation.id(read.endpoint()) + " of "
@@ -1782,9 +1786,9 @@ public final class ConfirmMain {
                                 + " overtakes write "
                                 + Confirmation.writer(passed) + " at version "
                                 + passed.version() + ", and no activation of"
-                                + " the reader begins after that write and"
-                                + " before the read, so no hold lets it run"
-                                + " first");
+                                + " the reader begins after the activation"
+                                + " that write is in exits and before the"
+                                + " read, so no hold lets it run first");
                     }
                     holding.order(closure.order(holding, written, after,
                             read.endpoint(), read.seq()), model);

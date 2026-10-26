@@ -426,6 +426,16 @@ public class ConfirmMainTest {
                 {"the reader's own write in a sub-frame of the read's, then"
                         + " nothing", ANCHOR, "thread-r", inProps, nothing,
                         reading, "PAIRING_UNHELD"},
+                {"the reader's own write directly in a sub-frame, then a"
+                        + " callee of that sub-frame", ANCHOR, "thread-r",
+                        Arrays.asList(transition, props),
+                        Collections.singletonList(Arrays.asList(transition,
+                                props, fields)), reading, "PAIRING_UNHELD"},
+                {"the reader's own write in the read's frame at the"
+                        + " occurrence's shallowest depth, then a sub-frame",
+                        ANCHOR, "thread-r", reading,
+                        Collections.singletonList(Arrays.asList(transition,
+                                props)), reading, "PAIRING_UNHELD"},
                 {"the reader's own write in a sub-frame, the read in a later"
                         + " one", ANCHOR, "thread-r", inProps,
                         Collections.singletonList(Arrays.asList(transition,
@@ -517,6 +527,9 @@ public class ConfirmMainTest {
                             wrote.id().equals(anchor.id())
                                     && (wroteExit.equals(readHeld)
                                     || wroteExit.startsWith(readHeld + "/")));
+                    assertFalse(name + ": the hold is inside the write's frame",
+                            wrote.id().equals(anchor.id())
+                                    && readHeld.startsWith(wroteExit + "/"));
                     outcome = readHeld;
                 } else {
                     outcome = readFirst ? "read first" : holding.edges;
