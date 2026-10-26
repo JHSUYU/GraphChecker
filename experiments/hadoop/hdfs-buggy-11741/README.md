@@ -112,7 +112,9 @@ defect, nothing bounded, `cone.json` unbound empty; EXPLORE ended `WITNESSED` af
   observed no fatal and the one under `balance-block#2` (the declared occurrence) did.
 - **REPRODUCE**: 10/10 natively (every row planted: target-dn's clock +48213453 ms = 13.4 h, nn0's
   +39659208 ms = 11.0 h, 4 ORDER rows; the fatal at the anchor), control 0/10.
-- **Each moved root is necessary**, natively: a scratch copy of the workload (not committed) offsetting
+- **Each moved root is necessary**, in the formula and natively. z3 on the exported file with the selected
+  path asserted: sat; with nn0's moved clock pinned to its recorded value: unsat; with target-dn's: unsat;
+  with every root at its recording: unsat. Natively, a scratch copy of the workload (not committed) offsetting
   nn0's `Timer` during its third rotation and target-dn's during its second key update by the plant's
   skews: neither, either one alone: the move succeeds; both: `InvalidEncryptionKeyException: Can't
   re-compute encryption key for nonce, since the required block key (keyID=182906) doesn't exist. Current
