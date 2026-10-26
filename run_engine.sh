@@ -7054,13 +7054,7 @@ ${campaign_recorded_workload_s}s, at least reproduce_min_s=${reproduce_min_s})"
          then "\($runs - length) of \($runs) run(s) stated no answer"
          else "" end),
        control: $control}' >"${campaign_final}/reproduce.json"
-  find "${dir}" -mindepth 2 -maxdepth 3 -name answer.json -print0 \
-    | xargs -0 -r jq -r --arg dir "${dir}/" 'select(.atAnchorByShape)
-      | "ADDRESS_UNSTABLE \(input_filename | ltrimstr($dir)
-        | rtrimstr("/answer.json")): the fatal at \(.answeredBy), which \
-answers the anchor by its shape (its region, node and context shape, an \
-address the recording never opened, the anchor not run before it)"' \
-    >>"${dir}/plant.log"
+  campaign_reproduce_unstable "${dir}"
   jq -r '"  reproduced in \(.reproduced) of \(.runs) native run(s): the fatal at the anchor with every root planted and every order held (\(.planted) applied the whole plant, \(.fatal) fatal, \(.atAnchor) at the anchor, \(.atAnchorByShape) at an occurrence answering it by its shape, \(.unheld) an order unheld -- \(.unheldLate) one that came late, \(.unheldMissing) one that never came --, \(.holding) an order still holding; \(.checked) order(s) checked, not held, observed in order in \(.checkedObserved) run(s); \(.turnOrders) order(s) of turn-counted roots and \(.impliedOrders) order(s) implied by the replies one client thread received not planted, plant.log names them); control \(.control.atAnchor) of \(.control.runs): the fatal at the anchor with nothing the model chose planted (\(.control.atAnchorByShape) at an occurrence answering it by its shape, \(.control.fatal) fatal)"' \
     "${campaign_final}/reproduce.json"
 }
@@ -7103,6 +7097,18 @@ campaign_reproduce_run() {
   campaign_reproduce_answer "${trace}" "${plant}" "${status}" "${control}" \
     >"${run}/answer.json.part"
   mv -f -- "${run}/answer.json.part" "${run}/answer.json"
+}
+
+campaign_reproduce_unstable() {
+  local dir=$1
+  find "${dir}" -mindepth 2 -maxdepth 3 -name answer.json -print0 \
+    | sort -z \
+    | xargs -0 -r jq -r --arg dir "${dir}/" 'select(.atAnchorByShape)
+      | "ADDRESS_UNSTABLE " + (input_filename | ltrimstr($dir)
+        | rtrimstr("/answer.json")) + ": the fatal at " + .answeredBy
+        + ", which answers the anchor by its shape (its region, node and"
+        + " context shape, an address the recording never opened, the"
+        + " anchor not run before it)"' >>"${dir}/plant.log"
 }
 
 campaign_reproduce_answer() {
