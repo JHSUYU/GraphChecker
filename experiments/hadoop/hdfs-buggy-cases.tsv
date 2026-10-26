@@ -9,3 +9,4 @@ hdfs-buggy-17383	system/hdfs-buggy-detect	21600	HDFS-17383	hdfs-adhoc-12
 hdfs-buggy-12931	system/hdfs-buggy-detect	21600	HDFS-12931	hdfs-adhoc-11
 hdfs-buggy-5766	system/hdfs-buggy-detect	21600	HDFS-5766	hdfs-adhoc-11
 hdfs-buggy-10609	system/hdfs-buggy-detect	21600	HDFS-10609	hdfs-adhoc-11
+hdfs-buggy-14075	system/hdfs-buggy-detect	21600	HDFS-14075	hdfs-adhoc-45
