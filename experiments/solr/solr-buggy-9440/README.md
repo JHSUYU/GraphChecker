@@ -18,7 +18,7 @@ FORCELEADER is refused.
 
 ## What was put back, on graphchecker/solr-bug-9440
 
-`graphchecker/solr-checks` (12d23091d1) plus two commits:
+`graphchecker/solr-checks` (12d23091d1) plus four commits (the last, 1e7324c461, is what the verdict ran on):
 
 - **The bug, by hand** (aa5c404b12): `ZkStateReader.removeDocCollectionWatcher` (where
   `removeCollectionStateWatcher` and every `waitForState` end) no longer evicts -- the
@@ -26,7 +26,16 @@ FORCELEADER is refused.
   update lock are gone; the watch itself is still dropped. The same eviction in `unregisterCore` (SOLR-8323's, a
   local core's close, not part of this fix) stays.
 - **The workload and the target** (42e4f16231): `TestCausynthForceLeaderStaleView`, and `solr-buggy-9440` added to
-  the marker on FORCELEADER's throw (beside `solr-adhoc-31`).
+  the marker on FORCELEADER's throw (beside `solr-adhoc-31`); 2e2acd32d6 drops the workload's second watch (below).
+- **1e7324c461, a GraphChecker workaround: the Overseer waits before it retries a failed state write.** A test-only
+  static, `Overseer#failedStateWriteRetryDelayMs` (0 unless a test sets it; the workload sets 5 s in `@BeforeClass`
+  and resets it in `@AfterClass`). In the state-update loop's main exception path (`Overseer.java`, the
+  `catch (Exception e)` that logs "Exception in Overseer main queue loop" and sets `refreshClusterState`), after a
+  `KeeperException` the loop sleeps that long before it refreshes and re-processes the failed message, so the
+  messages queued meanwhile are written after the wait. Without a failed ZooKeeper write nothing waits (the catch is
+  not reached). It adds no happens-before and never decides the throw: with the fault and the wait, the fixed code
+  still evicts the entry to a `LazyCollectionRef` and FORCELEADER passes (native checks below). It was made for
+  S9440a's witness; the accepted witness (S9440b) never reaches it.
 
 ## The workload
 
@@ -51,6 +60,9 @@ node0 keeps the replica ACTIVE and leading for good: FORCELEADER after node1 sto
 An earlier form of the workload (42e4f16231) added a second watch on node0 (wait until node1 is gone) as the last
 refresh; the probes show such a registration evicts a frozen entry instead of refreshing it, so it was removed.
 
+The workaround (1e7324c461) changes nothing in a run without a failed Overseer write: natively the workload passes
+20/20 on the buggy tree and 20/20 on the fixed tree (below).
+
 ## What this case declares
 
 | Declaration | Where | What it says |
@@ -59,6 +71,7 @@ refresh; the probes show such a registration evicts a frozen entry instead of re
 | the occurrence | `target_occurrence` in `case.sh` | `first`: the FORCELEADER request on node0 (`forceLeaderElection`'s region folds into the request's occurrence, as in solr-adhoc-31's seeds) |
 | scope | `case.sh` | `CollectionsHandler`; the ZooKeeper-state classes come from `system.sh` (ZkStateReader, ClusterState, DocCollection, Slice, Replica) |
 | world depth | `case.sh` | `CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0` |
+| workaround | the tree (1e7324c461) | `Overseer#failedStateWriteRetryDelayMs` = 5 s, set by the workload: the state-update loop waits after a failed ZooKeeper write before its retry (inert unless a write fails; not reached by the accepted witness) |
 | mechanism | `experiments/accept/report.py` | `solr-buggy-9440`: `MARKER_FLIPPED` by a `SolrZkClient`/`ZooKeeper` fault, no clock (the witness's; the declared `STATE_PAIRING_FLIPPED` guess before the run was wrong, see Result) |
 
 Budget 21600 s.
@@ -68,7 +81,73 @@ Budget 21600 s.
 `TestCausynthS2Scratch#probeView`, `#probeView2`, `#probeView3` on the buggy tree print node0's maps and view at
 each step (above). `#forceLeaderWithoutRefresh` (= this workload) passes on the buggy tree.
 
-## Result: SAT, confirmed in the VM; native REPRODUCE 0/10 -- not accepted (S9440a)
+## Result: SAT, accepted (S9440b)
+
+Round S9440b (2026-10-26, agent S9; snapshot `/bulk/gc-run/solr-b9440-3` = GraphChecker 3ca19cf52, tree set
+`/bulk/trees/sb9440-3` = 1e7324c461, `/bulk/gc-out/solr-buggy/9440/accept-S9440b-solr-buggy-9440`): 821 s,
+`SAT_CANDIDATE` `FINAL_READY`, `MARKER_FLIPPED` at valuation 24, `polarityDecides` true, no gap, no defect, nothing
+bounded; `report.py` **PASS**; `round-verify.sh`: `end=(WITNESSED) z3=sat moved=1 polarityDecides=True leaves=154
+confirmed`, 0 BOUNDED, 0 UNBOUND, 0 HOLD; `cone.json`: the moved root in the cone, 0 unbound.
+
+- **CONFIRM**: the selected session `38c060c3aa4df972-f132dbaa` is itself the run (4 arms, all its own deliveries;
+  every moved root at the model's value; the fatal observed at the anchor).
+- **Native REPRODUCE 10/10, control 0/10** (`final/reproduce.json`: planted 10, fatal 10, atAnchor 10; control fatal 0).
+- **The moved root is not S9440a's.** It is a FAULT: a planted ZooKeeper `SessionExpired` at node1's
+  `SolrZkClient.create` (`#u22`, invocation 1), in `ShardLeaderElectionContextBase.<init>`'s `ensureExists` of
+  `/collections/<c>/leaders/shard1`. It fires while node1's core-admin CREATE registers the new core
+  (`ZkController.register` -> `joinElection`). The fork's adapter makes a planted SessionExpired a real expiry
+  (b707106739: the in-process ZooKeeper server expires node1's session).
+- **The chain** (witness replay `iteration-0000/obligations-0000/38c060c3aa4df972/replay.log`, times in ms; native
+  `final/reproduce/run-1` in brackets):
+  - 101709 [16407]: node1's session expires. Its `register` fails (`RuntimeException(SessionExpired)` from the
+    election context); `ZkContainer.registerInZk` logs it, and the core-admin CREATE still answers status=0
+    (102279 [16535]). node0's CREATE thus completes before node1's replica is registered.
+  - node1's reconnect re-registers the core in the background (`coreZkRegister`, `afterExpiration? true`,
+    102367 [16609]): leader election, "I am the new leader" at 103042.
+  - 103112 [16664]: node0's `waitForActiveCollection` registers while ZooKeeper does not yet show the replica ACTIVE,
+    so the wait is not satisfied at registration.
+  - node1 publishes ACTIVE (120999, "no recovery necessary"; the state.json event at 121200). node0's wait ends on
+    that event's single publication and the watch is dropped. With the put-back, node0 keeps that `DocCollection`
+    (state.json v6).
+  - 127041 [17257]: node1 has stopped and the client has seen the replica DOWN. FORCELEADER on node0 logs
+    `DocCollection(.../state.json/6)`: frozen, with the replica `active` and `leader:true`. It throws at
+    `CollectionsHandler.java:1477`, "The shard already has an active leader", which is the point's own throw (the
+    plant's TARGET row, `forceLeaderElection#u40`).
+- **Why it reproduces natively where S9440a did not.** The fault itself produces the order node0 needs
+  (registration before ACTIVE). node1's registration moves to a background thread after the reconnect, past node0's
+  CREATE response. No scheduling is needed.
+- **The workaround played no part.** "Exception in Overseer main queue loop" appears neither in the witness replay
+  nor in any of the 10 native runs: the Overseer never fails a write, so its wait is never reached. Both rounds'
+  explorations held the same obligations. The SessionExpired root (`REGION.6140aa2b...`; e.g. obligations
+  `fbf6b7de20352e84`, `c9328cdabff81d42`) was already SAT_MODEL_READY in S9440a. Which witness becomes the claim
+  depends on which replay first observes the fatal. S9440b's verdict therefore does not depend on 1e7324c461; the
+  code it executes is the same on 2e2acd32d6.
+- **The witness discriminates.** The same expiry, planted by scratch code, throws 5/5 on the buggy tree and passes
+  5/5 on the fixed tree, where FORCELEADER reads a `LazyCollectionRef` (below).
+- `smt-legend.py --repo /bulk/trees/sb9440-3/solr-bug-9440` lists all 203 leaves as OTHER: it names no ROOT for
+  Solr's Boolean door markers. The moved root `M_Z_field_REGION.6140aa2b-...in.a00eae7b-...occ.73e9a297..._java/lang/Boolean`
+  is among them and in the cone (`cone.json`).
+
+## Native checks (agent S9, 2026-10-26; logs `/bulk/analysis/buggy-detect-2026-10-26/solr-logs/s9-native/`)
+
+Workload alone (seed F0993D5343E20BA4, `build.sh` with the tree build skipped):
+- buggy tree (a clean worktree at 1e7324c461, `/bulk/trees/s9scratch/bug-clean`): 20/20 PASSED;
+- fixed tree (1e7324c461 with aa5c404b12 reversed, `/bulk/trees/s9scratch/fixed`): 20/20 PASSED;
+- the verdict tree `/bulk/trees/sb9440-3/solr-bug-9440` passes in its build (47.6 s).
+
+Faults planted by scratch code (uncommitted; off unless a scratch test arms it; the `TestCausynthS9Scratch*` tests
+are subclasses of the workload):
+
+| world | buggy tree | fixed tree |
+| --- | --- | --- |
+| S9440a's root (lost reply of the Overseer's leader write: `SolrZkClient.setData` throws ConnectionLoss after ZooKeeper applied it), with the 5 s wait | 5/5 FAILED at :1477, plus 1/1 in the first build. node0 registers at 8700; the Overseer's retry writes after the wait (13649); FORCELEADER reads `state.json/5` | 5/5 PASSED (52 s), plus 1/1; FORCELEADER reads `LazyCollectionRef` |
+| the same, wait 0 (`TestCausynthS9ScratchNoDelay`) | 5/5 PASSED, plus 1/1: the retry and ACTIVE land before node0 registers (S9440a's native 0/10) | 1/1 PASSED |
+| S9440b's root (SessionExpired at node1's election-parent `ensureExists`, through `Sessions.expires` as the plant does) | 5/5 FAILED at :1477; `state.json/6` frozen; no Overseer retry | 5/5 PASSED (48.5 s); `LazyCollectionRef` |
+
+So the workaround does what it was made for: it takes S9440a's witness from 0/5 to 5/5 on the buggy tree, and the
+fixed tree passes 5/5. It decides nothing by itself: with no failed write, both trees pass 20/20.
+
+## Earlier round S9440a: SAT, confirmed in the VM; native REPRODUCE 0/10 -- not accepted
 
 Round S9440a (2026-10-26, snapshot `/bulk/gc-run/solr-b9440-2` = GraphChecker abc3e8ec9, tree set
 `/bulk/trees/sb9440-2` = 2e2acd32d6, `/bulk/gc-out/solr-buggy/9440`): 700 s, `SAT_CANDIDATE` `FINAL_READY`,
@@ -108,3 +187,8 @@ Round S9440a (2026-10-26, snapshot `/bulk/gc-run/solr-b9440-2` = GraphChecker ab
   does not keep is not accepted (HDFS round, 2026-10-25). No engine change was made (lead, 2026-10-26).
 - **Arms#concurrent** (the expected obstacle to a STATE re-pairing of node0's registration fetch) was not reached:
   the witness needed no re-pairing.
+- **Correction (S9, after reading the witness and the native run).** The faulted write at OVERSEER_STATE_UPDATE#4 is
+  node1's LEADER message, not ACTIVE. The fault is at `SolrZkClient.java:527`, the door after `keeper.setData`
+  returned: ZooKeeper applied v3 and the reply was lost. The main loop's retry re-writes it (v4), and the replica's
+  ACTIVE is the next message (v5). node1 is not blocked, since it sees its leadership in v3. So a wait before the
+  retry (1e7324c461) delays ACTIVE past node0's registration; the native checks above show it.
