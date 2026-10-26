@@ -1,11 +1,11 @@
 repo=${GC_TREES}/zookeeper-bug-710
-# zk-buggy-710 (ZOOKEEPER-710, point zk-adhoc-02): the old connection keeps getting SessionMoved after the
-# session moved, because FinalRequestProcessor no longer tears the connection down. The old connection creates
-# and writes twice while it owns the session; a second handle on another server then takes it over. The
-# recording keeps both writes ahead of the late REVALIDATE's setOwner, so no SessionMoved fires natively.
-# GraphChecker re-pairs the two writes' reads of session.owner to the late setOwner: the first write throws at
-# SessionTrackerImpl.checkSession (:367) and -- the bug staying open -- the second throws there again, which on
-# the fixed tree the first throw's connection teardown would have prevented. The target is that second throw.
+# zk-buggy-710 (ZOOKEEPER-710, point zk-adhoc-02; README.md): the old connection creates and writes twice
+# while it owns the session; a takeover thread, started before the old writes with no happens-before from them, sleeps 5 s
+# and opens a second handle on another server with the same session (its REVALIDATE sets session.owner to that
+# server's LearnerHandler). Natively no SessionMoved fires. The target is the second old write (on a thread of its own,
+# a hold point for CONFIRM), whose checkSession (SessionTrackerImpl:367) throws once its session.owner read is paired
+# with the takeover's setOwner. No scope growth (workflow.properties): G's connect handling stays the client's role
+# occurrence, so the takeover's REVALIDATE write reaches a ROOT and COMPOSE can offer it.
 test_class=org.apache.zookeeper.test.CausynthSessionMoved710Test
 test_method=aMovedConnectionKeepsThrowing
 # the old connection's second setData at the leader (peer5 is the leader deterministically, highest id):

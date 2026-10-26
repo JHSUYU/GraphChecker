@@ -1,11 +1,11 @@
 repo=${GC_TREES}/zookeeper-bug-2886
-# zk-buggy-2886 (ZOOKEEPER-2886, point zk-adhoc-02): the multi-only shape of ZOOKEEPER-710. A multi's
-# SessionMoved stays a per-op ErrorResult, so ZOOKEEPER-710's connection teardown never runs for a multi; the
-# multi-only old connection keeps getting SessionMoved. The old connection issues only multi ops while it owns
-# the session; a second handle on another server then takes it over. The recording keeps both multis ahead of
-# the late REVALIDATE's setOwner, so no SessionMoved fires natively. GraphChecker re-pairs the two multis' reads
-# of session.owner to the late setOwner: the first multi throws at SessionTrackerImpl.checkSession (:367) and --
-# the bug keeping the connection open -- the second throws there again. The target is that second throw.
+# zk-buggy-2886 (ZOOKEEPER-2886, point zk-adhoc-02; README.md): the old connection issues only multis (create, then two setData)
+# while it owns the session; a takeover thread, started before the old multis with no happens-before from them, sleeps 5 s
+# and opens a second handle on another server with the same session (its REVALIDATE sets session.owner to that
+# server's LearnerHandler). Natively no SessionMoved fires. The target is the second old multi (on a thread of its own,
+# a hold point for CONFIRM), whose checkSession (SessionTrackerImpl:367) throws once its session.owner read is paired
+# with the takeover's setOwner. No scope growth (workflow.properties): G's connect handling stays the client's role
+# occurrence, so the takeover's REVALIDATE write reaches a ROOT and COMPOSE can offer it.
 test_class=org.apache.zookeeper.test.CausynthSessionMoved2886Test
 test_method=aMovedMultiOnlyConnectionKeepsThrowing
 # the old connection's second multi setData at the leader (peer5, the deterministic highest-id leader): its
