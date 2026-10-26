@@ -224,6 +224,10 @@ final class PairingFlip {
             return ObligationFactory.refused(candidate, Verdict.NOT_ADMITTED,
                     unheld.getMessage(), "", gaps, question, true);
         }
+        for (String unheld : holding.unheld) {
+            gaps.add(GapRow.of(candidate.path.sessionId, GapKind.ORDER_UNHELD,
+                    GapClass.DIAGNOSTIC, id, unheld));
+        }
         Map<String, String> mints = new LinkedHashMap<String, String>();
         Set<String> assigned = new LinkedHashSet<String>(
                 inherited.rootAssignments.keySet());

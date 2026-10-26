@@ -10,6 +10,7 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.compose.ComposeMain;
@@ -1164,6 +1165,13 @@ public class ConfirmMainTest {
         OccurrenceAddress throttle = OccurrenceAddress.parse(
                 "hdfs/dn0#epoch0/region/REGION.1a2b3c4d/ctx:Root:XCEIVER#1/idx:"
                         + "<a.Throttle: void take()>@0");
+        String staged = "hdfs/dn0#epoch0|Root:XCEIVER#1|<a.Stage: void"
+                + " take()>#u5@0";
+        OccurrenceAddress relay = OccurrenceAddress.parse(
+                "hdfs/dn0#epoch0/region/ROLE.XCEIVER/ctx:Root:XCEIVER#1/idx:"
+                        + "<a.Relay: void pass()>@0");
+        Endpoint relayed = Endpoint.of(relay, "a.Relay#pass()#2:SEND",
+                ExecutionIndex.empty(), 0);
         Object[][] rows = {
                 {"held where it runs", null, null, reader.activation(),
                         false},
@@ -1187,20 +1195,43 @@ public class ConfirmMainTest {
                         Confirmation.claim(ActivationRow.CLAIMED + taken),
                         false},
                 {"the writer's own request claims at that queue: held at"
-                        + " the send", send, null, send.activation(), false},
+                        + " the reader's own instrumented claim", send, null,
+                        Confirmation.claim(ActivationRow.CLAIMED + staged),
+                        false},
+                {"the send's work first claimed where nothing is"
+                        + " instrumented: held at the reader's own instrumented"
+                        + " claim", send, null,
+                        Confirmation.claim(ActivationRow.CLAIMED + staged),
+                        false},
+                {"no instrumented claim on the reader's chain: run unheld"
+                        + " and reported", send, null, send.activation(),
+                        false},
         };
         for (int index = 0; index < rows.length; index++) {
             Object[] row = rows[index];
             String name = (String) row[0];
             Path iteration = iteration();
             List<ActivationRow> activations = new ArrayList<ActivationRow>();
-            if (index >= 8) {
+            if (index >= 10) {
+                activations.add(ActivationRow.of("sel", relay, "TASK.m",
+                        false, false, ActivationRow.CLAIMED + "hdfs/dn0#epoch0|"
+                                + "Root:XCEIVER#1|<a.Relay: void take()>#u2@0",
+                        ActivationRow.ClaimKind.ITEM, send));
+                activations.add(ActivationRow.of("sel", anchor, "TASK.r",
+                        false, index == 10, ActivationRow.CLAIMED + staged,
+                        ActivationRow.ClaimKind.ITEM, relayed));
+                activations.add(ActivationRow.of("sel", mint, "TASK.w",
+                        false, true, "thread-7",
+                        ActivationRow.ClaimKind.NONE, null));
+                activations.add(ActivationRow.of("sel", OccurrenceAddress.parse(
+                        PRODUCER), "", false, false, "main#1",
+                        ActivationRow.ClaimKind.NONE, null));
+            } else if (index >= 8) {
                 activations.add(ActivationRow.of("sel", throttle, "TASK.t",
                         false, true, ActivationRow.CLAIMED + taken,
                         ActivationRow.ClaimKind.ITEM, send));
                 activations.add(ActivationRow.of("sel", anchor, "TASK.r",
-                        false, true, ActivationRow.CLAIMED + "hdfs/dn0#epoch0|"
-                                + "Root:XCEIVER#1|<a.Stage: void take()>#u5@0",
+                        false, true, ActivationRow.CLAIMED + staged,
                         ActivationRow.ClaimKind.ITEM, send));
                 activations.add(ActivationRow.of("sel", OccurrenceAddress.parse(
                         PRODUCER), "", false, false, "main#1",
@@ -1252,8 +1283,8 @@ public class ConfirmMainTest {
             RowCodec.writeAll(SessionDir.of(iteration, "sel").activations(),
                     activations, RowCodec::writeActivation);
             Path out = folder.newFolder("checked-" + index).toPath();
-            ConfirmMain.write(iteration, claim("M_J_clock.sel"), manifest(),
-                    out);
+            JsonObject summary = ConfirmMain.write(iteration,
+                    claim("M_J_clock.sel"), manifest(), out);
             int orders = 0;
             for (JsonObject edge : edges(out)) {
                 if (!"ORDER".equals(edge.get("kind").getAsString())) continue;
@@ -1264,6 +1295,17 @@ public class ConfirmMainTest {
                 assertEquals(name, row[4], RecordingPlant.checked(edge));
             }
             assertEquals(name, 1, orders);
+            List<String> unheld = new ArrayList<String>();
+            if (summary.has("ordersUnheld")) {
+                for (JsonElement order : summary.getAsJsonArray(
+                        "ordersUnheld")) {
+                    unheld.add(order.getAsString().substring(0,
+                            order.getAsString().indexOf(':')));
+                }
+            }
+            assertEquals(name, index == 11 ? Collections.singletonList(
+                    GapKind.ORDER_UNHELD.name())
+                    : Collections.<String>emptyList(), unheld);
             folder.delete();
             folder.create();
         }

@@ -217,6 +217,14 @@ public final class ConfirmMain {
         summary.addProperty("clockDeltas", world.clockDeltas.size());
         summary.addProperty("expectedEdges", edges.size());
         summary.addProperty("checkedOrders", checkedOrders(edges));
+        if (!witness.unheld.isEmpty()) {
+            JsonArray unheld = new JsonArray();
+            for (String order : witness.unheld) {
+                unheld.add(order);
+                System.err.println(order);
+            }
+            summary.add("ordersUnheld", unheld);
+        }
         summary.add("schedulePrefix", cut.toJson());
         return summary;
     }
@@ -249,6 +257,7 @@ public final class ConfirmMain {
                 new HashMap<String, OccurrenceAddress[]>();
         final Set<String> chosenAt = new LinkedHashSet<String>();
         final List<String> repaired = new ArrayList<String>();
+        final List<String> unheld = new ArrayList<String>();
 
         private Witness(JsonObject claim, JsonObject manifest, Path iteration)
                 throws IOException {
@@ -379,6 +388,8 @@ public final class ConfirmMain {
                     "pairings")));
             edges.addAll(pairings.edges);
             cone.addAll(pairings.cone);
+            unheld.addAll(state.unheld);
+            unheld.addAll(pairings.unheld);
             history.addAll(state.history());
             history.removeAll(pairings.orders);
             orderEnds.putAll(state.ends);
@@ -1208,6 +1219,7 @@ public final class ConfirmMain {
                 return null;
             }
             Hold hold = held(first, then, thenSeq);
+            if (hold.unheld != null) holding.unheld.add(hold.unheld);
             String order = first.activation + "\n" + hold.activation;
             holding.orders.add(order);
             holding.pairs.add(new Pair(first, then, thenSeq, order,
@@ -1273,6 +1285,7 @@ public final class ConfirmMain {
             private final String activation;
             private final boolean checked;
             private final String claim;
+            private final String unheld;
 
             private Hold(OccurrenceAddress occurrence, List<Frame> frames,
                          boolean checked) {
@@ -1281,6 +1294,17 @@ public final class ConfirmMain {
                         ExecutionIndex.of(frames));
                 this.checked = checked;
                 this.claim = null;
+                this.unheld = null;
+            }
+
+            private Hold(OccurrenceAddress occurrence, List<Frame> frames,
+                         String unheld) {
+                this.occurrence = occurrence;
+                this.activation = Confirmation.activation(occurrence,
+                        ExecutionIndex.of(frames));
+                this.checked = false;
+                this.claim = null;
+                this.unheld = unheld;
             }
 
             private Hold(OccurrenceAddress occurrence, String threadKey) {
@@ -1288,6 +1312,7 @@ public final class ConfirmMain {
                 this.activation = Confirmation.claim(threadKey);
                 this.checked = false;
                 this.claim = threadKey;
+                this.unheld = null;
             }
         }
 
@@ -1315,9 +1340,46 @@ public final class ConfirmMain {
             if (sender != null && !sender.instrumented()) {
                 Hold claimed = firstClaim(first, send);
                 if (claimed != null) return claimed;
+                Hold nearest = nearestClaim(first, event, send);
+                if (nearest != null) return nearest;
+                return new Hold(send.occurrence(), send.activationFrames(),
+                        GapKind.ORDER_UNHELD.name() + ": the order puts "
+                        + event.occurrence().render() + " after "
+                        + first.activation + "; its submitter chain ends at "
+                        + send.occurrence().render() + ", which the runtime"
+                        + " does not instrument, and no instrumented claim on"
+                        + " the reader's chain may hold it, so it runs"
+                        + " unheld and only its edges are checked");
             }
             return new Hold(send.occurrence(), send.activationFrames(),
                     false);
+        }
+
+        private Hold nearestClaim(Exit first, Endpoint event, Endpoint send) {
+            String sent = Confirmation.id(send);
+            Set<String> seen = new HashSet<String>();
+            Hold nearest = null;
+            OccurrenceAddress at = event.occurrence();
+            while (at != null && seen.add(at.id())) {
+                ActivationRow row = activations.get(at.id());
+                if (row == null) break;
+                if (row.instrumented() && row.claimed()
+                        && (row.claimKind() == ActivationRow.ClaimKind.ITEM
+                        || row.claimKind()
+                        == ActivationRow.ClaimKind.HANDOFF_TASK)
+                        && !inside(first.occurrence, row.threadKey())
+                        && !claimsWhereTheWriterDoes(first,
+                        row.threadKey())) {
+                    nearest = new Hold(row.occurrence(), row.threadKey());
+                }
+                Endpoint producer = row.anchorProducer();
+                if (producer == null
+                        || Confirmation.id(producer).equals(sent)) {
+                    break;
+                }
+                at = producer.occurrence();
+            }
+            return nearest;
         }
 
         private Hold firstClaim(Exit first, Endpoint send) {
@@ -1328,17 +1390,25 @@ public final class ConfirmMain {
                         || !Confirmation.id(producer).equals(sent)) {
                     continue;
                 }
-                String site = claimSite(row.threadKey());
-                for (ActivationRow other : activations.values()) {
-                    if (other.claimed()
-                            && sameRequest(other.occurrence(), first.occurrence)
-                            && site.equals(claimSite(other.threadKey()))) {
-                        return null;
-                    }
+                if (claimsWhereTheWriterDoes(first, row.threadKey())) {
+                    return null;
                 }
                 return new Hold(row.occurrence(), row.threadKey());
             }
             return null;
+        }
+
+        private boolean claimsWhereTheWriterDoes(Exit first,
+                                                 String threadKey) {
+            String site = claimSite(threadKey);
+            for (ActivationRow other : activations.values()) {
+                if (other.claimed()
+                        && sameRequest(other.occurrence(), first.occurrence)
+                        && site.equals(claimSite(other.threadKey()))) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         private static boolean sameRequest(OccurrenceAddress one,
@@ -1639,6 +1709,7 @@ public final class ConfirmMain {
         private final Map<String, OccurrenceAddress[]> ends =
                 new HashMap<String, OccurrenceAddress[]>();
         private final Set<String> chosenOrders = new LinkedHashSet<String>();
+        final List<String> unheld = new ArrayList<String>();
 
         private void order(String order, boolean chosen) {
             if (order != null && chosen) chosenOrders.add(order);

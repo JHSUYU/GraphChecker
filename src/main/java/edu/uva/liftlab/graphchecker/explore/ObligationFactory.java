@@ -1041,6 +1041,10 @@ public final class ObligationFactory {
             return refused(candidate, Verdict.NOT_ADMITTED,
                     unheld.getMessage(), query, gaps, question);
         }
+        for (String unheld : holding.unheld) {
+            gaps.add(GapRow.of(candidate.path.sessionId, GapKind.ORDER_UNHELD,
+                    GapClass.DIAGNOSTIC, id, unheld));
+        }
         Obligation issued = Obligation.of(id, candidate.task.taskId(),
                 candidate.path.pathId, decision.siteId(), decision.ordinal(),
                 candidate.flippedOutcome(), roots, answers,
