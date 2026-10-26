@@ -110,6 +110,9 @@ EXPECTED_MECHANISM = {
         "kinds": ("MARKER_FLIPPED",),
         "fault": ("org.apache.hadoop.hbase.ipc.RpcConnection",),
         "clocks": False},
+    "hbase-buggy-15039": {
+        "kinds": ("STATE_PAIRING_FLIPPED", "MARKER_FLIPPED"),
+        "clocks": False},
 }
 for _case, _rule in EXPECTED_MECHANISM.items():
     if not isinstance(_rule.get("fault", ()), tuple):

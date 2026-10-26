@@ -5,3 +5,4 @@
 # the bug, the point, what was put back and why, and the result. A case's row is added with its directory.
 # case	branch	budget_s	jira	point(s)
 hbase-buggy-20642	system/hbase-buggy-detect	21600	HBASE-20642	hbase-adhoc-04
+hbase-buggy-15039	system/hbase-buggy-detect	21600	HBASE-15039	hbase-adhoc-34
