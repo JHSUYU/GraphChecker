@@ -1,0 +1,9 @@
+# Old ZooKeeper bugs that make an ad hoc check itself fail (owner 2026-10-26: only a bug whose witness fires the
+# point's own declared throw counts; /users/ZhenyuLi/oldbug on node1, "fires this point's own throw"). Each runs the
+# ad hoc check of its point on a tree of its own, graphchecker/zookeeper-checks with that bug put back by hand and a
+# workload for it (experiments/zookeeper/trees.tsv, zookeeper-bug-<jira>). The case directory zk-buggy-<jira> declares
+# the check; its README the bug, the point, what was put back and why, and the result. A case's row is added with its
+# directory.
+# case	branch	budget_s	jira	point(s)
+zk-buggy-710	system/zookeeper-buggy-detect	21600	ZOOKEEPER-710	zk-adhoc-02
+zk-buggy-2886	system/zookeeper-buggy-detect	21600	ZOOKEEPER-2886	zk-adhoc-02

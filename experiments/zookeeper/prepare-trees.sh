@@ -43,7 +43,7 @@ for name in "${names[@]}"; do
       failed=$((failed + 1))
     fi
     installed+="${module} "
-  done 3<"${here}/zookeeper-cases.tsv"
+  done 3< <(cat "${here}"/zookeeper-*cases.tsv)
   echo "== ${name}: ready $(date +%T), ${failed} failed"
 done
 ((failed == 0))

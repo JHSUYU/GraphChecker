@@ -4,3 +4,5 @@
 # the cases' target markers and workloads.
 # name	fork branch	what it is
 zookeeper-checks	graphchecker/zookeeper-checks	every ZooKeeper case: the automatic ClientBase cluster (CausynthZkCluster), client requests and replies as messages (CausynthZk), the cases' target markers and workloads
+zookeeper-bug-710	graphchecker/zk-bug-710	zk-buggy-710 only: graphchecker/zookeeper-checks with ZOOKEEPER-710 put back by hand (FinalRequestProcessor does not close the connection on SessionMovedException) and its workload
+zookeeper-bug-2886	graphchecker/zk-bug-2886	zk-buggy-2886 only: graphchecker/zookeeper-checks with ZOOKEEPER-2886 put back by hand (a multi's SessionMovedException stays a per-op ErrorResult, never rethrown) and its workload
