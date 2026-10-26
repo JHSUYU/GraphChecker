@@ -5,5 +5,10 @@ target_occurrence='auto0/node1#epoch0/region/REGION.05d95c18-e743-3177-861c-d316
 scope=(
   core:org/apache/solr/core/CoreContainer
   core:org/apache/solr/cloud/api/collections/MigrateCmd
+  core=:org/apache/solr/cloud/Overseer
+  core:org/apache/solr/cloud/api/collections/CreateCollectionCmd
+  core:org/apache/solr/cloud/api/collections/AddReplicaCmd
+  core:org/apache/solr/cloud/overseer/ReplicaMutator
+  core=:org/apache/solr/cloud/ZkController
 )
 export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0
