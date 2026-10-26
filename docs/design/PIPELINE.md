@@ -3887,7 +3887,11 @@ with it is a `RUN_DEFECT`.
   command its `LockTree` lock (a command of an overlapping lock ordered before it stays parked by
   the processor) and its pool's room (an `AbortPolicy` pool past its maximum rejects the next
   submission); both end at the order's timeout, an order not held in time; every other
-  writer of the location the held write is of before the writer or after the reader, held alike, and
+  writer of the location the held write is of before the writer or after the reader, held alike --
+  an earlier one before the writer, a later one after the reader, except a later one between the
+  writer and the version the read observed that the reader cannot pass (the reader occurrence's own
+  write, or one on the reader's thread: `StateClosure#overtaken`), which the writer overtakes, so it
+  is held before the writer (the eligibility `Arms#eligible` admits such a writer by) -- and
   for an INITIAL the model chose every writer of the location after the reader. Only a write row of
   the selected session names such a writer. A store that ran outside every activation in that
   session (`UNATTRIBUTED_STORE`) has no row, so no order holds it, and the run's read of its version

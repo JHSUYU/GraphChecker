@@ -1235,6 +1235,8 @@ public class ExploreTest {
                         Verdict.UNSAT, 0},
                 {5L, "(and (= M_READ_KEY 2) (> M_READ_AGAIN 0))", 1,
                         Verdict.SAT_MODEL_READY, 2},
+                {5L, "(and (= M_READ_KEY 2) (= M_READ_AGAIN 1))", 1,
+                        Verdict.UNSAT, 0},
         };
         int at = 0;
         for (Object[] row : rows) {

@@ -392,6 +392,60 @@ public class ConfirmMainTest {
     }
 
     @Test
+    public void aWriteTheReaderCannotPassIsHeldBeforeTheWriterThatOvertakesIt()
+            throws Exception {
+        String prior = "hdfs/dn0#epoch0/region/REGION.prior/ctx:Root:XCEIVER#2"
+                + "/idx:<a.Prior: void run()>@0";
+        Object[][] rows = {
+                {"the reader's own write", ANCHOR, "thread-r", true},
+                {"a write on the reader's thread", prior, "thread-r", true},
+                {"a write another thread moves past the read", prior,
+                        "thread-o", false},
+        };
+        int at = 0;
+        for (Object[] row : rows) {
+            Path iteration = folder.newFolder("overtaken-" + at++).toPath();
+            Endpoint own = Endpoint.of(OccurrenceAddress.parse(
+                    (String) row[1]), "a.Store#load()#3:WRITE",
+                    ExecutionIndex.of(Collections.singletonList(Frame.of(
+                            "<a.Store: void load()>", 0))), 0);
+            List<ActivationRow> activations = new ArrayList<ActivationRow>();
+            activations.add(ActivationRow.of("ovt", anchor, "TASK.r", false,
+                    true, "thread-r", ActivationRow.ClaimKind.NONE, null));
+            activations.add(ActivationRow.of("ovt", mint, "TASK.w", false,
+                    true, "thread-w", ActivationRow.ClaimKind.NONE, null));
+            if (!ANCHOR.equals(row[1])) {
+                activations.add(ActivationRow.of("ovt", own.occurrence(),
+                        "TASK.o", false, true, (String) row[2],
+                        ActivationRow.ClaimKind.NONE, null));
+            }
+            SessionDir dir = SessionDir.of(iteration, "ovt");
+            RowCodec.writeAll(dir.activations(), activations,
+                    RowCodec::writeActivation);
+            RowCodec.writeAll(dir.writes(), Arrays.asList(
+                    WriteRow.of("ovt", 10L, writer, CELL, 10L, "", "I"),
+                    WriteRow.of("ovt", 20L, own, CELL, 20L, "", "I")),
+                    RowCodec::writeWrite);
+            RowCodec.writeAll(dir.reads(), Collections.singletonList(
+                    ReadRow.of("ovt", 30L, reader, CELL, 20L, "S_cell", "I",
+                            null)), RowCodec::writeRead);
+            ConfirmMain.Holding holding = ConfirmMain.holding(
+                    SessionReader.read(iteration, "ovt"),
+                    Collections.singletonMap(Confirmation.id(reader),
+                            Confirmation.id(writer)));
+            boolean before = false;
+            for (JsonObject edge : holding.edges) {
+                if (!"ORDER".equals(edge.get("kind").getAsString())) continue;
+                before |= edge.get("before").getAsString().startsWith(
+                        own.occurrence().id() + "|")
+                        && writer.activation().equals(
+                        edge.get("after").getAsString());
+            }
+            assertEquals(row[0] + ": " + holding.edges, row[3], before);
+        }
+    }
+
+    @Test
     public void aForcedPathIsConfirmedUnforcedOnTheRecordingsSchedule()
             throws Exception {
         Path iteration = iteration();

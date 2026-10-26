@@ -1174,6 +1174,24 @@ public final class ConfirmMain {
                     last.get(occurrence.id()));
         }
 
+        private boolean overtaken(WriteRow other, WriteRow held,
+                                  ReadRow read) {
+            if (held.version() >= read.observedVersion()
+                    || other.version() <= held.version()
+                    || other.version() > read.observedVersion()) {
+                return false;
+            }
+            OccurrenceAddress writer = other.endpoint().occurrence();
+            OccurrenceAddress reader = read.endpoint().occurrence();
+            if (writer.id().equals(reader.id())) return true;
+            ActivationRow wrote = activations.get(writer.id());
+            ActivationRow reads = activations.get(reader.id());
+            return wrote != null && reads != null
+                    && wrote.threadKey() != null
+                    && !wrote.threadKey().isEmpty()
+                    && wrote.threadKey().equals(reads.threadKey());
+        }
+
         private String order(Holding holding, Exit first, Endpoint then,
                              long thenSeq) {
             if (first.occurrence.id().equals(then.occurrence().id())) {
@@ -1680,7 +1698,8 @@ public final class ConfirmMain {
                         || other.initial()) {
                     continue;
                 }
-                if (!held.initial() && RowOrder.compare(other, held) < 0) {
+                if (!held.initial() && (RowOrder.compare(other, held) < 0
+                        || closure.overtaken(other, held, read))) {
                     holding.order(closure.order(holding, closure.exit(
                             other.endpoint(), other.seq()), held.endpoint(),
                             held.seq()), model);
