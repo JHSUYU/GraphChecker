@@ -4,3 +4,4 @@
 # (experiments/hbase/trees.tsv, hbase-bug-<jira>). The case directory hbase-buggy-<jira> declares the check; its README
 # the bug, the point, what was put back and why, and the result. A case's row is added with its directory.
 # case	branch	budget_s	jira	point(s)
+hbase-buggy-20642	system/hbase-buggy-detect	21600	HBASE-20642	hbase-adhoc-04
