@@ -6,3 +6,4 @@
 # SOLR-6763 (solr-adhoc-38) has a README only: masked on today's code by SOLR-7844 (solr-buggy-6763/README.md).
 # case	branch	budget_s	jira	point(s)
 solr-buggy-6101	system/solr-buggy-detect	21600	SOLR-6101	solr-adhoc-19
+solr-buggy-6197	system/solr-buggy-detect	21600	SOLR-6197	solr-adhoc-19
