@@ -2767,6 +2767,98 @@ public class ComposerTest {
     }
 
     @Test
+    public void anEarlierWriterOvertakesWritesTheReaderCannotPass()
+            throws Exception {
+        Object[][] table = {
+                {"overtakes the reader's own write", true},
+                {"an alternative on the reader's thread", false},
+                {"a later alternative ahead of the reader's own write", true},
+                {"a later alternative on the reader's thread", false},
+                {"a later alternative past a constructor write", false},
+                {"a constructor write in between", false},
+                {"overtakes one, the other passes the read", true},
+                {"overtakes one, the other neither", false},
+        };
+        for (Object[] row : table) {
+            String shape = (String) row[0];
+            Path iteration = folder.newFolder("overtake-"
+                    + Math.abs(shape.hashCode())).toPath();
+            LocationId field = LocationId.of(LocationKind.INSTANCE, "623",
+                    "32");
+            OccurrenceAddress reader = occurrence("case/dn0", "REGION.load",
+                    CausalContext.of(Role.of("BP_SERVICE_ACTOR"), "", 1),
+                    frame("Storage#load#1", 0));
+            OccurrenceAddress writer = occurrence("case/dn0",
+                    "REGION.upgrade", CausalContext.of(Role.EXECUTOR_TASK,
+                            "", 1), frame("Upgrade#call#1", 0));
+            OccurrenceAddress other = occurrence("case/dn0", "REGION.other",
+                    CausalContext.of(Role.of("HEARTBEAT_TICK"), "", 1),
+                    frame("Heartbeat#run#1", 0));
+            boolean onReaderThread = shape.startsWith("an alternative")
+                    || shape.endsWith("on the reader's thread");
+            Session session = new Session(iteration, "s0", false);
+            session.occurrence = reader;
+            session.activation(reader, "thread#reader", false);
+            session.activation(writer, onReaderThread ? "thread#reader"
+                    : "thread#upgrade", false);
+            session.activation(other, "thread#other", false);
+            session.marker("false");
+            session.expression("EXPR.v1.k", constant("false"));
+            Endpoint written = Endpoint.of(writer, "Upgrade#set#3:WRITE",
+                    at("w#1", 0), 0);
+            OccurrenceAddress prior = occurrence("case/dn0", "REGION.prior",
+                    CausalContext.of(written.id(), "TASK/done"),
+                    frame("Storage#apply#1", 0));
+            session.activation(prior, "thread#reader", false);
+            boolean later = shape.startsWith("a later");
+            boolean built = shape.endsWith("a constructor write");
+            long own = built ? 4L : later ? 2L
+                    : shape.startsWith("overtakes one")
+                    || shape.startsWith("a constructor") ? 3L : 2L;
+            long alternative = later ? 3L : 1L;
+            long observed = later ? 1L : own;
+            session.write(written, field, alternative, "EXPR.v1.k");
+            if (later) {
+                session.write(Endpoint.of(other, "Heartbeat#set#2:WRITE",
+                        at("w#2", 0), 0), field, 1L, "EXPR.v1.k");
+                if (built) {
+                    session.write(Endpoint.of(other,
+                            "Holder#<init>()V#6:WRITE", at("w#6", 0), 0),
+                            field, 2L, "EXPR.v1.k");
+                }
+            } else if (shape.startsWith("a constructor")) {
+                session.write(Endpoint.of(other, "Holder#<init>()V#2:WRITE",
+                        at("w#2", 0), 0), field, 2L, "EXPR.v1.k");
+            } else if (shape.endsWith("passes the read")) {
+                session.write(Endpoint.of(other, "Heartbeat#set#2:WRITE",
+                        at("w#2", 0), 0), field, 2L, "EXPR.v1.k");
+            } else if (shape.endsWith("neither")) {
+                session.write(Endpoint.of(prior, "Storage#apply#2:WRITE",
+                        at("w#2", 0), 0), field, 2L, "EXPR.v1.k");
+            }
+            session.write(Endpoint.of(reader, "Storage#readProperties#4:WRITE",
+                    at("w#3", 0), 0), field, own, "EXPR.v1.k");
+            session.read(Endpoint.of(reader, "Storage#check#5:READ",
+                    at("r#1", 0), 0), field, observed,
+                    "INSTANCE_STATE/623#32@v" + observed + "@s0", null);
+            session.target("true", false, true);
+            session.write();
+
+            Corpus corpus = Corpus.read(iteration, null);
+            edu.uva.liftlab.graphchecker.smt.Arms rule =
+                    new edu.uva.liftlab.graphchecker.smt.Arms(corpus);
+            String key = SmtLowering.locationKey(field);
+            List<WriteRow> writes = corpus.writesOf("s0", key);
+            WriteRow candidate = null;
+            for (WriteRow write : writes) {
+                if (write.version() == alternative) candidate = write;
+            }
+            assertEquals(shape, row[1], rule.eligible(reader, "s0", key,
+                    writes, observed, candidate));
+        }
+    }
+
+    @Test
     public void everyStringOperationTheVmCarriesIsJavasOwn() {
         StringRows rows = new StringRows(solver());
         JsonObject s = vmLeaf("SymbolExpression", "s", "java/lang/String");

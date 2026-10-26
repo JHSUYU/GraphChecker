@@ -856,7 +856,10 @@ are counted, never dropped silently: `concreteAnchors` states how many
   version, and every other the one eligibility rule `Arms#eligible` admits: a write of the same
   session the read could have run right after -- its occurrence HB-concurrent, `Arms.concurrent`: not
   the same thread key, neither an anchor-chain ancestor of the other, both chains reaching a Root,
-  neither Lost; every write between the two an HB-concurrent occurrence's; none of them under
+  neither Lost; every write between the two an HB-concurrent occurrence's, or one the write can
+  overtake (its occurrence HB-concurrent with that write's), whether earlier or later than the
+  observed version;
+  none of them under
   construction, a constructor or class initializer anywhere on its frame chain; no version between
   them a read observed and no row states -- or the location's INITIAL by the same test, whose
   expression's symbols are demanded and which is no task: no occurrence wrote it), and every activated occurrence on the reader's node holding a static write site of the
@@ -1444,13 +1447,16 @@ names gets one rule:
   Another run's arrival never binds it.
 - READ: the eligible writers (`Arms.stateArms`, the location's INITIAL among them, the writer at
   version 0) become one Bool selector each (`wchoice_*`, exactly one), one choice per (reader
-  occurrence, location) binding every read of it, so a writer's choice is the run only where every
-  read saw that writer's one write; where the reads saw several writes, or a version no row wrote,
-  one more selector, the run's own (`wchoice_*_run`, `FlipQuery#choices`), holds each read to the
-  value it read (its observed write's delivery, else its row's `concreteValue`; neither refuses
-  `UNSTATED_VALUE`) and is the recorded pairing, as COMPOSE's observed arm is (§8): a model taking it
-  plants nothing, `heldToRecording` asserts it, and the writer choices stay beside it, less those a
-  read of another version could not have seen (`Arms#eligible`); by COMPOSE's gate, only where a
+  occurrence, location, observed version) binding every read of it that saw that one write, so reads
+  of one occurrence that saw different writes -- a loop that reads a field again after another
+  writer moved it -- are proposed apart, each choice with the writers its own reads could have seen
+  (`Arms#eligible`); coherence between two such choices of one occurrence (a later read seeing an
+  older write) is not enforced, an over-approximation CONFIRM guards. Where the reads saw a version
+  no row wrote, one more selector, the run's own (`wchoice_*_run`, `FlipQuery#choices`), holds each
+  read to the value it read (its observed write's delivery, else its row's `concreteValue`; neither
+  refuses `UNSTATED_VALUE`) and is the recorded pairing, as COMPOSE's observed arm is (§8): a model
+  taking it plants nothing, `heldToRecording` asserts it, and the writer choices stay beside it; by
+  COMPOSE's gate, only where a
   writer left is HB-concurrent with the reader, else the block is no choice and each read is held
   to the value it read; a writer
   whose write lowers to another sort than the read delivers nothing it could be and is no choice
@@ -3882,7 +3888,29 @@ with it is a `RUN_DEFECT`.
   command its `LockTree` lock (a command of an overlapping lock ordered before it stays parked by
   the processor) and its pool's room (an `AbortPolicy` pool past its maximum rejects the next
   submission); both end at the order's timeout, an order not held in time; every other
-  writer of the location the held write is of before the writer or after the reader, held alike, and
+  writer of the location the held write is of before the writer or after the reader, held alike --
+  an earlier one before the writer, a later one after the reader, except a later one between the
+  writer and the version the read observed that the reader cannot pass (`StateClosure#overtaken`:
+  `Arms#concurrent` false for the reader and it, the rule `Arms#eligible` admits such a writer by,
+  decided here on the session's own rows). The writer must overtake it (`Arms#concurrent` true for
+  the two writers, else `PAIRING_UNHELD`), so it is held before the writer, and the reader is held
+  not where `holdBefore` would hold it -- that sub-frame can contain the overtaken write, a cycle
+  that sits until the order's timeout -- but at its first activation entered after the activation
+  the writer waits on (that write's frame, or the occurrence's close for a write at its shallowest
+  depth) has exited (`StateClosure#holdAfter` from `exited`; a hold nested in that frame cycles too;
+  none before the read is `PAIRING_UNHELD`): the writer then runs
+  where the overtaken write ends, as early as the order allows, and every later event of the reader
+  stays after it, as recorded (hdfs-buggy-14311: vol1's upgrade task writes `layoutVersion` and
+  `cTime` while vol2's `readProperties` is held at `setNamespaceID`, after its `setLayoutVersion`,
+  so vol2's `setcTime` still follows the task's). For a writer LATER than the version the read
+  observed, a write between them that the reader cannot pass (`StateClosure#undertaken`) is one
+  the writer moves ahead of: it stays after the reader (read before it), not before the writer, and
+  the writer must be able to overtake it, else `PAIRING_UNHELD`. Every write ordered before the
+  writer that the reader cannot pass and that precedes the read bounds the reader's hold the same
+  way (for a later writer: the observed write itself, the reader's own write in a sub-frame,
+  where `holdBefore` would cycle); there `holdBefore`'s frame stands when it already begins after
+  the bound, else the first such activation (`StateClosure#heldAfter`). The earlier-writer case
+  keeps the first activation after the bound -- and
   for an INITIAL the model chose every writer of the location after the reader. Only a write row of
   the selected session names such a writer. A store that ran outside every activation in that
   session (`UNATTRIBUTED_STORE`) has no row, so no order holds it, and the run's read of its version

@@ -1225,6 +1225,62 @@ public class ExploreTest {
     }
 
     @Test
+    public void readsThatObservedDifferentWritesAreProposedApart()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Object[][] rows = {
+                {6L, "(and (= M_READ_KEY 2) (> M_READ_AGAIN 0))", 2,
+                        Verdict.SAT_MODEL_READY, 1},
+                {6L, "(and (= M_READ_KEY 3) (> M_READ_AGAIN 0))", 2,
+                        Verdict.UNSAT, 0},
+                {5L, "(and (= M_READ_KEY 2) (> M_READ_AGAIN 0))", 1,
+                        Verdict.SAT_MODEL_READY, 2},
+                {5L, "(and (= M_READ_KEY 2) (= M_READ_AGAIN 1))", 1,
+                        Verdict.UNSAT, 0},
+        };
+        int at = 0;
+        for (Object[] row : rows) {
+            String name = "apart-" + at++;
+            Path iteration = twoWriters(name, (String) row[1], null, "I",
+                    (Long) row[0]);
+            Path out = tree.newFolder(name + "-out").toPath();
+            Path wave0 = out.resolve("obligations-0000");
+            plan(iteration, TARGET_SELECTOR, null,
+                    out.resolve("results.jsonl"), wave0, 0);
+            Obligation lookup = named(obligations(wave0), "Lookup#u8");
+            Corpus corpus = Corpus.read(iteration, null);
+            ObligationFactory.Candidate candidate =
+                    ObligationFactory.locate(corpus, lookup);
+            FlipQuery.Built built = corpus.asking(() -> FlipQuery.build(
+                    corpus, candidate.task, candidate.path, candidate.index));
+            int choices = 0;
+            int bound = 0;
+            for (FlipQuery.WriterChoice choice : built.choices) {
+                if (!KEY_ID.equals(choice.reads.get(0).location())) continue;
+                choices++;
+                for (ReadRow read : choice.reads) {
+                    bound++;
+                    assertEquals(name + ": one choice, one observed write",
+                            choice.reads.get(0).observedVersion(),
+                            read.observedVersion());
+                }
+            }
+            assertEquals(name + ": choices", row[2], choices);
+            assertEquals(name + ": both reads bound", 2, bound);
+            ObligationFactory.Outcome asked = corpus.asking(() ->
+                    ObligationFactory.solve(corpus, candidate, new Z3(
+                            Paths.get("z3"), 10_000L, 1152),
+                            Solved.in(iteration), "plan", Collections
+                                    .<String, ObligationDir.Answer>emptyMap(),
+                            null));
+            assertEquals(name + ": " + asked.result.detail(), row[3],
+                    asked.result.verdict());
+            assertEquals(name + ": reads replayed re-paired "
+                    + asked.pairings, row[4], asked.pairings.size());
+        }
+    }
+
+    @Test
     public void onlyAFaithfulNotAdmittedSettlesTheArm() throws Exception {
         String ran = ObligationResult.WORLD_RAN + ": occurrence o never"
                 + " reached Lookup#u8#1 in this replay, and the world it ran"
