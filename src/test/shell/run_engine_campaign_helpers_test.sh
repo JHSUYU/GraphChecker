@@ -2803,4 +2803,72 @@ jq -e '.verdict == "DUPLICATE_WORLD" and (.detail | contains("obligation OB.a"))
   || fail "DUPLICATE-WORLD: the duplicate's row names the replay that answers \
 it and its question is answered"
 
+rt_root=${test_tmp}/reproduce-tail
+rt_said=$(
+  campaign_root=${rt_root}
+  campaign_final=${rt_root}/final
+  composition_manifest=${campaign_final}/candidate_composition_manifest.json
+  analysis_classes_dir=${rt_root}/classes
+  causynth_static_scope_map=${rt_root}/scope.jsonl
+  campaign_recorded_workload_rss_mb=1000
+  campaign_recorded_workload_s=10
+  campaign_placed_host=gate-head
+  campaign_host_poll_s=0
+  reproduce_runs=2
+  reproduce_charge_pct=130
+  reproduce_time_factor=3
+  reproduce_min_s=60
+  mkdir -p "${campaign_final}" "${rt_root}/iteration-0000"
+  echo '{"solver":{"campaignClaim":{"claim":"SAT_CANDIDATE"}}}' \
+    >"${composition_manifest}"
+  echo '{"confirmed":true,"sessionId":"S1"}' >"${campaign_final}/confirm.json"
+  campaign_log() { :; }
+  campaign_host_is_local() { return 0; }
+  campaign_head_charged() { shift 2; "$@"; }
+  run_java_main() {
+    local plant=""
+    while [[ $# -gt 0 ]]; do
+      [[ "$1" == --plant ]] && plant=$2
+      shift
+    done
+    printf '%s\n' \
+      '{"kind":"ROOT","category":"FAULT","rootId":"F","occurrence":"o1","siteId":"s#u1","value":"true","row":0}' \
+      '{"kind":"TARGET","occurrence":"anc","siteId":"g#u4","value":true,"row":1}' \
+      >"${plant}"
+  }
+  run_configured_workload() {
+    local run=$1 trace=$1/runtime_trace.jsonl
+    case "${run}" in
+      */control/*) echo '{"event":"PLANT_FATAL","atAnchor":false}' >"${trace}" ;;
+      */run-1) printf '%s\n' \
+        '{"event":"PLANT_APPLIED","row":0}' \
+        '{"event":"PLANT_ANSWERED","planned":"P","plannedId":"anc","occurrenceAddress":"retry"}' \
+        '{"event":"PLANT_FATAL","atAnchor":true}' >"${trace}" ;;
+      *) printf '%s\n' '{"event":"PLANT_APPLIED","row":0}' \
+        '{"event":"PLANT_ANSWERED","planned":"Q","plannedId":"other","occurrenceAddress":"elsewhere"}' \
+        '{"event":"PLANT_FATAL","atAnchor":true}' >"${trace}" ;;
+    esac
+  }
+  campaign_reproduce "${rt_root}/iteration-0000"
+)
+rt_dir=${rt_root}/final/reproduce
+jq -e '.runs == 2 and .atAnchor == 2 and .answeredByShape == 1
+    and .reproduced == 2 and .control.runs == 2 and .control.fatal == 2
+    and .control.atAnchor == 0 and .control.answeredByShape == 0' \
+  "${rt_root}/final/reproduce.json" >/dev/null \
+  || fail "REPRODUCE-TAIL: reproduce.json counts $(cat "${rt_root}/final/reproduce.json")"
+jq -e '.answeredByShape and .answeredBy == "retry"' \
+  "${rt_dir}/run-1/answer.json" >/dev/null \
+  && jq -e '(.answeredByShape | not) and .answeredBy == "" and .atAnchor' \
+    "${rt_dir}/run-2/answer.json" >/dev/null \
+  || fail "REPRODUCE-TAIL: a run answered by shape is the one whose \
+PLANT_ANSWERED names the anchor: $(cat "${rt_dir}"/run-*/answer.json)"
+[[ "$(grep -c '^ADDRESS_UNSTABLE ' "${rt_dir}/plant.log")" == 1 ]] \
+  && grep -q '^ADDRESS_UNSTABLE run-1: the fatal at the anchor, in the occurrence that answered it by its shape (IDENTITY 9), which this run computed at retry$' \
+    "${rt_dir}/plant.log" \
+  || fail "REPRODUCE-TAIL: plant.log names $(cat "${rt_dir}/plant.log")"
+[[ "${rt_said}" == *"2 at the anchor -- 1 of them in the occurrence that answered the anchor by its shape --"* \
+    && "${rt_said}" == *"control 0 of 2: the fatal at the anchor with nothing the model chose planted (0 answered by its shape, 2 fatal)"* ]] \
+  || fail "REPRODUCE-TAIL: campaign_reproduce's last line said '${rt_said}'"
+
 echo "run_engine campaign helper tests passed"

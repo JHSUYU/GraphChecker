@@ -33,6 +33,7 @@ public final class RecordingPlant {
     static final String OBSERVED = "PLANT_OBSERVED";
     static final String UNWRITTEN = "PLANT_UNWRITTEN";
     static final String FATAL = "PLANT_FATAL";
+    static final String ANSWERED_BY_SHAPE = "PLANT_ANSWERED";
     public static final String ROOT = "ROOT";
     public static final String ORDER = "ORDER";
     public static final String VIEW_HOLD = "VIEW_HOLD";
@@ -60,6 +61,12 @@ public final class RecordingPlant {
     public static final String REGIONS = "regions";
     public static final String ENDPOINT = "endpoint";
     public static final String PORT = "port";
+    public static final String ROOT_METHOD = "rootMethod";
+    public static final String PLANNED = "planned";
+    public static final String SHAPE = "shape";
+    public static final String RECORDED_BESIDE = "recordedBeside";
+    public static final String ROOT_CALL = "rootCall";
+    public static final String RECEIVER_CLASS = "receiverClass";
 
     private static final boolean PLANTING = !file().isEmpty();
     private static volatile Plant plant;
@@ -177,17 +184,146 @@ public final class RecordingPlant {
         final Set<String> focused;
         final Map<String, Boolean> fatalArms;
         final String anchor;
+        final Answers answers;
 
         Plant(Map<String, Map<String, Map<Integer, Root>>> markers,
               Map<String, Root> hooks, Map<String, Call> calls,
               Set<String> focused, Map<String, Boolean> fatalArms,
-              String anchor) {
+              String anchor, Answers answers) {
             this.markers = markers;
             this.hooks = hooks;
             this.calls = calls;
             this.focused = focused;
             this.fatalArms = fatalArms;
             this.anchor = anchor;
+            this.answers = answers;
+        }
+    }
+
+    static final class Planned implements AnswerOrder.Planned {
+        final OccurrenceAddress address;
+        final List<String> shape;
+        final Set<String> recordedBeside;
+        final long rootCall;
+        final String rootHookGroup;
+        final String receiverClass;
+
+        Planned(OccurrenceAddress address, List<String> shape,
+                Set<String> recordedBeside, long rootCall,
+                String rootHookGroup, String receiverClass) {
+            this.address = address;
+            this.shape = shape;
+            this.recordedBeside = recordedBeside;
+            this.rootCall = rootCall;
+            this.rootHookGroup = rootHookGroup;
+            this.receiverClass = receiverClass;
+        }
+
+        @Override
+        public OccurrenceAddress address() {
+            return address;
+        }
+
+        @Override
+        public List<String> shape() {
+            return shape;
+        }
+
+        @Override
+        public Set<String> recordedBeside() {
+            return recordedBeside;
+        }
+
+        @Override
+        public long recordedRootCall() {
+            return rootCall;
+        }
+
+        @Override
+        public String rootHookGroup() {
+            return rootHookGroup;
+        }
+    }
+
+    static final class Answers {
+        final String regionId;
+        final String rootMethod;
+        final List<Planned> planned;
+        private final String regionStep;
+        private final boolean[] bound;
+
+        Answers(String regionId, String rootMethod, List<Planned> planned) {
+            this.regionId = regionId;
+            this.rootMethod = rootMethod;
+            this.planned = planned;
+            this.regionStep = "/region/" + regionId + "/";
+            this.bound = new boolean[planned.size()];
+        }
+
+        boolean offered(String method, String address) {
+            return rootMethod.equals(method) && address.contains(regionStep);
+        }
+
+        synchronized Planned answer(final String method,
+                                    final Object receiver,
+                                    final OccurrenceAddress observed) {
+            final boolean[] shaped = new boolean[1];
+            int index = AnswerOrder.select(
+                    new AnswerOrder.Offer<OccurrenceAddress[]>() {
+                @Override
+                public List<Planned> tasks() {
+                    return planned;
+                }
+
+                @Override
+                public boolean offered(int index) {
+                    return true;
+                }
+
+                @Override
+                public OccurrenceAddress[] refusal(int index) {
+                    Planned task = planned.get(index);
+                    if (!rootMethod.equals(method)
+                            || !AnswerOrder.receiverFits(task.receiverClass,
+                            receiver)) {
+                        return new OccurrenceAddress[] {null};
+                    }
+                    return task.address.id().equals(observed.id()) ? null
+                            : new OccurrenceAddress[] {observed};
+                }
+
+                @Override
+                public OccurrenceAddress observed(OccurrenceAddress[] refusal) {
+                    return refusal[0];
+                }
+
+                @Override
+                public boolean live(int index) {
+                    return bound[index];
+                }
+
+                @Override
+                public void take(int index, boolean byShape) {
+                    bound[index] = true;
+                    shaped[0] = byShape;
+                }
+
+                @Override
+                public void unaddressed(int index,
+                                        OccurrenceAddress[] refusal) {
+                }
+
+                @Override
+                public void recordedHere(int index,
+                                         OccurrenceAddress[] refusal) {
+                }
+
+                @Override
+                public boolean openedNone() {
+                    return Identity.openedNone();
+                }
+            }, AnswerOrder.shapes());
+            return index >= 0 && shaped[0] ? planned.get(index) : null;
         }
     }
 
@@ -406,6 +542,23 @@ public final class RecordingPlant {
         CausynthTraceRecorder.plantOrdered(event, row, after, waitingFor);
     }
 
+    static String opened(String method, Object receiver, String address) {
+        if (!PLANTING || address.isEmpty() || !RecordingWindow.opened()) {
+            return address;
+        }
+        Answers answers = plant().answers;
+        if (answers == null || !answers.offered(method, address)) {
+            return address;
+        }
+        OccurrenceAddress ran = OccurrenceAddress.parse(address);
+        Planned answered = answers.answer(method, receiver, ran);
+        if (answered == null || Identity.answer(answered.address) == null) {
+            return address;
+        }
+        CausynthTraceRecorder.plantAnswered(answered.address, address);
+        return answered.address.render();
+    }
+
     static void decided(String siteId, Boolean outcome) {
         if (!PLANTING || outcome == null) return;
         Plant rows = plant();
@@ -524,6 +677,8 @@ public final class RecordingPlant {
         Set<String> focused = new LinkedHashSet<String>();
         Map<String, Boolean> fatalArms = new LinkedHashMap<String, Boolean>();
         String anchor = null;
+        Answers answers = null;
+        String facts = null;
         for (JsonObject row : ArtifactIO.readJsonl(file)) {
             String kind = optionalString(row, KIND);
             if (!row.has(ROW) || !row.get(ROW).isJsonPrimitive()
@@ -565,6 +720,15 @@ public final class RecordingPlant {
                 anchor = occurrence;
                 fatalArms.put(optionalString(row, SITE),
                         row.get(VALUE).getAsBoolean());
+                String stated = optionalString(row, ROOT_METHOD) + "\n"
+                        + row.get(PLANNED);
+                if (facts != null && !facts.equals(stated)) {
+                    throw new IOException("the plant's target rows state "
+                            + "two plans of the anchor's root hook group: "
+                            + row);
+                }
+                facts = stated;
+                answers = answers(row, occurrence);
             } else if (!VIEW_HOLD.equals(kind)
                     && (!ORDER.equals(kind) || !ordered(row))) {
                 throw new IOException("not a plant row: " + row);
@@ -578,7 +742,55 @@ public final class RecordingPlant {
                 Collections.unmodifiableMap(hooks),
                 Collections.unmodifiableMap(calls),
                 Collections.unmodifiableSet(focused),
-                Collections.unmodifiableMap(fatalArms), anchor);
+                Collections.unmodifiableMap(fatalArms), anchor, answers);
+    }
+
+    private static Answers answers(JsonObject row, String anchor)
+            throws IOException {
+        if (!row.has(PLANNED)) return null;
+        String rootMethod = optionalString(row, ROOT_METHOD);
+        if (rootMethod.isEmpty() || !row.get(PLANNED).isJsonArray()) {
+            throw new IOException("a target row whose plan names no root "
+                    + "method or no tasks: " + row);
+        }
+        List<Planned> planned = new ArrayList<Planned>();
+        String regionId = null;
+        boolean shaped = false;
+        for (JsonElement element : row.getAsJsonArray(PLANNED)) {
+            JsonObject task = element.isJsonObject()
+                    ? element.getAsJsonObject() : null;
+            OccurrenceAddress address = null;
+            try {
+                address = task == null ? null : OccurrenceAddress.parse(
+                        optionalString(task, OCCURRENCE));
+            } catch (RuntimeException notAnAddress) {
+                address = null;
+            }
+            if (address == null || !task.has(ROOT_CALL)
+                    || !task.get(ROOT_CALL).isJsonPrimitive()
+                    || !task.getAsJsonPrimitive(ROOT_CALL).isNumber()
+                    || regionId != null
+                    && !regionId.equals(address.regionId())) {
+                throw new IOException("not a planned task of one region: "
+                        + element);
+            }
+            regionId = address.regionId();
+            List<String> shape = Collections.unmodifiableList(
+                    texts(task, SHAPE));
+            shaped |= address.id().equals(anchor) && !shape.isEmpty();
+            planned.add(new Planned(address, shape,
+                    Collections.unmodifiableSet(new LinkedHashSet<String>(
+                            texts(task, RECORDED_BESIDE))),
+                    task.get(ROOT_CALL).getAsLong(), "METHOD\n" + regionId
+                    + "\n" + rootMethod, optionalString(task,
+                    RECEIVER_CLASS)));
+        }
+        if (!shaped) {
+            throw new IOException("a target row whose plan holds no task at "
+                    + "its anchor with a context shape: " + row);
+        }
+        return new Answers(regionId, rootMethod,
+                Collections.unmodifiableList(planned));
     }
 
     private static String root(JsonObject row, int number,

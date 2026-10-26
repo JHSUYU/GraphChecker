@@ -5,7 +5,6 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
-import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.Frame;
@@ -200,17 +199,6 @@ final class ConcolicTaskPlan {
         return index != null && answeredByShape[index];
     }
 
-    private static boolean earlier(RuntimeTask task, RuntimeTask other) {
-        return task.recordedRootCall >= 0L && (other.recordedRootCall < 0L
-                || task.recordedRootCall < other.recordedRootCall);
-    }
-
-    private static Function<CausalContext, List<String>> shapes() {
-        final Map<CausalContext, List<String>> read =
-                new HashMap<CausalContext, List<String>>();
-        return context -> read.computeIfAbsent(context, ScheduleLog::shape);
-    }
-
     synchronized void markOccurrenceClaimed(RuntimeTask task) {
         Integer index = slots.get(task);
         if (index != null) occurrenceClaimed[index] = true;
@@ -242,7 +230,7 @@ final class ConcolicTaskPlan {
             return new LoopRootAdmission(admitted, null);
         }
         ObservedAddresses observedAddresses = new ObservedAddresses();
-        Function<CausalContext, List<String>> shapes = shapes();
+        Function<CausalContext, List<String>> shapes = AnswerOrder.shapes();
         RuntimeTask answering = null;
         RefusedCandidate answered = null;
         for (RuntimeTask task : tasks) {
@@ -262,7 +250,7 @@ final class ConcolicTaskPlan {
                     continue;
                 }
                 if (shaped && (answering == null
-                        || earlier(task, answering))) {
+                        || AnswerOrder.earlier(task, answering))) {
                     if (answering != null) {
                         answering.noteUnaddressedCandidate(answered);
                     }
@@ -281,8 +269,10 @@ final class ConcolicTaskPlan {
             admitted.add(task.taskId);
         }
         if (answering == null) return new LoopRootAdmission(admitted, null);
-        if (!admitted.isEmpty() || !answeredHere(answering, answered,
-                answering.rootHookGroup, activationSource)) {
+        if (!admitted.isEmpty() || !AnswerOrder.answeredHere(new Offered(
+                answering.rootHookGroup, rootMethod, receiver, rootArguments,
+                activationSource, observedAddresses), slots.get(answering),
+                answered)) {
             if (!admitted.isEmpty()) {
                 answering.noteUnaddressedCandidate(answered);
             }
@@ -310,74 +300,90 @@ final class ConcolicTaskPlan {
                 RuntimeTraceContext.activationSource(receiver);
 
         if (!RecordingWindow.opened()) return null;
-        ObservedAddresses observedAddresses = new ObservedAddresses();
-        Function<CausalContext, List<String>> shapes = shapes();
-        int answering = -1;
-        RefusedCandidate answered = null;
-        for (int index = 0; index < tasks.size(); index++) {
+        int index = AnswerOrder.select(new Offered(nonNull(rootHookGroupKey),
+                rootMethod, receiver, rootArguments, activationSource,
+                new ObservedAddresses()), AnswerOrder.shapes());
+        return index < 0 ? null : tasks.get(index);
+    }
+
+    private final class Offered
+            implements AnswerOrder.Offer<RefusedCandidate> {
+        private final String rootHookGroupKey;
+        private final String rootMethod;
+        private final Object receiver;
+        private final Object[] rootArguments;
+        private final SourceRef activationSource;
+        private final ObservedAddresses observedAddresses;
+
+        private Offered(String rootHookGroupKey, String rootMethod,
+                        Object receiver, Object[] rootArguments,
+                        SourceRef activationSource,
+                        ObservedAddresses observedAddresses) {
+            this.rootHookGroupKey = rootHookGroupKey;
+            this.rootMethod = rootMethod;
+            this.receiver = receiver;
+            this.rootArguments = rootArguments;
+            this.activationSource = activationSource;
+            this.observedAddresses = observedAddresses;
+        }
+
+        @Override
+        public List<RuntimeTask> tasks() {
+            return tasks;
+        }
+
+        @Override
+        public boolean offered(int index) {
             RuntimeTask task = tasks.get(index);
-            if (!task.rootHookGroup.equals(
-                    nonNull(rootHookGroupKey))) continue;
-            if (task.completedGoalReserved) continue;
-            RefusedCandidate refused = task.loopBodyRoot
+            return task.rootHookGroup.equals(rootHookGroupKey)
+                    && !task.completedGoalReserved;
+        }
+
+        @Override
+        public RefusedCandidate refusal(int index) {
+            RuntimeTask task = tasks.get(index);
+            return task.loopBodyRoot
                     ? unenclosedBody(task, activationSource)
-                    : refusal(task, false, rootMethod,
+                    : ConcolicTaskPlan.refusal(task, false, rootMethod,
                             task.rootArgumentSelector, receiver,
                             rootArguments, activationSource,
                             observedAddresses);
-            if (refused != null) {
-                if (!candidateLive[index]
-                        && task.answers(refused.observed, shapes)
-                        && (answering < 0
-                        || earlier(task, tasks.get(answering)))) {
-                    if (answering >= 0) {
-                        tasks.get(answering).noteUnaddressedCandidate(
-                                answered);
-                    }
-                    answering = index;
-                    answered = refused;
-                    continue;
-                }
-                task.noteUnaddressedCandidate(refused);
-                continue;
-            }
-            if (candidateLive[index]) continue;
-            candidateLive[index] = true;
-            answeredByShape[index] = false;
-            if (answered != null) {
-                tasks.get(answering).noteUnaddressedCandidate(answered);
-            }
-            return task;
         }
-        if (answering < 0) return null;
-        RuntimeTask earliest = tasks.get(answering);
-        if (!answeredHere(earliest, answered, rootHookGroupKey,
-                activationSource)) {
-            return null;
-        }
-        candidateLive[answering] = true;
-        answeredByShape[answering] = true;
-        return earliest;
-    }
 
-    private boolean answeredHere(RuntimeTask task,
-                                 RefusedCandidate answered,
-                                 String rootHookGroupKey,
-                                 SourceRef activationSource) {
-        if (task.recorded(answered.observed)) {
-            task.noteUnaddressedCandidate(RefusedCandidate.onAddress(
-                    "the recording opened this address itself, so the "
-                            + "activation is that occurrence and answers no "
-                            + "task by shape", answered.observed,
-                    activationSource));
-            return false;
+        @Override
+        public OccurrenceAddress observed(RefusedCandidate refusal) {
+            return refusal.observed;
         }
-        if (occupies(rootHookGroupKey, answered.observed)
-                || Identity.openedNone()) {
-            task.noteUnaddressedCandidate(answered);
-            return false;
+
+        @Override
+        public boolean live(int index) {
+            return candidateLive[index];
         }
-        return true;
+
+        @Override
+        public void take(int index, boolean byShape) {
+            candidateLive[index] = true;
+            answeredByShape[index] = byShape;
+        }
+
+        @Override
+        public void unaddressed(int index, RefusedCandidate refusal) {
+            tasks.get(index).noteUnaddressedCandidate(refusal);
+        }
+
+        @Override
+        public void recordedHere(int index, RefusedCandidate refusal) {
+            tasks.get(index).noteUnaddressedCandidate(
+                    RefusedCandidate.onAddress("the recording opened this "
+                            + "address itself, so the activation is that "
+                            + "occurrence and answers no task by shape",
+                            refusal.observed, activationSource));
+        }
+
+        @Override
+        public boolean openedNone() {
+            return Identity.openedNone();
+        }
     }
 
     synchronized RuntimeTask selectNamed(OccurrenceAddress address,
@@ -408,18 +414,8 @@ final class ConcolicTaskPlan {
     }
 
     boolean occupies(String rootHookGroupKey, OccurrenceAddress address) {
-        for (RuntimeTask task : tasks) {
-            if (task.address != null
-                    && task.rootHookGroup.equals(
-                    nonNull(rootHookGroupKey))
-                    && task.address.regionId().equals(address.regionId())
-                    && task.address.node().equals(address.node())
-                    && task.address.context().render().equals(
-                    address.context().render())) {
-                return true;
-            }
-        }
-        return false;
+        return AnswerOrder.occupies(tasks, nonNull(rootHookGroupKey),
+                address);
     }
 
     private static RefusedCandidate unenclosedBody(RuntimeTask task,
@@ -642,9 +638,7 @@ final class ConcolicTaskPlan {
         }
 
         private boolean matches(Object receiver) {
-            return receiverRuntimeClass.isEmpty()
-                    || receiver != null && receiverRuntimeClass.equals(
-                            receiver.getClass().getName());
+            return AnswerOrder.receiverFits(receiverRuntimeClass, receiver);
         }
 
         private String describe() {
@@ -743,7 +737,7 @@ final class ConcolicTaskPlan {
         }
     }
 
-    static final class RuntimeTask {
+    static final class RuntimeTask implements AnswerOrder.Planned {
         final String taskId;
         final String rootHookGroup;
         final String loopRootHookGroup;
@@ -976,16 +970,32 @@ final class ConcolicTaskPlan {
 
         boolean answers(OccurrenceAddress observed,
                         Function<CausalContext, List<String>> shapes) {
-            return !shape.isEmpty() && address != null && observed != null
-                    && observed.regionId().equals(address.regionId())
-                    && observed.node().equals(address.node())
-                    && ContextShape.answers(observed, address,
-                    shapes.apply(observed.context()), shape);
+            return AnswerOrder.answers(this, observed, shapes);
         }
 
-        boolean recorded(OccurrenceAddress observed) {
-            return observed != null
-                    && recordedBeside.contains(observed.id());
+        @Override
+        public OccurrenceAddress address() {
+            return address;
+        }
+
+        @Override
+        public List<String> shape() {
+            return shape;
+        }
+
+        @Override
+        public Set<String> recordedBeside() {
+            return recordedBeside;
+        }
+
+        @Override
+        public long recordedRootCall() {
+            return recordedRootCall;
+        }
+
+        @Override
+        public String rootHookGroup() {
+            return rootHookGroup;
         }
 
         String addressDifference(OccurrenceAddress observed) {

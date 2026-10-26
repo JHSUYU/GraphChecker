@@ -40,7 +40,10 @@ import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.option.LongOptions;
+import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
+import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
+import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import edu.uva.liftlab.graphchecker.runtime.MessageDoors;
@@ -62,6 +65,7 @@ import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
 
@@ -534,6 +538,9 @@ public final class ConfirmMain {
             }
         }
         int context = rows.size();
+        JsonObject planned = plannedGroup(
+                iteration.resolve("execution_task_plan.jsonl"),
+                witness.anchor);
         for (StaticScopeMap.Site target
                 : StaticScopeMap.read(scopeMap).targetSites()) {
             for (int index = 0; index < target.guards.size()
@@ -545,6 +552,12 @@ public final class ConfirmMain {
                 row.addProperty(RecordingPlant.SITE, target.guards.get(index));
                 row.addProperty(RecordingPlant.VALUE,
                         target.guardOutcomes.get(index));
+                if (planned != null) {
+                    for (Map.Entry<String, JsonElement> fact
+                            : planned.entrySet()) {
+                        row.add(fact.getKey(), fact.getValue().deepCopy());
+                    }
+                }
                 rows.add(row);
             }
         }
@@ -569,6 +582,84 @@ public final class ConfirmMain {
         summary.addProperty("fatalArms", rows.size() - context);
         summary.addProperty("placeholderPairings", placeholders);
         return summary;
+    }
+
+    static JsonObject plannedGroup(Path plan, OccurrenceAddress anchor)
+            throws IOException {
+        List<JsonObject> tasks = RowCodec.readJsonl(plan);
+        JsonObject anchored = null;
+        for (JsonObject task : tasks) {
+            if (anchor.render().equals(optionalString(task, "occurrenceId"))) {
+                anchored = task;
+                break;
+            }
+        }
+        String alone = "REPRODUCE answers the anchor " + anchor.render()
+                + " by its address alone: ";
+        if (anchored == null) {
+            System.err.println(alone + "the plan " + plan + " holds no task"
+                    + " at it");
+            return null;
+        }
+        if (loopBody(anchored)) {
+            System.err.println(alone + "it is a loop body, which a replay"
+                    + " answers at its loop root's enclosing entry"
+                    + " (ConcolicTaskPlan#addressLoopRootInvocation), and the"
+                    + " recording's weave opens no such entry");
+            return null;
+        }
+        if (array(anchored, RuntimeSelectedRegionFinalizer.CONTEXT_SHAPE)
+                .size() == 0) {
+            System.err.println(alone + "its plan row states no context"
+                    + " shape, so a replay answers it by its address alone"
+                    + " too");
+            return null;
+        }
+        String region = optionalString(anchored, "regionId");
+        String rootMethod = optionalString(object(anchored, "rootSelector"),
+                "method");
+        JsonArray group = new JsonArray();
+        for (JsonObject task : tasks) {
+            JsonObject selector = object(task, "rootSelector");
+            if (loopBody(task)
+                    || !region.equals(optionalString(task, "regionId"))
+                    || !rootMethod.equals(optionalString(selector,
+                    "method"))) {
+                continue;
+            }
+            if (selector.has("arguments")) {
+                System.err.println(alone + "task " + optionalString(task,
+                        "taskId") + " of its root hook group selects its"
+                        + " root by the arguments' runtime types, which the"
+                        + " recording's region entry does not see");
+                return null;
+            }
+            JsonObject planned = new JsonObject();
+            planned.addProperty(RecordingPlant.OCCURRENCE,
+                    optionalString(task, "occurrenceId"));
+            planned.add(RecordingPlant.SHAPE, array(task,
+                    RuntimeSelectedRegionFinalizer.CONTEXT_SHAPE).deepCopy());
+            planned.add(RecordingPlant.RECORDED_BESIDE, array(task,
+                    RuntimeSelectedRegionFinalizer.RECORDED_BESIDE)
+                    .deepCopy());
+            planned.addProperty(RecordingPlant.ROOT_CALL,
+                    optionalLongInteger(task,
+                            DeclaredSiteCapture.ROOT_CALL_ID, -1L));
+            planned.addProperty(RecordingPlant.RECEIVER_CLASS,
+                    "GLOBAL_INVOCATION".equals(optionalString(selector,
+                            "kind")) ? ""
+                    : optionalString(selector, "receiverClass"));
+            group.add(planned);
+        }
+        JsonObject facts = new JsonObject();
+        facts.addProperty(RecordingPlant.ROOT_METHOD, rootMethod);
+        facts.add(RecordingPlant.PLANNED, group);
+        return facts;
+    }
+
+    private static boolean loopBody(JsonObject task) {
+        return LoopBoundPolicy.LOOP_BODY_ROOT.equals(optionalString(task,
+                LoopBoundPolicy.ROOT_AUTHORITY));
     }
 
     static String implied(OccurrenceAddress[] ends,

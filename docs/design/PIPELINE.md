@@ -4105,7 +4105,14 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
   empty natively, a request handler's sixth SEND, a select whose poll count differed). The plant's
   summary counts the rows (`realizedOrders`);
 - one `TARGET` per guard of the scope map's TARGET_SITE rows, `{occurrence: <the claim's anchor
-  id>, siteId: <guard>, value: <its fatal arm>}`.
+  id>, siteId: <guard>, value: <its fatal arm>}`, each with the plan facts a native run answers the
+  anchor by (`ConfirmMain#plannedGroup`, from the iteration's plan): `rootMethod` and `planned`, every
+  task of the anchor's root hook group as `{occurrence, shape, recordedBeside, rootCall,
+  receiverClass}`. None, and `plant.log` says which (`REPRODUCE answers the anchor ... by its address
+  alone:`), where a native run cannot ask what a replay asks: the anchor is a loop body (answered at
+  its loop root's enclosing entry, which the recording's weave opens no hook at), its plan row states
+  no context shape (a replay answers it by its address alone too), or a task of the group selects its
+  root by its arguments' runtime types (the recording's region entry does not see them).
 
 Refused, with no native run (`reproduce.json` `runs` 0 and the refusal as `reason`):
 - by CONFIRM's own reading of the claim (`CONFIRM refused:`, §10): a valuation that selects no
@@ -4186,12 +4193,25 @@ mapped to a bytecode offset; an invoke no context wraps matches no row. Inside t
 - every row applied is a `PLANT_APPLIED` trace row naming its number; a recorded branch at a TARGET
   row's guard that takes its fatal arm is a `PLANT_FATAL` row stating whether an enclosing
   occurrence is the anchor's -- at the anchor the run ends (`JUnitMethodRunner.exit`, as a focused
-  replay ends at its witness), its one question answered (`runtime.RecordingPlant`).
+  replay ends at its witness), its one question answered (`runtime.RecordingPlant`);
+- an occurrence answers a planned task of the anchor's root hook group by IDENTITY.md §9's order
+  rule, the one implementation a replay admits by (`runtime.AnswerOrder#select`, called by
+  `ConcolicTaskPlan#select` and by `RecordingPlant#opened` at each unfolded entry of that region and
+  root method, `CausynthTraceRecorder#enterMethod`; the region and method are compared before any
+  shape is read): its own address first, else the earliest open task by recorded root call whose
+  shape its context has over this run's senders, held to `#answeredHere` (not an address the
+  recording opened, not a context a task of the group plans the region in, an entry that opened its
+  own occurrence) and to the root selector's method and receiver class; each task is answered once.
+  The occurrence answering a task by shape takes the planned address (`Identity#answer`, as in a
+  replay), so a fatal in the occurrence that answers the anchor is a `PLANT_FATAL` at the anchor,
+  and a `PLANT_ANSWERED` row `{planned, plannedId, occurrenceAddress}` names the address the run
+  computed (hbase-buggy-20642: the retried DisableTable's handler answers the second disable's
+  preflight).
 
 A planted run is not the recording's world, so the workload's checks of that world are off in it
 as in a replay (`CausynthTraceRecorder.replaying()` is true under `causynth.plant`). Each run states
 its answer, whatever the workload's exit, as `run-<n>/answer.json` `{exit, rows, applied, unapplied,
-planted, rootsPlanted, ordersHeld, ordersChecked, ordersObserved, fatal, atAnchor, control, reproduced}` (a control run never reproduced; `ordersChecked` the plant's checked ORDER rows, `ordersObserved` those the run observed in order, each unapplied row stating whether it was `checked`), read off its trace's plant rows
+planted, rootsPlanted, ordersHeld, ordersChecked, ordersObserved, fatal, atAnchor, answeredBy, answeredByShape, control, reproduced}` (a control run never reproduced; `answeredBy` the address the run computed for the occurrence that answered the anchor by its shape, `answeredByShape` a fatal at the anchor there; `reproduce.json` counts `answeredByShape` apart, the control's too, and `plant.log` names each such run `ADDRESS_UNSTABLE`; `ordersChecked` the plant's checked ORDER rows, `ordersObserved` those the run observed in order, each unapplied row stating whether it was `checked`), read off its trace's plant rows
 (each flushed as it is written, `CausynthTraceRecorder#writePlantRow`, so a run its bound kills keeps
 them; the trace is closed only by the run's end, §5) against the plant: the rows to apply (ROOT, ANSWER and ORDER of either scope; CLOCK_SITE and TARGET
 rows are context), how many it applied, each it did not with why (an ORDER not held in time: `LATE`

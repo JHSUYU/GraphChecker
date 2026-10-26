@@ -209,6 +209,9 @@ public final class CausynthTraceRecorder {
             String node = RuntimeTraceContext.activationSource(receiver).key();
             address = occurrenceAddress(node, region);
             folded = Identity.openedNone();
+            if (!folded) {
+                address = RecordingPlant.opened(method, receiver, address);
+            }
         }
         calls.push(new ActiveCall(id, parentCallId, parentSiteId, method,
                 receiver, context.spanId, parent == null,
@@ -1072,6 +1075,18 @@ public final class CausynthTraceRecorder {
                     "planted", nonNull(planted),
                     "occurrenceAddress", occurrence,
                     "value", value);
+        }
+    }
+
+    static void plantAnswered(OccurrenceAddress planned, String ran) {
+        synchronized (LOCK) {
+            writePlantRow(
+                    "schemaVersion", 3,
+                    "event", RecordingPlant.ANSWERED_BY_SHAPE,
+                    "seq", EVENT_COUNTER.incrementAndGet(),
+                    "planned", planned.render(),
+                    "plannedId", planned.id(),
+                    "occurrenceAddress", ran);
         }
     }
 

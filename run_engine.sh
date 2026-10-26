@@ -6975,10 +6975,12 @@ campaign_reproduce() {
   fi
   if [[ -n "${reason}" ]]; then
     jq -n --arg reason "${reason}" '{schemaVersion: 1, kind: "REPRODUCTION",
-      runs: 0, planted: 0, fatal: 0, atAnchor: 0, reproduced: 0, unheld: 0,
-      unheldLate: 0, unheldMissing: 0, holding: 0, checked: 0,
-      checkedObserved: 0, turnOrders: 0, impliedOrders: 0, reason: $reason,
-      control: {runs: 0, fatal: 0, atAnchor: 0, reason: ""}}' \
+      runs: 0, planted: 0, fatal: 0, atAnchor: 0, answeredByShape: 0,
+      reproduced: 0, unheld: 0, unheldLate: 0, unheldMissing: 0, holding: 0,
+      checked: 0, checkedObserved: 0, turnOrders: 0, impliedOrders: 0,
+      reason: $reason,
+      control: {runs: 0, fatal: 0, atAnchor: 0, answeredByShape: 0,
+        reason: ""}}' \
       >"${campaign_final}/reproduce.json"
     campaign_log "reproduce: ${reason}"
     return 0
@@ -7017,6 +7019,7 @@ ${campaign_recorded_workload_s}s, at least reproduce_min_s=${reproduce_min_s})"
     | jq -s -c --argjson runs "${reproduce_runs}" '{runs: $runs,
         fatal: map(select(.fatal)) | length,
         atAnchor: map(select(.atAnchor)) | length,
+        answeredByShape: map(select(.answeredByShape)) | length,
         reason: (if length < $runs
           then "\($runs - length) of \($runs) run(s) stated no answer"
           else "" end)}')
@@ -7035,6 +7038,7 @@ ${campaign_recorded_workload_s}s, at least reproduce_min_s=${reproduce_min_s})"
        planted: map(select(.planted)) | length,
        fatal: map(select(.fatal)) | length,
        atAnchor: map(select(.atAnchor)) | length,
+       answeredByShape: map(select(.answeredByShape)) | length,
        reproduced: map(select(.reproduced)) | length,
        unheld: map(select(any(.unapplied[];
          .why == "LATE" or .why == "MISSING"))) | length,
@@ -7050,8 +7054,22 @@ ${campaign_recorded_workload_s}s, at least reproduce_min_s=${reproduce_min_s})"
          then "\($runs - length) of \($runs) run(s) stated no answer"
          else "" end),
        control: $control}' >"${campaign_final}/reproduce.json"
-  jq -r '"  reproduced in \(.reproduced) of \(.runs) native run(s): the fatal at the anchor with every root planted and every order held (\(.planted) applied the whole plant, \(.fatal) fatal, \(.atAnchor) at the anchor, \(.unheld) an order unheld -- \(.unheldLate) one that came late, \(.unheldMissing) one that never came --, \(.holding) an order still holding; \(.checked) order(s) checked, not held, observed in order in \(.checkedObserved) run(s); \(.turnOrders) order(s) of turn-counted roots and \(.impliedOrders) order(s) implied by the replies one client thread received not planted, plant.log names them); control \(.control.atAnchor) of \(.control.runs): the fatal at the anchor with nothing the model chose planted (\(.control.fatal) fatal)"' \
+  campaign_reproduce_unstable "${dir}"
+  jq -r '"  reproduced in \(.reproduced) of \(.runs) native run(s): the fatal at the anchor with every root planted and every order held (\(.planted) applied the whole plant, \(.fatal) fatal, \(.atAnchor) at the anchor -- \(.answeredByShape) of them in the occurrence that answered the anchor by its shape --, \(.unheld) an order unheld -- \(.unheldLate) one that came late, \(.unheldMissing) one that never came --, \(.holding) an order still holding; \(.checked) order(s) checked, not held, observed in order in \(.checkedObserved) run(s); \(.turnOrders) order(s) of turn-counted roots and \(.impliedOrders) order(s) implied by the replies one client thread received not planted, plant.log names them); control \(.control.atAnchor) of \(.control.runs): the fatal at the anchor with nothing the model chose planted (\(.control.answeredByShape) answered by its shape, \(.control.fatal) fatal)"' \
     "${campaign_final}/reproduce.json"
+}
+
+campaign_reproduce_unstable() {
+  local dir=$1 answer run
+  for answer in "${dir}"/run-*/answer.json "${dir}"/control/run-*/answer.json; do
+    [[ -f "${answer}" ]] || continue
+    run=${answer#"${dir}/"}
+    jq -r --arg run "${run%/answer.json}" 'select(.answeredByShape)
+      | "ADDRESS_UNSTABLE " + $run + ": the fatal at the anchor, in the "
+        + "occurrence that answered it by its shape (IDENTITY 9), which "
+        + "this run computed at " + .answeredBy' "${answer}" \
+      >>"${dir}/plant.log"
+  done
 }
 
 campaign_confirmed_session() {
@@ -7113,6 +7131,11 @@ campaign_reproduce_run() {
     | [$planted[] | select(.check == true)] as $checks
     | ($planted | length) as $count
     | any($rows[]; .event == "PLANT_FATAL" and .atAnchor) as $atAnchor
+    | ([$plant[] | select(.kind == "TARGET") | .occurrence] | first // "")
+      as $anchor
+    | ([$rows[] | select(.event == "PLANT_ANSWERED"
+        and .plannedId == $anchor) | .occurrenceAddress] | first // "")
+      as $answeredBy
     | (all($unapplied[]; .kind == "ORDER")) as $roots
     | (any($unapplied[]; .why == "LATE" or .why == "MISSING") | not)
       as $held
@@ -7124,7 +7147,8 @@ campaign_reproduce_run() {
        ordersObserved: [$checks[] | . as $c
          | select(any(stated("PLANT_OBSERVED")[]; . == $c.row))] | length,
        fatal: any($rows[]; .event == "PLANT_FATAL"),
-       atAnchor: $atAnchor, control: $control,
+       atAnchor: $atAnchor, answeredBy: $answeredBy,
+       answeredByShape: ($atAnchor and $answeredBy != ""), control: $control,
        reproduced: (($control | not) and $atAnchor and $roots and $held)}' \
     "${trace}" >"${run}/answer.json.part"
   mv -f -- "${run}/answer.json.part" "${run}/answer.json"

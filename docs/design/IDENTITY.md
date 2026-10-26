@@ -1123,6 +1123,10 @@ worker ran before is timing, so a hand-off task's address holds none of its work
 - A different number of calls at one site on the index path moves the index; root `k` counts
   arrival order across threads of one (node, role, api); a pre-window turn is `Lost` and outside
   the schedule.
+- A native REPRODUCE run answers the anchor's root hook group by the same order rule
+  (`runtime.AnswerOrder`, PIPELINE.md §10b), from the plan facts on the plant's TARGET rows; a
+  loop-body anchor, an anchor with no shape and a group selecting roots by argument types are
+  answered by address alone there.
 - An occurrence answered by its shape (§9) states the planned anchor, which that session never sent:
   it names no sender or receiver of it, so EXPLORE finds no door of the message the run's
   occurrence actually ran under (`explore/ClosurePlanner#controlProducer`). An activation the
