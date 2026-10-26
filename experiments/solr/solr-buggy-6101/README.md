@@ -137,11 +137,12 @@ defect, `cone.json` 0 unbound, BOUNDED by world depth 0 (876 task rounds cut, th
   value natively, as it did in CONFIRM (the VM weaves `readConfiguration` only at the plan's sites).
 - **The engine support** (system/solr-buggy-detect only, reviewed): 61e881776 (ConfirmMain writes the field row from the
   plan's `configuredSourcePhases`; `RecordingPlant.fieldRead`; `PlantAgent` rewrites the planned GETFIELDs) and
-  e5c894636 (review: a method is planted only when its GETFIELDs of the field are exactly its plan sites, else
-  `PLANT_UNWRITTEN`; null owner; two roots on one field and getter-plus-field roots refused; the getter configSource
-  lookup reverted). The g runs ran on a snapshot of 61e881776; their plant rows recomputed with e5c894636 are
-  byte-identical to what they planted, and e5c894636 rewrites `CausynthLegacyCloud` the same way (fieldRead before the
-  one GETFIELD of `isLegacy(ZkStateReader)`, nothing else), so the verdict stands under the reviewed engine.
+  e5c894636 + ad3d08028 (review: a method is planted only when its GETFIELDs of the field are exactly its plan sites,
+  else `PLANT_UNWRITTEN`; null owner; two roots on one field refused, and a root a getter also returns; the getter
+  configSource lookup reverted). The g runs ran on a snapshot of 61e881776; their plant rows recomputed with
+  e5c894636 and with ad3d08028 are byte-identical to what they planted, and the reviewed agent rewrites
+  `CausynthLegacyCloud` the same way (fieldRead before the one GETFIELD of `isLegacy(ZkStateReader)`, nothing else), so
+  the verdict stands under the reviewed engine.
 - **It discriminates** (native, scratch, below): in this world the fixed split names its sub-shard replicas'
   `coreNodeName` and passes; only the put-back bare CREATE throws.
 

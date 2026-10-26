@@ -124,9 +124,9 @@ defect, `cone.json` 0 unbound, BOUNDED by world depth 0 (25 task rounds cut, the
 - **Scope of the native plant, as in the VM**: the plan's only read site of the field is `isLegacy(ZkStateReader)#u5`;
   `isLegacy(ClusterStateProvider)` (called by `ReplicaMutator.setState`) is not a plan site, so it keeps its recorded
   value natively, as it did in CONFIRM.
-- **The engine support** (reviewed): 61e881776 and e5c894636, as solr-buggy-6101 says. The run used a snapshot of
-  61e881776; its plant rows recomputed with e5c894636 are byte-identical to what it planted, and e5c894636 rewrites
-  `CausynthLegacyCloud` the same way, so the verdict stands under the reviewed engine.
+- **The engine support** (reviewed): 61e881776, e5c894636 and ad3d08028, as solr-buggy-6101 says. The run used a
+  snapshot of 61e881776; its plant rows recomputed with e5c894636 and ad3d08028 are byte-identical to what it planted,
+  and the reviewed agent rewrites `CausynthLegacyCloud` the same way, so the verdict stands under the reviewed engine.
 - **It discriminates** (native, scratch, below): in this world the fixed MIGRATE (ADDREPLICA, non-legacy on the
   Overseer) names the replica's `coreNodeName` and passes; only the put-back bare CREATE throws.
 

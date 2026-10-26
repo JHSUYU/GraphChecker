@@ -23,7 +23,7 @@ Source list: node1 `/users/ZhenyuLi/oldbug/all_73_bugs.txt` (own-throw rows: `ow
 | ZooKeeper | ZOOKEEPER-710 | zk-adhoc-02 | **SAT, native 10/10** (ZB6) | STATE: owner read paired with takeover's REVALIDATE | fixed-tree control also SAT 10/10 (plain world) |
 | ZooKeeper | ZOOKEEPER-2886 | zk-adhoc-02 | **SAT, native 10/10** (ZB6) | same, multi-only | same |
 | Solr | SOLR-9440 | solr-adhoc-31 | **SAT, native 10/10** (S9440b; S9440a's other witness native 0/10) | SessionExpired at node1's election-path create during the core CREATE: registration goes to the background, node0's wait registers before ACTIVE | -- (fix evicts; scratch: fixed tree passes 5/5) |
-| Solr | SOLR-6101 | solr-adhoc-19 | **SAT, native 10/10** (S6101g; legacyCloud field-backed by a tree workaround, CausynthLegacyCloud, planted natively by the engine's field plant 61e881776 + e5c894636); discriminating (scratch: fixed tree 0/10 in the same world) | CONFIG legacyCloud true->false at every planned read of the field, node and Overseer (the bug's own cluster-wide world) | -- (the node-only S6101e had one: fixed also threw there) |
+| Solr | SOLR-6101 | solr-adhoc-19 | **SAT, native 10/10** (S6101g; legacyCloud field-backed by a tree workaround, CausynthLegacyCloud, planted natively by the engine's field plant 61e881776 + e5c894636 + ad3d08028); discriminating (scratch: fixed tree 0/10 in the same world) | CONFIG legacyCloud true->false at every planned read of the field, node and Overseer (the bug's own cluster-wide world) | -- (the node-only S6101e had one: fixed also threw there) |
 | Solr | SOLR-6197 | solr-adhoc-19 | **SAT, native 10/10** (S6197g); discriminating (scratch: fixed tree 0/10) | same | -- (node-only S6197e had one) |
 | Solr | SOLR-6763 | solr-adhoc-38 | not reachable on today's code (no run): masked by SOLR-7844 | -- | -- |
 
@@ -39,7 +39,7 @@ Branches (nothing pushed): GraphChecker `system/hdfs-buggy-detect`, `system/hbas
 `graphchecker/{hdfs,hbase,zk,solr}-bug-<jira>` in `/bulk/hadoop`, `/bulk/hbase`, `/bulk/zookeeper`, `/bulk/solr`.
 
 Engine support on these branches only (each independently reviewed): HBase 948e4779f (reply legs of a turn's earlier
-requests are control producers), f82385bcc (ledger in hundredths; also on Solr 35a513aa7); Solr 61e881776 + e5c894636 (native REPRODUCE plants a
+requests are control producers), f82385bcc (ledger in hundredths; also on Solr 35a513aa7); Solr 61e881776 + e5c894636 + ad3d08028 (native REPRODUCE plants a
 field-backed configuration root at the plan's reads of its field, as RootMint#configuration does in the VM); ZooKeeper bba07d7d1 (CONFIRM
 holds at the nearest instrumented claim); HDFS (merged e2cff35b1) ba6580331 + 131bf16d9 + 7f562ef37 + 252ed18da + 6a7c74e61 + 838b0c888
 (earlier/later-write overtaking, per-version proposals, hold after the overtaken write's frame). Rejected and reverted: HBase
