@@ -44,6 +44,8 @@ before its watcher's `addKey` of that key (STATE re-pairing: the watch event not
 aborts its server). With the fix either world refreshes from ZooKeeper and finds the key (after an abort it throws a
 different InvalidToken, "Token keys could not be sync from zookeeper").
 
+Natively the workload passed 6 of 6 runs before any campaign (2.27-2.32 s).
+
 ## What this case declares
 
 | Declaration | Where | What it says |
@@ -56,6 +58,40 @@ different InvalidToken, "Token keys could not be sync from zookeeper").
 | heap | `workflow.properties` | `engine_memory_mb` 24576, as hbase-buggy-20642 |
 | mechanism | `experiments/accept/report.py` | `hbase-buggy-15039`: STATE_PAIRING_FLIPPED or MARKER_FLIPPED, no clock; a MARKER claim has to be the watcher's ZooKeeper READ fault (read by hand) |
 
-## Result
+## Result: SAT, STATE re-pairing, confirmed and reproduced 10/10 (HB15039b, PASS)
 
-(pending)
+Round HB15039b (2026-10-26, snapshot `/bulk/gc-run/hbase-b20642-3` = GraphChecker f82385bcc, tree set
+`/bulk/trees/hbb15039` = c2cecb3756, `/bulk/gc-out/hbase-buggy/15039/accept-HB15039b-hbase-buggy-15039`): 1211 s,
+`SAT_CANDIDATE` `FINAL_READY`, `report.py` **PASS** (`STATE_PAIRING_FLIPPED` at valuation 0, `polarityDecides` true, no
+gap, no defect). `round-verify.sh`: `end=(FIXED_POINT)`, z3 sat on the exported `candidate.smt2`, 2 leaves, confirmed,
+0 BOUNDED, 0 UNBOUND, 0 HOLD. The claim moves no root (`movedRoots` {}): it is a re-pairing, the shape of
+hbase-adhoc-22's accepted STATE claim.
+
+- **Exploration.** The seed planned only the target occurrence (the test's `retrievePassword` on the other
+  server, rs0; the key master is master0). Round 0's flip of the guard was `NOT_FLIPPABLE`: the read of `allKeys`
+  had only its INITIAL version, because the other server's watcher, whose `allKeys.put` is a library call and no
+  field write, ran unplanned. Round 0's growth exposed the watcher's occurrences (`ZKSecretWatcher` regions under the
+  `HBASE_ZK.ZKSECRETWATCHER` anchors of the key master's ZooKeeper writes, on rs0 and master0); round 2 ran them
+  instrumented, so their puts became writer rows of the map (`MAP/11#-3`), and EXPLORE reached its fixed point.
+- **The formula** (4 paths): on the two grown sessions' paths the map's version at the target read is one of three
+  `assoc_put` writers (`writer_family`, the watcher's puts and the INITIAL map), and the fatal is
+  `masterKey == null` on that map at the token's key id.
+- **The model** (`final/confirm/worker/expected_edges.jsonl`): a STATE edge that has the target's read of `allKeys`
+  take the map's INITIAL version (writer INITIAL, version 28) instead of a put of the new key, and three ORDER rows
+  holding rs0's `ZKSecretWatcher.refreshNodes` -> `addKey` occurrences until after the anchor. The chain, on the bug
+  tree: master0's `rollCurrentKey` puts key 2 in its own map and writes `/hbase/tokenauth/keys/2`
+  (AuthenticationTokenSecretManager:236-238); `generateToken` signs with it (:124, :150); rs0's watcher would apply it
+  in `nodeChildrenChanged` -> `refreshNodes` -> `addKey` -> `allKeys.put` (ZKSecretWatcher:122/140/153,
+  AuthenticationTokenSecretManager:168); in the model rs0's `retrievePassword` reads the map first,
+  `allKeys.get(keyId)` misses (:137), and :139 throws `InvalidToken("Unknown master key for token")`. In words: a
+  server validates a token whose key its ZooKeeper watcher has not applied yet -- HBASE-15039.
+- **CONFIRM** (`final/confirm.json`): "every edge the model chose was taken, and the claim's anchor observed the
+  fatal".
+- **REPRODUCE** (`final/reproduce.json`): 10 of 10 native runs took the fatal at the anchor with every order held;
+  control 0 of 10. `planted` reads 0 because the held ORDER rows end past the anchor, where the run stops
+  (CHECKING trap 21: their after-activation runs past the anchor).
+- **With the fix** the same world refreshes the keys from ZooKeeper on the miss (`refreshKeys`) and finds key 2; no
+  throw.
+
+Earlier: HB15039a (snapshot hbase-b15039-1 = 9649eb08b) was stopped in SEED, its head steps held by the shared
+ledger's mixed core units (fixed by f82385bcc).
