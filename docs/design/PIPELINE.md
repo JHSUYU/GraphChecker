@@ -856,7 +856,9 @@ are counted, never dropped silently: `concreteAnchors` states how many
   version, and every other the one eligibility rule `Arms#eligible` admits: a write of the same
   session the read could have run right after -- its occurrence HB-concurrent, `Arms.concurrent`: not
   the same thread key, neither an anchor-chain ancestor of the other, both chains reaching a Root,
-  neither Lost; every write between the two an HB-concurrent occurrence's; none of them under
+  neither Lost; every write between the two an HB-concurrent occurrence's, or, for a write earlier
+  than the observed version, one it can overtake (its occurrence HB-concurrent with that write's);
+  none of them under
   construction, a constructor or class initializer anywhere on its frame chain; no version between
   them a read observed and no row states -- or the location's INITIAL by the same test, whose
   expression's symbols are demanded and which is no task: no occurrence wrote it), and every activated occurrence on the reader's node holding a static write site of the

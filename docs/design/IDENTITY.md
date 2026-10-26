@@ -339,8 +339,10 @@ the flip solver:
   members), an arm of its own under no prefix. Every writer but the observed one -- the
   INITIAL included -- is an alternative only where the read could have run right after it, ONE
   rule (`Arms#eligible`, asked by the arms and by EXPLORE's closure and flip query alike): its
-  writer HB-concurrent, every write between the two an HB-concurrent occurrence's, none of
-  them made under construction (a constructor or a class initializer anywhere on the writer's
+  writer HB-concurrent, every write between the two an HB-concurrent occurrence's -- or, for a
+  writer earlier than the observed version, a write it can overtake (its occurrence HB-concurrent
+  with that write's: a parallel task landing between the reader occurrence's own write and its
+  read) --, none of them made under construction (a constructor or a class initializer anywhere on the writer's
   frame chain, which every reader of what it built follows), and no version between the two
   that a read observed without a write row stating it (a writer no row names, which no order
   moves). Locks are not constraints. An activation's `threadKey` is the
