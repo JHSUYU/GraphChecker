@@ -8,7 +8,10 @@ repo=${GC_TREES}/zookeeper-bug-2886
 # the bug keeping the connection open -- the second throws there again. The target is that second throw.
 test_class=org.apache.zookeeper.test.CausynthSessionMoved2886Test
 test_method=aMovedMultiOnlyConnectionKeepsThrowing
-target_occurrence=first
+# the old connection's second multi setData at the leader (peer5, the deterministic highest-id leader): its
+# forwarded Prep (REGION.3cfb4ed2), the 3rd occurrence -- #1 the multi create, #2 the first multi setData, #3
+# the second multi setData, the second SessionMoved on the never-closed multi-only connection (as zk-buggy-710)
+target_occurrence="auto0/peer5#epoch0/region/REGION.3cfb4ed2-6604-303b-82a1-6cb936dd8da0#3"
 scope=(
   server:org/apache/zookeeper/server/SessionTrackerImpl
   server:org/apache/zookeeper/server/quorum/LeaderSessionTracker
