@@ -14,10 +14,12 @@ import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -132,6 +134,101 @@ public class RecordingPlantTest {
                 if (file[1] != null) throw refused;
             }
         }
+    }
+
+    public static final class Holder {
+        private boolean flag = true;
+
+        public boolean read() {
+            return flag;
+        }
+
+        public boolean other() {
+            return flag;
+        }
+    }
+
+    private static final String HOLDER = Holder.class.getName();
+    private static final String FLAG = "<" + HOLDER + ": boolean flag>";
+    private static final String READ = "<" + HOLDER + ": boolean read()>#u2";
+
+    private static String field(String field, String reads, int row) {
+        return row("{'kind':'ROOT','category':'CONFIG','rootId':"
+                + "'CONFIG:flag==true','occurrence':'" + ID + "','field':'"
+                + field + "','reads':[" + reads + "],'value':'false','row':"
+                + row + "}");
+    }
+
+    @Test
+    public void aConfigurationFieldIsWrittenBeforeEachPlannedRead()
+            throws Exception {
+        String planted = field(FLAG, "'" + READ + "'", 0)
+                + target(ID, "false", 1);
+        RecordingPlant.Plant plant = read(planted);
+        RecordingPlant.Configured configured = plant.fields.get(FLAG);
+        assertEquals(Collections.singleton(FLAG), plant.fields.keySet());
+        assertEquals(new RecordingPlant.Root(0, "false"), configured.root);
+        assertEquals("CONFIG:flag==true", configured.rootId);
+        assertEquals(Collections.singleton(READ), configured.reads);
+        assertTrue(plant.calls.isEmpty());
+        assertEquals(Collections.singleton(ID), plant.focused);
+        String key = "read()Z " + FLAG;
+        assertEquals(Collections.singletonMap(HOLDER.replace('.', '/'),
+                Collections.singleton(key)),
+                RecordingPlant.interceptions(plant));
+        for (String refused : new String[] {
+                field(FLAG, "'" + READ + "'", 0) + field(FLAG, "'" + READ
+                        + "'", 2) + target(ID, "false", 1),
+                field(FLAG, "", 0) + target(ID, "false", 1),
+                field("flag", "'" + READ + "'", 0) + target(ID, "false", 1)}) {
+            try {
+                read(refused);
+                fail("accepted " + refused);
+            } catch (IOException expected) {
+            }
+        }
+        try {
+            RecordingPlant.interceptions(read(field(FLAG, "'nowhere#u2'", 0)
+                    + target(ID, "false", 1)));
+            fail("intercepted a read in no method");
+        } catch (IOException expected) {
+        }
+
+        Path file = folder.newFile().toPath();
+        Files.write(file, planted.getBytes(StandardCharsets.UTF_8));
+        ClassLoader parent = RecordingPlantTest.class.getClassLoader();
+        byte[] bytes;
+        try (InputStream in = parent.getResourceAsStream(
+                HOLDER.replace('.', '/') + ".class")) {
+            byte[] buffer = new byte[1 << 16];
+            int length = 0;
+            for (int read; (read = in.read(buffer, length,
+                    buffer.length - length)) > 0; ) {
+                length += read;
+            }
+            bytes = Arrays.copyOf(buffer, length);
+        }
+        final byte[] rewritten = PlantAgent.rewrite(bytes,
+                Collections.singleton(key));
+        Class<?> rewrittenHolder = new ClassLoader(parent) {
+            Class<?> define() {
+                return defineClass(HOLDER, rewritten, 0, rewritten.length);
+            }
+        }.define();
+        Object holder = rewrittenHolder.getDeclaredConstructor().newInstance();
+        System.setProperty(RecordingPlant.PROPERTY, file.toString());
+        try {
+            assertEquals("a read outside the planned reads is as it was",
+                    true, rewrittenHolder.getMethod("other").invoke(holder));
+            assertEquals("the planned read reads the world's value", false,
+                    rewrittenHolder.getMethod("read").invoke(holder));
+            assertEquals("written into the field, as in the VM", false,
+                    rewrittenHolder.getMethod("other").invoke(holder));
+        } finally {
+            System.clearProperty(RecordingPlant.PROPERTY);
+        }
+        Holder unplanted = new Holder();
+        assertEquals(true, unplanted.read());
     }
 
     private static String clock(String skew, int row) {

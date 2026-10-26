@@ -489,20 +489,23 @@ public final class ConfirmMain {
         OccurrenceAddress mint = mintOf(world, rootId);
         Set<String> marked = sites.sites(rootId);
         List<PlantSites.Call> calls = sites.calls(rootId);
+        Map<String, Set<String>> fields = sites.fields(rootId);
         boolean planted = mint != null && (category == RootCategory.HOOK
                 || category == RootCategory.FAULT && marked.size() == 1
                 && ("true".equals(value) || "false".equals(value))
-                || category == RootCategory.CONFIG && !calls.isEmpty()
+                || category == RootCategory.CONFIG && (!calls.isEmpty()
+                || fields.size() == 1)
                 || category == RootCategory.READ && calls.size() == 1);
         if (!planted) {
             throw new Refused("NATIVE_PLANT_UNSUPPORTED: root " + rootId
                     + " is " + category + " at '" + value + "', minted at '"
                     + world.mints.get(rootId) + "' at " + sites.locations(
-                    rootId) + ", called at " + marked + "; a native run "
-                    + "plants a fault marker of one call site at true or "
-                    + "false, a tree hook's field, or the return of a "
-                    + "configuration getter or an accessor call, at an "
-                    + "occurrence it is minted at");
+                    rootId) + ", called at " + marked + ", read from fields "
+                    + fields.keySet() + "; a native run plants a fault marker"
+                    + " of one call site at true or false, a tree hook's "
+                    + "field, the return of a configuration getter or an "
+                    + "accessor call, at an occurrence it is minted at, or "
+                    + "one configuration field at its planned reads");
         }
         JsonObject row = root(category, rootId, mint);
         if (category == RootCategory.FAULT) {
@@ -514,13 +517,18 @@ public final class ConfirmMain {
             row.addProperty(RecordingPlant.SITE, call.siteId);
             row.addProperty(RecordingPlant.CALLEE, call.callee);
             row.addProperty(RecordingPlant.JAVA_TYPE, call.javaType);
-        } else if (category == RootCategory.CONFIG) {
+        } else if (category == RootCategory.CONFIG && !calls.isEmpty()) {
             JsonArray getters = new JsonArray();
             for (PlantSites.Call call : calls) {
                 getters.add(callRow(null, call));
             }
             row.add(RecordingPlant.SITES, getters);
             row.addProperty(RecordingPlant.JAVA_TYPE, calls.get(0).javaType);
+        } else if (category == RootCategory.CONFIG) {
+            Map.Entry<String, Set<String>> field =
+                    fields.entrySet().iterator().next();
+            row.addProperty(RecordingPlant.FIELD, field.getKey());
+            row.add(RecordingPlant.READS, textArray(field.getValue()));
         }
         row.addProperty(RecordingPlant.VALUE, value);
         return row;

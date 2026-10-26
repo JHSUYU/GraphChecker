@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
+import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
@@ -73,6 +74,8 @@ final class PlantSites {
             new LinkedHashMap<String, Capture>();
     private final Map<String, Integer> invocations =
             new LinkedHashMap<String, Integer>();
+    private final Map<String, Map<String, Set<String>>> fields =
+            new LinkedHashMap<String, Map<String, Set<String>>>();
 
     private PlantSites() {
     }
@@ -87,6 +90,12 @@ final class PlantSites {
                 if (element.isJsonObject()) {
                     read.action(element.getAsJsonObject(), region);
                     read.invocation(element.getAsJsonObject(), occurrence);
+                }
+            }
+            for (JsonElement element : array(task,
+                    ConfiguredSourcePhaseContract.PLAN_FIELD)) {
+                if (element.isJsonObject()) {
+                    read.phase(element.getAsJsonObject());
                 }
             }
             for (CommunicationHandoffSpec spec
@@ -134,7 +143,25 @@ final class PlantSites {
         if (call != null) {
             calls.computeIfAbsent(port, key -> new ArrayList<Call>())
                     .add(call);
+            String config = optionalString(action,
+                    InputActionCatalog.DECLARED_CONFIG_SOURCE);
+            if (!config.isEmpty()) {
+                calls.computeIfAbsent(config, key -> new ArrayList<Call>())
+                        .add(call);
+            }
         }
+    }
+
+    private void phase(JsonObject phase) {
+        if (!ConfiguredSourcePhaseContract.CONFIG_PLAN_AUTHORITY.equals(
+                optionalString(phase, "authority"))) {
+            return;
+        }
+        fields.computeIfAbsent(optionalString(phase, "sourceId"),
+                key -> new LinkedHashMap<String, Set<String>>())
+                .computeIfAbsent(optionalString(phase, "fieldSignature"),
+                        key -> new LinkedHashSet<String>())
+                .add(optionalString(phase, "siteId"));
     }
 
     private void invocation(JsonObject action, String occurrence) {
@@ -167,6 +194,11 @@ final class PlantSites {
 
     Set<String> sites(String port) {
         return sites.getOrDefault(port, Collections.<String>emptySet());
+    }
+
+    Map<String, Set<String>> fields(String rootId) {
+        return fields.getOrDefault(rootId,
+                Collections.<String, Set<String>>emptyMap());
     }
 
     Capture capture(String port) {

@@ -60,8 +60,8 @@ public final class PlantAgent {
         ClassWriter writer = new ClassWriter(reader, ClassWriter.COMPUTE_MAXS);
         reader.accept(new ClassVisitor(Opcodes.ASM5, writer) {
             @Override
-            public MethodVisitor visitMethod(int access, String name,
-                                             String descriptor,
+            public MethodVisitor visitMethod(int access, final String name,
+                                             final String descriptor,
                                              String signature,
                                              String[] exceptions) {
                 MethodVisitor method = super.visitMethod(access, name,
@@ -77,6 +77,23 @@ public final class PlantAgent {
                                 + desc)) {
                             handOff(mv, Type.getReturnType(desc));
                         }
+                    }
+
+                    @Override
+                    public void visitFieldInsn(int opcode, String owner,
+                                               String field, String desc) {
+                        String read = "<" + owner.replace('/', '.') + ": "
+                                + Type.getType(desc).getClassName() + " "
+                                + field + ">";
+                        if (opcode == Opcodes.GETFIELD && callees.contains(
+                                name + descriptor + " " + read)) {
+                            super.visitInsn(Opcodes.DUP);
+                            super.visitLdcInsn(read);
+                            super.visitMethodInsn(Opcodes.INVOKESTATIC, PLANT,
+                                    "fieldRead", "(Ljava/lang/Object;"
+                                            + "Ljava/lang/String;)V", false);
+                        }
+                        super.visitFieldInsn(opcode, owner, field, desc);
                     }
                 };
             }

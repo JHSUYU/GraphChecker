@@ -756,6 +756,100 @@ public class ConfirmMainTest {
         }
     }
 
+    @Test
+    public void aConfigurationFieldIsPlantedAtItsPlannedReads()
+            throws Exception {
+        Path iteration = iteration();
+        List<RootMintRow> roots = new ArrayList<RootMintRow>(
+                SessionReader.read(iteration, "seed").roots());
+        roots.add(RootMintRow.of("seed", 2L, mint, "CONFIG:k==true",
+                "M_Z_field_SRC.k", RootKind.MARKER, RootCategory.CONFIG,
+                "true", null, null, true, null, 0L));
+        RowCodec.writeAll(SessionDir.of(iteration, "seed").roots(), roots,
+                RowCodec::writeRootMint);
+        Path focus = iteration.resolve("obligations-0000").resolve("w1")
+                .resolve(ObligationDir.FOCUSED_TASK);
+        JsonObject world = RowCodec.readJsonl(focus).get(0);
+        for (String member : new String[]{"rootAssignments", "rootMints",
+                "clockDeltas"}) {
+            world.add(member, new JsonObject());
+        }
+        RowCodec.writeJsonl(focus, Collections.singletonList(world));
+        Path scopeMap = targetScopeMap();
+        String field = "<a.Flag: boolean on>";
+        String read = "<a.Flag: boolean read(a.Reader)>#u5";
+        String other = "<a.Flag: boolean read(a.Other)>#u3";
+        String config = "EXACT_RUNTIME_CONFIG_READ_EXECUTION_V1";
+        String hook = "EXACT_RUNTIME_SOURCE_HOOK_EXECUTION_V1";
+        Object[][] plans = {
+                {task(phase(config, field, read), phase(config, field, read))
+                        + task(phase(config, field, other)),
+                        "{\"kind\":\"ROOT\",\"category\":\"CONFIG\","
+                                + "\"rootId\":\"CONFIG:k==true\","
+                                + "\"occurrence\":\"" + mint.id() + "\","
+                                + "\"field\":\"" + field + "\","
+                                + "\"reads\":[\"" + read + "\",\"" + other
+                                + "\"],\"value\":\"false\",\"row\":0}"},
+                {task(phase(config, field, read), phase(config,
+                        "<a.Flag: boolean off>", other)), null},
+                {task(phase(hook, field, read)), null},
+                {"", null},
+                {task(phase(config, field, read)).replace("\"inputActions\":[]",
+                        "\"inputActions\":[{\"portId\":"
+                                + "\"REGION.08ab84c9.in.p\","
+                                + "\"configSource\":\"CONFIG:k==true\","
+                                + "\"location\":\"CALL_RETURN\","
+                                + "\"siteId\":\"<a.Manager: void tick()>#u4\","
+                                + "\"declaredCallee\":"
+                                + "\"<a.Conf: boolean on()>\","
+                                + "\"javaType\":\"boolean\"}]"),
+                        "{\"kind\":\"ROOT\",\"category\":\"CONFIG\","
+                                + "\"rootId\":\"CONFIG:k==true\","
+                                + "\"occurrence\":\"" + mint.id() + "\","
+                                + "\"sites\":[{\"siteId\":"
+                                + "\"<a.Manager: void tick()>#u4\",\"callee\":"
+                                + "\"<a.Conf: boolean on()>\",\"javaType\":"
+                                + "\"boolean\"}],\"javaType\":\"boolean\","
+                                + "\"value\":\"false\",\"row\":0}"}};
+        for (Object[] plan : plans) {
+            Files.write(iteration.resolve("execution_task_plan.jsonl"),
+                    ((String) plan[0]).getBytes(StandardCharsets.UTF_8));
+            Path plant = folder.newFile().toPath();
+            try {
+                ConfirmMain.writePlant(iteration, claim("CONFIG:k==true",
+                        "false"), manifest(), scopeMap,
+                        iteration.resolve("sessions").resolve("sel"), plant);
+                if (plan[1] == null) fail("planted " + plan[0]);
+            } catch (ConfirmMain.Refused refused) {
+                assertTrue(refused.getMessage(), refused.getMessage()
+                        .startsWith("NATIVE_PLANT_UNSUPPORTED: root "
+                                + "CONFIG:k==true"));
+                assertEquals(refused.getMessage(), null, plan[1]);
+                continue;
+            }
+            List<JsonObject> rows = RowCodec.readJsonl(plant);
+            assertEquals(JsonParser.parseString((String) plan[1]),
+                    rows.get(0));
+            assertEquals("TARGET", rows.get(rows.size() - 1).get("kind")
+                    .getAsString());
+        }
+    }
+
+    private static String task(String... phases) {
+        return "{\"regionId\":\"REGION.08ab84c9\",\"occurrenceId\":\""
+                + MINT + "\",\"inputActions\":[],"
+                + "\"configuredSourcePhases\":["
+                + String.join(",", phases) + "]}\n";
+    }
+
+    private static String phase(String authority, String field,
+                                String site) {
+        return "{\"kind\":\"CONFIGURED_SOURCE_PHASE\",\"authority\":\""
+                + authority + "\",\"sourceId\":\"CONFIG:k==true\","
+                + "\"fieldSignature\":\"" + field + "\",\"siteId\":\""
+                + site + "\",\"sourceOccurrenceId\":\"" + MINT + "\"}";
+    }
+
     private Path targetScopeMap() throws Exception {
         Path scopeMap = folder.newFile().toPath();
         JsonObject site = new JsonObject();

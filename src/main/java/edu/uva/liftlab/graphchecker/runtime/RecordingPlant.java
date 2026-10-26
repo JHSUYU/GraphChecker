@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
+import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
@@ -57,6 +58,8 @@ public final class RecordingPlant {
     public static final String REGIONS = "regions";
     public static final String ENDPOINT = "endpoint";
     public static final String PORT = "port";
+    public static final String FIELD = "field";
+    public static final String READS = "reads";
 
     private static final boolean PLANTING = !file().isEmpty();
     private static volatile Plant plant;
@@ -141,6 +144,18 @@ public final class RecordingPlant {
         }
     }
 
+    static final class Configured {
+        final Root root;
+        final String rootId;
+        final Set<String> reads;
+
+        Configured(Root root, String rootId, Set<String> reads) {
+            this.root = root;
+            this.rootId = rootId;
+            this.reads = reads;
+        }
+    }
+
     static final class Answering {
         final Set<String> regions = new LinkedHashSet<String>();
         final Map<String, Root> endpoints = new LinkedHashMap<String, Root>();
@@ -165,17 +180,19 @@ public final class RecordingPlant {
         final Map<String, Map<String, Map<Integer, Root>>> markers;
         final Map<String, Root> hooks;
         final Map<String, Call> calls;
+        final Map<String, Configured> fields;
         final Set<String> focused;
         final Map<String, Boolean> fatalArms;
         final String anchor;
 
         Plant(Map<String, Map<String, Map<Integer, Root>>> markers,
               Map<String, Root> hooks, Map<String, Call> calls,
-              Set<String> focused, Map<String, Boolean> fatalArms,
-              String anchor) {
+              Map<String, Configured> fields, Set<String> focused,
+              Map<String, Boolean> fatalArms, String anchor) {
             this.markers = markers;
             this.hooks = hooks;
             this.calls = calls;
+            this.fields = fields;
             this.focused = focused;
             this.fatalArms = fatalArms;
             this.anchor = anchor;
@@ -228,6 +245,17 @@ public final class RecordingPlant {
         CausynthTraceRecorder.plantRoot(RootMint.writeModeledField(owner,
                 fieldSignature, "", root.value) ? APPLIED : UNWRITTEN,
                 root.row, rootId, occurrence, root.value);
+    }
+
+    public static void fieldRead(Object owner, String field) {
+        Configured configured = plant().fields.get(field);
+        boolean written = RootMint.writeModeledField(owner, field, "",
+                configured.root.value);
+        if (!RecordingWindow.opened()) return;
+        List<String> enclosing = CausynthTraceRecorder.enclosingOccurrences();
+        stateOnce(written ? APPLIED : UNWRITTEN, configured.root.row,
+                configured.rootId, enclosing.isEmpty() ? ""
+                        : enclosing.get(0), configured.root.value);
     }
 
     public static long returned(long value) {
@@ -512,6 +540,8 @@ public final class RecordingPlant {
                 new LinkedHashMap<String, Map<String, Map<Integer, Root>>>();
         Map<String, Root> hooks = new LinkedHashMap<String, Root>();
         Map<String, Call> calls = new LinkedHashMap<String, Call>();
+        Map<String, Configured> fields =
+                new LinkedHashMap<String, Configured>();
         Set<String> focused = new LinkedHashSet<String>();
         Map<String, Boolean> fatalArms = new LinkedHashMap<String, Boolean>();
         String anchor = null;
@@ -524,7 +554,8 @@ public final class RecordingPlant {
             }
             int number = row.get(ROW).getAsInt();
             if (ROOT.equals(kind)) {
-                focused.add(root(row, number, markers, hooks, calls));
+                focused.add(root(row, number, markers, hooks, calls,
+                        fields));
             } else if (CLOCK_SITE.equals(kind)) {
                 Call call = call(calls, row);
                 call.clock = clock(row);
@@ -568,6 +599,7 @@ public final class RecordingPlant {
         return new Plant(Collections.unmodifiableMap(markers),
                 Collections.unmodifiableMap(hooks),
                 Collections.unmodifiableMap(calls),
+                Collections.unmodifiableMap(fields),
                 Collections.unmodifiableSet(focused),
                 Collections.unmodifiableMap(fatalArms), anchor);
     }
@@ -576,7 +608,9 @@ public final class RecordingPlant {
                                Map<String, Map<String, Map<Integer, Root>>>
                                        markers,
                                Map<String, Root> hooks,
-                               Map<String, Call> calls) throws IOException {
+                               Map<String, Call> calls,
+                               Map<String, Configured> fields)
+            throws IOException {
         String category = optionalString(row, CATEGORY);
         String rootId = optionalString(row, ROOT_ID);
         String occurrence = optionalString(row, OCCURRENCE);
@@ -640,6 +674,15 @@ public final class RecordingPlant {
                 call(calls, getter.getAsJsonObject()).configs.add(
                         new Valued(root, rootId, javaType));
             }
+        } else if (RootCategory.CONFIG.name().equals(category)
+                && FieldPathSpec.declaredField(optionalString(row, FIELD))
+                != null && !texts(row, READS).isEmpty()) {
+            if (fields.put(optionalString(row, FIELD), new Configured(root,
+                    rootId, new LinkedHashSet<String>(texts(row, READS))))
+                    != null) {
+                throw new IOException("the plant states two roots of field "
+                        + optionalString(row, FIELD));
+            }
         } else {
             throw new IOException("not a root row: " + row);
         }
@@ -699,6 +742,18 @@ public final class RecordingPlant {
             intercepted.computeIfAbsent(caller[0],
                     key -> new LinkedHashSet<String>())
                     .add(callee[0] + "." + callee[1] + " " + callee[2]);
+        }
+        for (Map.Entry<String, Configured> field : plant.fields.entrySet()) {
+            for (String read : field.getValue().reads) {
+                String[] reader = JvmSignature.parse(SiteId.methodOf(read));
+                if (reader == null) {
+                    throw new IOException("no JVM method reads "
+                            + field.getKey() + " at site " + read);
+                }
+                intercepted.computeIfAbsent(reader[0],
+                        key -> new LinkedHashSet<String>())
+                        .add(reader[1] + reader[2] + " " + field.getKey());
+            }
         }
         return intercepted;
     }
