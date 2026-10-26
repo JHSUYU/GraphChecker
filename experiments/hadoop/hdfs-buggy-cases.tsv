@@ -6,3 +6,4 @@
 # case	branch	budget_s	jira	point(s)
 hdfs-buggy-11741	system/hdfs-buggy-detect	21600	HDFS-11741	hdfs-adhoc-11
 hdfs-buggy-17383	system/hdfs-buggy-detect	21600	HDFS-17383	hdfs-adhoc-12
+hdfs-buggy-5766	system/hdfs-buggy-detect	21600	HDFS-5766	hdfs-adhoc-11
