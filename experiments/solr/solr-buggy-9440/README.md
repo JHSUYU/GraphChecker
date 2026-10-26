@@ -81,7 +81,8 @@ Round S9440a (2026-10-26, snapshot `/bulk/gc-run/solr-b9440-2` = GraphChecker ab
 - **The declared mechanism was wrong.** Before the run this case declared `STATE_PAIRING_FLIPPED` (the study's guess:
   node0's view re-paired with an older decode). GraphChecker built the needed order with a ConnectionLoss on the
   Overseer's ACTIVE write instead of a re-pairing; the `report.py` row is now `MARKER_FLIPPED` by a
-  SolrZkClient/ZooKeeper fault, no clock (with the old row the run's `report.py` said FAIL on the mechanism only).
+  SolrZkClient/ZooKeeper fault, no clock (with the old row the run's `report.py` said FAIL on the mechanism only; re-run with the new row on S9440a's
+  output: PASS -- `report.py` does not read REPRODUCE, which is what fails the acceptance).
 - **The witness discriminates.** The witness replay's log
   (`iteration-0000/obligations-0000/9e4cbffc55a56407/replay.log`, times in ms):
   - 102912: the Overseer's main loop fails that write ("Exception in Overseer main queue loop",
