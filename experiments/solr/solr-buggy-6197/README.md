@@ -92,13 +92,45 @@ the MIGRATE succeeds natively (9.3 s on the tree set; 20/20 passes, below).
 The Overseer-side callers need not be in the scope for the world to reach them (the plant is woven into
 `CausynthLegacyCloud`'s body, which they call); left out, the formula is the node-only runs' size. Budget 21600 s.
 
-## Result: SAT in the bug's own cluster-wide world, confirmed in the VM (S6197f)
+## Result: SAT in the bug's own cluster-wide world -- confirmed, reproduced natively 10/10, accepted (S6197g)
 
-**Where it stands against the acceptance**: CONFIRM yes, `report.py` PASS, the witness discriminates (cluster-wide);
-GraphChecker's native REPRODUCE does not run (`NATIVE_PLANT_UNSUPPORTED`: a configuration minted at a field's read has no
-native planter -- an engine capability limit, CHECKING trap 21); the native evidence is the scratch reproduction of the
-same world below, 10/10 on the buggy tree, 0/10 on the fixed one, control 0/20. `configurationOnly` is a valid world:
-`legacyCloud=false` is a value the cluster accepts (Solr 8.11's default), the bug report's own setting.
+**Where it stands against the acceptance**: accepted -- CONFIRM yes, GraphChecker's native REPRODUCE **10/10** with
+control **0/10**, `report.py` **PASS**, and the witness discriminates (cluster-wide). `configurationOnly` is a valid
+world: `legacyCloud=false` is a value the cluster accepts (Solr 8.11's default), the bug report's own setting.
+
+Round S6197g (2026-10-26, snapshot `/bulk/gc-run/solr-b6197-7` = GraphChecker 61e881776, tree set
+`/bulk/trees/sb6197-3` = f5d86cbd8a, `/bulk/gc-out/solr-buggy/6197`): 754 s, `SAT_CANDIDATE` `FINAL_READY`,
+`MARKER_FLIPPED` at valuation 24 moving `CONFIG:legacyCloud==true` to `false`, `polarityDecides` true, no gap, no
+defect, `cone.json` 0 unbound, BOUNDED by world depth 0 (25 task rounds cut, the declared bound), `configurationOnly`;
+`report.py` **PASS**.
+
+- **CONFIRM**: the selected session `a5972cb95766e3f7-ad44c55a` is itself the run (the fatal at the declared anchor
+  `14f38ae6f4a636b4`, node1 #2) -- the world S6197f confirmed (below): the Overseer's reads take the field's value, the
+  three collections' CREATEs carry `coreNodeName=core_node2`, and MIGRATE's bare CREATE of
+  `split_shard1_temp_shard1_shard1_replica_n3` on node1 is refused at `CoreContainer.java:1330`.
+- **The chain** (`final/candidate.smt2`, one path): `path_fatal__0` is the door markers on the way unfired, `CFG =
+  false` and the guard's `!isLegacy` arm (`CFG` the field read in `CausynthLegacyCloud.isLegacy` under node1's
+  `CoreContainer.create#u51`); `coreNodeName == null` is concrete (the put-back MIGRATE's CREATE). Pinned at `true`:
+  unsat.
+- **REPRODUCE: 10/10, control 0/10.** The plant is one ROOT row -- `CONFIG CONFIG:legacyCloud==true`, `field
+  <org.apache.solr.cloud.CausynthLegacyCloud: boolean legacyCloud>`, `reads [<...CausynthLegacyCloud: boolean
+  isLegacy(org.apache.solr.common.cloud.ZkStateReader)>#u5]`, `value false` -- and the TARGET row. The plant agent
+  writes `false` into the field before the one GETFIELD of that planned method, at every execution in every thread (as
+  `RootMint#configuration` does in the VM at the same plan site). In each planted run `PLANT_APPLIED` is stated first at
+  the Overseer's read (`OVERSEER_TASK#1`), the source's, the target's and the temporary collection's CREATEs carry
+  `coreNodeName=core_node2`, and MIGRATE's bare CREATE of `split_shard1_temp_shard1_shard1_replica_n3` takes the fatal
+  arm of `create#u55` at the declared anchor `14f38ae6f4a636b4` on node1 (`AT_ANCHOR`). The control runs plant nothing:
+  every CREATE is legacy and the workload passes.
+- **Scope of the native plant, as in the VM**: the plan's only read site of the field is `isLegacy(ZkStateReader)#u5`;
+  `isLegacy(ClusterStateProvider)` (called by `ReplicaMutator.setState`) is not a plan site, so it keeps its recorded
+  value natively, as it did in CONFIRM.
+- **The engine support** (reviewed): 61e881776 and e5c894636, as solr-buggy-6101 says. The run used a snapshot of
+  61e881776; its plant rows recomputed with e5c894636 are byte-identical to what it planted, and e5c894636 rewrites
+  `CausynthLegacyCloud` the same way, so the verdict stands under the reviewed engine.
+- **It discriminates** (native, scratch, below): in this world the fixed MIGRATE (ADDREPLICA, non-legacy on the
+  Overseer) names the replica's `coreNodeName` and passes; only the put-back bare CREATE throws.
+
+### Earlier: the same world before the native field plant (S6197f)
 
 Round S6197f (2026-10-26, snapshot `/bulk/gc-run/solr-b6197-6` = GraphChecker 59ae37bfb, tree set
 `/bulk/trees/sb6197-3` = f5d86cbd8a, `/bulk/gc-out/solr-buggy/6197`): 724 s, `SAT_CANDIDATE` `FINAL_READY`,
@@ -120,10 +152,10 @@ defect, `cone.json` 0 unbound, BOUNDED by world depth 0 (20 task rounds cut, the
 - **It discriminates.** In this world the fixed MIGRATE (ADDREPLICA, non-legacy on the Overseer) names the replica's
   `coreNodeName` and passes; only the put-back bare CREATE throws (native, below). The node-only caveat of S6197e is
   gone.
-- **REPRODUCE**: no native run -- `NATIVE_PLANT_UNSUPPORTED` (as solr-buggy-6101: a root minted at a field's read has no
-  getter call for the native planter; CHECKING trap 21). Native evidence outside the engine, below.
+- **REPRODUCE** (then): no native run -- `NATIVE_PLANT_UNSUPPORTED` (a root minted at a field's read had no native
+  planter; CHECKING trap 21); hence the engine support above and S6197g.
 
-### Native checks (scratch, `/bulk/trees/s6scratch`, runner `/bulk/analysis/buggy-detect-2026-10-26/solr-logs/s6/`)
+### Native checks outside the engine (scratch, `/bulk/trees/s6scratch`, runner `/bulk/analysis/buggy-detect-2026-10-26/solr-logs/s6/`)
 
 Scratch worktrees of the committed trees (`bug6101` at 040ae6d4c6, `bug6197` at f5d86cbd8a, `fixed` at
 `graphchecker/solr-checks` 12d23091d1 with the same `CausynthLegacyCloud` change applied uncommitted and both workloads
