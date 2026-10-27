@@ -3,7 +3,7 @@
 This page describes what the code on this branch (HEAD) does. The HDFS group is finished (46 of 46): "HDFS checks"
 below holds every one of the 46 cases with the branch that closed it (`system/hdfs` locked, or `system/hdfs1`; both now
 superseded by this branch, `system/hdfs-liftlab`), run, verdict and its `.smt` read by hand; "HDFS checks on CloudLab" the
-same cases on HBase's engine, the code this branch runs on liftlab (series H1: H1 (results/hdfs)). Every commit that completes or changes something listed here updates this page in the same
+same cases on HBase's engine, the code this branch runs on liftlab (series H1: H1 (results/hdfs: 45 cases alone, 62555 s = 17.4 h; seeding 42 %, exploration 53 %, compose+solver 4 %; every verdict as CloudLab's)). Every commit that completes or changes something listed here updates this page in the same
 commit.
 
 - **Done** means the code does it on HEAD.
@@ -96,7 +96,7 @@ remain, each named where it applies:
 ## HDFS checks on CloudLab: the 46 cases on HBase's engine (system/hdfs-cloudlab, lead 2026-10-24)
 
 On liftlab: `system/hdfs-liftlab` (2026-10-27, THE HDFS branch) is this code with liftlab's memory-ledger scheduling
-(STATE §L); its series H1 runs the 45 cases but hdfs-11741, each alone on 12 lifts: H1 (results/hdfs).
+(STATE §L); its series H1 runs the 45 cases but hdfs-11741, each alone on 12 lifts: H1 (results/hdfs: 45 cases alone, 62555 s = 17.4 h; seeding 42 %, exploration 53 %, compose+solver 4 %; every verdict as CloudLab's).
 
 The same 46 cases as "HDFS checks" above, run on `system/hdfs-cloudlab` (HBase's engine, the Hadoop shim restored) on
 CloudLab's node0-node4 in rounds F1-F8 (`/bulk/gc-out/hdfs-final`); each case's final run, claim, native k/N, time

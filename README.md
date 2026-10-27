@@ -27,7 +27,7 @@ re-pairing, HBase's process in every case declaration, the Hadoop fork's `graphc
 `results/hdfs/`) with CloudLab's scheduling reverted: the host ledger charges memory (70 %) and every choice among hosts
 takes the most memory room, as on `system/hbase` and `system/solr`, and `tools/lib/gc-env.sh` names liftlab. The final
 series H1 (from 2026-10-26 23:55) runs the 45 cases but hdfs-11741 one at a time, each alone on 12 lifts, for its verdict
-and time breakdown (seeding, exploration, compose + solver): H1 (results/hdfs). The same code's CloudLab rounds F1-F8
+and time breakdown (seeding, exploration, compose + solver): H1 (results/hdfs: 45 cases alone, 62555 s = 17.4 h; seeding 42 %, exploration 53 %, compose+solver 4 %; every verdict as CloudLab's). The same code's CloudLab rounds F1-F8
 (12 SAT confirmed in the VM, 33 UNSAT at the fixed point, hdfs-adhoc-52 RUN_DEFECT over an unsat file; no new bug) are
 the other cluster's record (STATUS "HDFS checks on CloudLab"). **Start at
 [docs/handover/START-HERE.md](docs/handover/START-HERE.md)**; a fresh clone: [docs/REPRODUCE.md](docs/REPRODUCE.md) §0-§5.

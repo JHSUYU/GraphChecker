@@ -24,7 +24,7 @@ passes. Branch, tree and path details are in [STATE.md](STATE.md); every check w
    set `/bigtemp/vnr3ne/wt/hl-trees-1`, image `vm-force12`; driver
    `/bigtemp/vnr3ne/analysis/hdfs-2026-10-26/lead/final/series.sh`, log `final/series-H1.log`, runs
    `/bigtemp/vnr3ne/gc-out/hdfs-final/accept-H1-*`. Each case's verdict and its time breakdown (seeding, exploration,
-   compose + solver), the owner's ask: H1 (results/hdfs). Every SAT read with `smt-legend.py`, every UNSAT with
+   compose + solver), the owner's ask: done, H1 (results/hdfs: 45 cases alone, 62555 s = 17.4 h; seeding 42 %, exploration 53 %, compose+solver 4 %; every verdict as CloudLab's). Every SAT read with `smt-legend.py`, every UNSAT with
    `vacuity.py` (CHECKING §1); a case that ends differently from its CloudLab row is read before it counts.
 2. **After H1:** `results/hdfs/` holds H1's rows and readings (the CloudLab rows stay as the other cluster's record);
    STATUS "HDFS checks on CloudLab" points at them; with the owner's OK, push `system/hdfs-liftlab` and check REPRODUCE

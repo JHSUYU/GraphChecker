@@ -12,58 +12,53 @@
         "sessionId": "composition",
         "kind": "DECLARATION_MISSING",
         "cls": "DIAGNOSTIC",
-        "subject": "REGION.2edcf422-b124-3b93-a9e0-6496f3f35c8f.in.1181df27-79ee-3885-bf08-953dedea4d52",
-        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "DECLARATION_MISSING",
-        "cls": "DIAGNOSTIC",
         "subject": "CONFIG:dfs.datanode.round-robin-volume-choosing-policy.additional-available-space",
         "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
       }
     ]
   },
-  "solverRuns": 7,
-  "seedSessionId": "seed-result-b7fb087a",
+  "solverRuns": 9,
+  "seedSessionId": "seed-result-5a179e2d",
   "valuations": [
     {
       "ordinal": 0,
       "status": "sat",
-      "assignment": {},
+      "assignment": {
+        "REGION.2edcf422-b124-3b93-a9e0-6496f3f35c8f.in.1181df27-79ee-3885-bf08-953dedea4d52": "false"
+      },
       "moved": {},
-      "selectedPathId": "c8622250d3354f4a",
-      "selectedSessionId": "8f93c024cf055543-3a6b2dad",
+      "selectedPathId": "5b835063db6c6571",
+      "selectedSessionId": "8f93c024cf055543-4e0b7449",
       "fatalObserved": true,
       "selectedArms": [
         {
-          "selector": "writer_arm__0__a545c3948fcc",
-          "family": "writer_family__0__a545c3948fcc",
+          "selector": "writer_arm__0__b7a2a7e15a1d",
+          "family": "writer_family__0__b7a2a7e15a1d",
           "groupId": "585a37b0365b3cad",
           "attachEndpointIds": [],
-          "sessionId": "8f93c024cf055543-3a6b2dad",
+          "sessionId": "8f93c024cf055543-4e0b7449",
           "sessionIds": [
-            "8f93c024cf055543-3a6b2dad"
+            "8f93c024cf055543-4e0b7449"
           ],
-          "producerPathId": "96408a63e801e5ef",
+          "producerPathId": "bc34859625f624ec",
           "interactionIds": [
             "deb2dbe76b7a70f1",
             "04ae1114453b4e84"
           ],
           "expressionRefs": [
             "EXPR.224baf7d3a1d7370",
-            "EXPR.f56643dbbb3f4538"
+            "EXPR.452a5f06b2966cdd"
           ],
           "attested": true
         },
         {
-          "selector": "writer_arm__0__37e1f3d3dc2d",
-          "family": "writer_family__0__37e1f3d3dc2d",
+          "selector": "writer_arm__0__a19de361cb08",
+          "family": "writer_family__0__a19de361cb08",
           "groupId": "INITIAL|INSTANCE/3#48",
           "attachEndpointIds": [],
-          "sessionId": "8f93c024cf055543-3a6b2dad",
+          "sessionId": "8f93c024cf055543-4e0b7449",
           "sessionIds": [
-            "8f93c024cf055543-3a6b2dad"
+            "8f93c024cf055543-4e0b7449"
           ],
           "producerPathId": "",
           "interactionIds": [
@@ -76,19 +71,28 @@
         }
       ],
       "repairedArms": [
-        "writer_arm__0__37e1f3d3dc2d"
+        "writer_arm__0__a19de361cb08"
       ],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 1,
+      "status": "unsat",
+      "assignment": {
+        "REGION.2edcf422-b124-3b93-a9e0-6496f3f35c8f.in.1181df27-79ee-3885-bf08-953dedea4d52": "true"
+      },
+      "moved": {
+        "REGION.2edcf422-b124-3b93-a9e0-6496f3f35c8f.in.1181df27-79ee-3885-bf08-953dedea4d52": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
       "unsatCore": []
     }
   ],
   "gaps": [
-    {
-      "sessionId": "composition",
-      "kind": "DECLARATION_MISSING",
-      "cls": "DIAGNOSTIC",
-      "subject": "REGION.2edcf422-b124-3b93-a9e0-6496f3f35c8f.in.1181df27-79ee-3885-bf08-953dedea4d52",
-      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
-    },
     {
       "sessionId": "composition",
       "kind": "DECLARATION_MISSING",

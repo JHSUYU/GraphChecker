@@ -67,8 +67,9 @@ the why), all kept here:
 **The series H1** (from 2026-10-26 23:55; STATE §L): the 45 cases of `experiments/hadoop/hdfs-cases.tsv` but hdfs-11741,
 one at a time, each alone with the 12 lifts as workers (head lift10), snapshot `/u/vnr3ne/gc-run/hl-1` (e2a6aebf9), tree
 set `hl-trees-1`, image `vm-force12`; runs `/bigtemp/vnr3ne/gc-out/hdfs-final/accept-H1-<case without hdfs->`. Each
-case's verdict, native k/N, time breakdown (seeding / exploration / compose + solver) and closure: H1 (results/hdfs) --
-the lead fills them in. The first, H1-17897, PASSed in 407 s.
+case's verdict, native k/N, time breakdown (seeding / exploration / compose + solver) and closure: `results/hdfs/README.md`. H1 (2026-10-26/27):
+the 45 cases alone in 62555 s (17.4 h): the 9 named bugs but 11741 PASS (native 10/10), 10 and 12 SAT, 52 a named
+bound (z3 undecided in its budget), 33 UNSAT_CLOSED -- every verdict as CloudLab's F1-F7.
 
 **The records it stands beside.** The same code on CloudLab (rounds F1-F8, 2026-10-24, `system/hdfs-cloudlab`): 12 SAT
 confirmed in the VM (every named bug's mandated mechanism; 11 reproduced 10/10 natively, hdfs-11741 0/10), 33 UNSAT at the

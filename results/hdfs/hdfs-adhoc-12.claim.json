@@ -6,143 +6,10 @@
     "kind": "MARKER_FLIPPED",
     "valuationOrdinal": 1,
     "movedRoots": {
-      "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.535c3981-102a-32af-9851-027bc0f1e4b4": "true"
+      "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.8d266a52-c69a-3bbe-bd47-0cd65d3c1b19": "true"
     },
     "polarityDecides": true,
     "gaps": [
-      {
-        "sessionId": "composition",
-        "kind": "ADMISSION_GAP",
-        "cls": "DIAGNOSTIC",
-        "subject": "0ca1b1a85622c8f7-97ac183c",
-        "detail": "this replay states NOT_ADMITTED for the obligation it ran (0ca1b1a85622c8f7): occurrence 8b18dfd72edb27dd never reached \u003corg.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: void removeExpiredKeys()\u003e#u15#1 in this replay; its world did not run: this replay published no root mint row for [REGION.72da7a42-cdc9-3342-bed1-7ffec8966b4d.in.943f807a-f203-330a-9dd7-13d5b2e16ece], so its session states nothing about the value it ran the root(s) the obligation moves at"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "ADMISSION_GAP",
-        "cls": "DIAGNOSTIC",
-        "subject": "0ca1b1a85622c8f7-97ac183c",
-        "detail": "this session reached the anchor in a replay its own rows do not admit: no disjunct, and it drops no path (solr-adhoc-19 F2V4: such a replay made COMPOSE drop 63)"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "ADMISSION_GAP",
-        "cls": "DIAGNOSTIC",
-        "subject": "bcf028c1259d915a-ef00608e",
-        "detail": "this replay states NOT_ADMITTED for the obligation it ran (bcf028c1259d915a): occurrence 8b18dfd72edb27dd never reached \u003corg.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: void removeExpiredKeys()\u003e#u15#2 in this replay; its world did not run: this replay published no root mint row for [REGION.72da7a42-cdc9-3342-bed1-7ffec8966b4d.in.943f807a-f203-330a-9dd7-13d5b2e16ece], so its session states nothing about the value it ran the root(s) the obligation moves at"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "ADMISSION_GAP",
-        "cls": "DIAGNOSTIC",
-        "subject": "bcf028c1259d915a-ef00608e",
-        "detail": "this session reached the anchor in a replay its own rows do not admit: no disjunct, and it drops no path (solr-adhoc-19 F2V4: such a replay made COMPOSE drop 63)"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "230140a0283015c4",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "f13bca0356f90e23",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "b7ab6c2999c42237",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "5b7ba0253efcb826",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "ba0b67d5969619a4",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "6b7a2a432849b05f",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "921afec1ba1138d2",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "c604c74f6459ec1b",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "333499100b230a77",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "4ffb2e1314a9b025",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "ce7718a4a2391dbd",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "0f6a734f6b20d688",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "fa19bd19ccc1fd62",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "587b29d5be5f3e29",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "ff1d15be1240bd81",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
       {
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
@@ -162,314 +29,6 @@
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
         "subject": "28e0a1c9defb95d7",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "dd6c76f1ec0c5c5f",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "f0b89e145e301f7b",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "c5dd17a6ef16b6e8",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "19a46f44570214f6",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "843a76cd7de29f2a",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "8e739e5cb240c761",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "8e93b20332060b5a",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "bcb9aa779a04081b",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "989ab6f90822468c",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "f056aab4c0fa66d6",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "9810016035abf33d",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "bd27c1d70e4afeff",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "8c69e8f7950ca072",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "8ac6dc2342a0a92b",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "d0d0171d09614562",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "7cc826c7155ab659",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "c8bbe9db89a6d974",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "2bee79f8344d4ebc",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "e85b8a506bcb2685",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "7ff93876392b2c86",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "2fa84f940c814f08",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "1a22c6390d2fca9f",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "2d42ba16cc099460",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "2e6ea10fb52ff114",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "1e311a3acc6d08e2",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "f4df4d9da37ecf83",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "374c9de823720b8c",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "ec811eb90ccfb925",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "a559a71b63bb5b3a",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "1acefb5e59fc3168",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "cb090709c2e014c0",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "bf2ecba93e343555",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "c22339ff0a0c6347",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "9a215d830d949efb",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "6a5bab309e5073d1",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "8bd4f21c343bfffc",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "3650e701c8d2ec07",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "4186a28db5a2adf3",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "b9840dff704c2665",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "18c85a08786343a9",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "6f72a611ff8004df",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "aecf0b2cbe02a37f",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "d62c8b2be25d1b5c",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "0a635c9df65b9cd0",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
@@ -537,24 +96,31 @@
       },
       {
         "sessionId": "composition",
-        "kind": "UNSTATED_VALUE",
+        "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_7 (java/util/HashMap)@d406ec04a3395dee-9ecfe95c",
-        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+        "subject": "921afec1ba1138d2",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ff1d15be1240bd81",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@seed-result-45fb8eee",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@seed-result-335749a3",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
-        "kind": "UNSTATED_VALUE",
+        "kind": "DECLARATION_MISSING",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@a49cb978b9bcfa7c-9bf81dda",
-        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+        "subject": "REGION.c726128b-53d8-36ea-a37c-479a1762aaf3.in.2eaaf124-537b-3fa7-9619-191ded5a21c7",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
       },
       {
         "sessionId": "composition",
@@ -590,18 +156,11 @@
         "cls": "DIAGNOSTIC",
         "subject": "REGION.fe3fe30c-9f44-319f-8f3d-07e6bdb58fdb.in.6de4e9e3-2f00-3895-8cb4-b11b3a1111fc",
         "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "DECLARATION_MISSING",
-        "cls": "DIAGNOSTIC",
-        "subject": "REGION.c726128b-53d8-36ea-a37c-479a1762aaf3.in.2eaaf124-537b-3fa7-9619-191ded5a21c7",
-        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
       }
     ]
   },
-  "solverRuns": 32,
-  "seedSessionId": "seed-result-45fb8eee",
+  "solverRuns": 28,
+  "seedSessionId": "seed-result-335749a3",
   "valuations": [
     {
       "ordinal": 0,
@@ -625,26 +184,6 @@
       "ordinal": 1,
       "status": "sat",
       "assignment": {
-        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.8d266a52-c69a-3bbe-bd47-0cd65d3c1b19": "false",
-        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.9608fdf5-5b41-3fa4-b922-273070196d7b": "false",
-        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.0f1ef30a-6919-35ea-9adc-295e38e6662f": "false",
-        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.4fd726b5-3fed-3e01-8f1b-3ade474565cd": "false",
-        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.535c3981-102a-32af-9851-027bc0f1e4b4": "true"
-      },
-      "moved": {
-        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.535c3981-102a-32af-9851-027bc0f1e4b4": "true"
-      },
-      "selectedPathId": "643da3e5be09fea5",
-      "selectedSessionId": "62b7f59314586621-a9329450",
-      "fatalObserved": true,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 2,
-      "status": "unsat",
-      "assignment": {
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.8d266a52-c69a-3bbe-bd47-0cd65d3c1b19": "true",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.9608fdf5-5b41-3fa4-b922-273070196d7b": "false",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.0f1ef30a-6919-35ea-9adc-295e38e6662f": "false",
@@ -654,15 +193,15 @@
       "moved": {
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.8d266a52-c69a-3bbe-bd47-0cd65d3c1b19": "true"
       },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
+      "selectedPathId": "cc2ce17843ad8b1b",
+      "selectedSessionId": "d1d0942e13c16de0-7a996137",
+      "fatalObserved": true,
       "selectedArms": [],
       "repairedArms": [],
       "unsatCore": []
     },
     {
-      "ordinal": 3,
+      "ordinal": 2,
       "status": "unsat",
       "assignment": {
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.8d266a52-c69a-3bbe-bd47-0cd65d3c1b19": "false",
@@ -682,7 +221,7 @@
       "unsatCore": []
     },
     {
-      "ordinal": 4,
+      "ordinal": 3,
       "status": "unsat",
       "assignment": {
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.8d266a52-c69a-3bbe-bd47-0cd65d3c1b19": "false",
@@ -693,6 +232,26 @@
       },
       "moved": {
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.0f1ef30a-6919-35ea-9adc-295e38e6662f": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 4,
+      "status": "unsat",
+      "assignment": {
+        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.8d266a52-c69a-3bbe-bd47-0cd65d3c1b19": "false",
+        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.9608fdf5-5b41-3fa4-b922-273070196d7b": "false",
+        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.0f1ef30a-6919-35ea-9adc-295e38e6662f": "false",
+        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.4fd726b5-3fed-3e01-8f1b-3ade474565cd": "true",
+        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.535c3981-102a-32af-9851-027bc0f1e4b4": "false"
+      },
+      "moved": {
+        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.4fd726b5-3fed-3e01-8f1b-3ade474565cd": "true"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -708,11 +267,11 @@
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.8d266a52-c69a-3bbe-bd47-0cd65d3c1b19": "false",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.9608fdf5-5b41-3fa4-b922-273070196d7b": "false",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.0f1ef30a-6919-35ea-9adc-295e38e6662f": "false",
-        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.4fd726b5-3fed-3e01-8f1b-3ade474565cd": "true",
-        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.535c3981-102a-32af-9851-027bc0f1e4b4": "false"
+        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.4fd726b5-3fed-3e01-8f1b-3ade474565cd": "false",
+        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.535c3981-102a-32af-9851-027bc0f1e4b4": "true"
       },
       "moved": {
-        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.4fd726b5-3fed-3e01-8f1b-3ade474565cd": "true"
+        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.535c3981-102a-32af-9851-027bc0f1e4b4": "true"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -723,7 +282,7 @@
     },
     {
       "ordinal": 6,
-      "status": "unsat",
+      "status": "sat",
       "assignment": {
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.8d266a52-c69a-3bbe-bd47-0cd65d3c1b19": "true",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.9608fdf5-5b41-3fa4-b922-273070196d7b": "true",
@@ -735,16 +294,16 @@
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.8d266a52-c69a-3bbe-bd47-0cd65d3c1b19": "true",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.9608fdf5-5b41-3fa4-b922-273070196d7b": "true"
       },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
+      "selectedPathId": "cc2ce17843ad8b1b",
+      "selectedSessionId": "d1d0942e13c16de0-7a996137",
+      "fatalObserved": true,
       "selectedArms": [],
       "repairedArms": [],
       "unsatCore": []
     },
     {
       "ordinal": 7,
-      "status": "unsat",
+      "status": "sat",
       "assignment": {
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.8d266a52-c69a-3bbe-bd47-0cd65d3c1b19": "true",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.9608fdf5-5b41-3fa4-b922-273070196d7b": "false",
@@ -756,16 +315,16 @@
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.8d266a52-c69a-3bbe-bd47-0cd65d3c1b19": "true",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.0f1ef30a-6919-35ea-9adc-295e38e6662f": "true"
       },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
+      "selectedPathId": "cc2ce17843ad8b1b",
+      "selectedSessionId": "d1d0942e13c16de0-7a996137",
+      "fatalObserved": true,
       "selectedArms": [],
       "repairedArms": [],
       "unsatCore": []
     },
     {
       "ordinal": 8,
-      "status": "unsat",
+      "status": "sat",
       "assignment": {
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.8d266a52-c69a-3bbe-bd47-0cd65d3c1b19": "true",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.9608fdf5-5b41-3fa4-b922-273070196d7b": "false",
@@ -777,9 +336,9 @@
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.8d266a52-c69a-3bbe-bd47-0cd65d3c1b19": "true",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.4fd726b5-3fed-3e01-8f1b-3ade474565cd": "true"
       },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
+      "selectedPathId": "cc2ce17843ad8b1b",
+      "selectedSessionId": "d1d0942e13c16de0-7a996137",
+      "fatalObserved": true,
       "selectedArms": [],
       "repairedArms": [],
       "unsatCore": []
@@ -798,8 +357,8 @@
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.8d266a52-c69a-3bbe-bd47-0cd65d3c1b19": "true",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.535c3981-102a-32af-9851-027bc0f1e4b4": "true"
       },
-      "selectedPathId": "643da3e5be09fea5",
-      "selectedSessionId": "62b7f59314586621-a9329450",
+      "selectedPathId": "cc2ce17843ad8b1b",
+      "selectedSessionId": "d1d0942e13c16de0-7a996137",
       "fatalObserved": true,
       "selectedArms": [],
       "repairedArms": [],
@@ -891,7 +450,7 @@
     },
     {
       "ordinal": 14,
-      "status": "sat",
+      "status": "unsat",
       "assignment": {
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.8d266a52-c69a-3bbe-bd47-0cd65d3c1b19": "false",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.9608fdf5-5b41-3fa4-b922-273070196d7b": "false",
@@ -903,16 +462,16 @@
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.0f1ef30a-6919-35ea-9adc-295e38e6662f": "true",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.535c3981-102a-32af-9851-027bc0f1e4b4": "true"
       },
-      "selectedPathId": "643da3e5be09fea5",
-      "selectedSessionId": "62b7f59314586621-a9329450",
-      "fatalObserved": true,
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
       "selectedArms": [],
       "repairedArms": [],
       "unsatCore": []
     },
     {
       "ordinal": 15,
-      "status": "sat",
+      "status": "unsat",
       "assignment": {
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.8d266a52-c69a-3bbe-bd47-0cd65d3c1b19": "false",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.9608fdf5-5b41-3fa4-b922-273070196d7b": "false",
@@ -924,148 +483,15 @@
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.4fd726b5-3fed-3e01-8f1b-3ade474565cd": "true",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.535c3981-102a-32af-9851-027bc0f1e4b4": "true"
       },
-      "selectedPathId": "643da3e5be09fea5",
-      "selectedSessionId": "62b7f59314586621-a9329450",
-      "fatalObserved": true,
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
       "selectedArms": [],
       "repairedArms": [],
       "unsatCore": []
     }
   ],
   "gaps": [
-    {
-      "sessionId": "composition",
-      "kind": "ADMISSION_GAP",
-      "cls": "DIAGNOSTIC",
-      "subject": "0ca1b1a85622c8f7-97ac183c",
-      "detail": "this replay states NOT_ADMITTED for the obligation it ran (0ca1b1a85622c8f7): occurrence 8b18dfd72edb27dd never reached \u003corg.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: void removeExpiredKeys()\u003e#u15#1 in this replay; its world did not run: this replay published no root mint row for [REGION.72da7a42-cdc9-3342-bed1-7ffec8966b4d.in.943f807a-f203-330a-9dd7-13d5b2e16ece], so its session states nothing about the value it ran the root(s) the obligation moves at"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "ADMISSION_GAP",
-      "cls": "DIAGNOSTIC",
-      "subject": "0ca1b1a85622c8f7-97ac183c",
-      "detail": "this session reached the anchor in a replay its own rows do not admit: no disjunct, and it drops no path (solr-adhoc-19 F2V4: such a replay made COMPOSE drop 63)"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "ADMISSION_GAP",
-      "cls": "DIAGNOSTIC",
-      "subject": "bcf028c1259d915a-ef00608e",
-      "detail": "this replay states NOT_ADMITTED for the obligation it ran (bcf028c1259d915a): occurrence 8b18dfd72edb27dd never reached \u003corg.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: void removeExpiredKeys()\u003e#u15#2 in this replay; its world did not run: this replay published no root mint row for [REGION.72da7a42-cdc9-3342-bed1-7ffec8966b4d.in.943f807a-f203-330a-9dd7-13d5b2e16ece], so its session states nothing about the value it ran the root(s) the obligation moves at"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "ADMISSION_GAP",
-      "cls": "DIAGNOSTIC",
-      "subject": "bcf028c1259d915a-ef00608e",
-      "detail": "this session reached the anchor in a replay its own rows do not admit: no disjunct, and it drops no path (solr-adhoc-19 F2V4: such a replay made COMPOSE drop 63)"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "230140a0283015c4",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "f13bca0356f90e23",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "b7ab6c2999c42237",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "5b7ba0253efcb826",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "ba0b67d5969619a4",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "6b7a2a432849b05f",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "921afec1ba1138d2",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "c604c74f6459ec1b",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "333499100b230a77",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "4ffb2e1314a9b025",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "ce7718a4a2391dbd",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "0f6a734f6b20d688",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "fa19bd19ccc1fd62",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "587b29d5be5f3e29",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "ff1d15be1240bd81",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
     {
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
@@ -1085,314 +511,6 @@
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
       "subject": "28e0a1c9defb95d7",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "dd6c76f1ec0c5c5f",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "f0b89e145e301f7b",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "c5dd17a6ef16b6e8",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "19a46f44570214f6",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "843a76cd7de29f2a",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "8e739e5cb240c761",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "8e93b20332060b5a",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "bcb9aa779a04081b",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "989ab6f90822468c",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "f056aab4c0fa66d6",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "9810016035abf33d",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "bd27c1d70e4afeff",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "8c69e8f7950ca072",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "8ac6dc2342a0a92b",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "d0d0171d09614562",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "7cc826c7155ab659",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "c8bbe9db89a6d974",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "2bee79f8344d4ebc",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "e85b8a506bcb2685",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "7ff93876392b2c86",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "2fa84f940c814f08",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "1a22c6390d2fca9f",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "2d42ba16cc099460",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "2e6ea10fb52ff114",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "1e311a3acc6d08e2",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "f4df4d9da37ecf83",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "374c9de823720b8c",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "ec811eb90ccfb925",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "a559a71b63bb5b3a",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "1acefb5e59fc3168",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "cb090709c2e014c0",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "bf2ecba93e343555",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "c22339ff0a0c6347",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "9a215d830d949efb",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "6a5bab309e5073d1",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "8bd4f21c343bfffc",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "3650e701c8d2ec07",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "4186a28db5a2adf3",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "b9840dff704c2665",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "18c85a08786343a9",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "6f72a611ff8004df",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "aecf0b2cbe02a37f",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "d62c8b2be25d1b5c",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "0a635c9df65b9cd0",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
@@ -1460,24 +578,31 @@
     },
     {
       "sessionId": "composition",
-      "kind": "UNSTATED_VALUE",
+      "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_7 (java/util/HashMap)@d406ec04a3395dee-9ecfe95c",
-      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      "subject": "921afec1ba1138d2",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ff1d15be1240bd81",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@seed-result-45fb8eee",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@seed-result-335749a3",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
-      "kind": "UNSTATED_VALUE",
+      "kind": "DECLARATION_MISSING",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@a49cb978b9bcfa7c-9bf81dda",
-      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      "subject": "REGION.c726128b-53d8-36ea-a37c-479a1762aaf3.in.2eaaf124-537b-3fa7-9619-191ded5a21c7",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
     },
     {
       "sessionId": "composition",
@@ -1512,13 +637,6 @@
       "kind": "DECLARATION_MISSING",
       "cls": "DIAGNOSTIC",
       "subject": "REGION.fe3fe30c-9f44-319f-8f3d-07e6bdb58fdb.in.6de4e9e3-2f00-3895-8cb4-b11b3a1111fc",
-      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "DECLARATION_MISSING",
-      "cls": "DIAGNOSTIC",
-      "subject": "REGION.c726128b-53d8-36ea-a37c-479a1762aaf3.in.2eaaf124-537b-3fa7-9619-191ded5a21c7",
       "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
     }
   ]

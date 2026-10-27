@@ -137,7 +137,7 @@ time; naming case ids after the checkout runs only those (H1's 45, every case bu
 NF && $1 != "hdfs-11741" {print $1}' experiments/hadoop/hdfs-cases.tsv)`). A stopped series resumes by the same command
 (finished cases are skipped); `touch $GC_OUT/series-R1.STOP` ends it before its next case. Series H1 ran the same way with
 the lead's driver (`/bigtemp/vnr3ne/analysis/hdfs-2026-10-26/lead/final/series.sh`, concurrency 1, every case's head on
-lift10, the 12 answering lifts as workers): H1 (results/hdfs) has its time per case. Many cases at once instead:
+lift10, the 12 answering lifts as workers): H1 (`results/hdfs/`: 62555 s for the 45, each alone) has its time per case. Many cases at once instead:
 `tools/adhoc/sweep.sh` ([handover/OPERATIONS.md](handover/OPERATIONS.md) §4).
 
 ## 5. Reading the results
@@ -149,7 +149,7 @@ tools/analysis/vacuity.py --latest --detail $GC_OUT/accept-R1-<case>   # on ever
 ```
 
 A case reproduces when its claim is its final run's in `results/hdfs/index.tsv` (each case's `.smt`, claim and reading
-in `results/hdfs/`: H1 (results/hdfs); until the lead fills them in, the rows are CloudLab's F1-F8): SAT (`SAT_CANDIDATE`:
+in `results/hdfs/`: H1, every verdict equal to CloudLab's F1-F8; 11741's row is CloudLab's F7): SAT (`SAT_CANDIDATE`:
 confirmed by a replay, reproduced natively) for the named bugs and hdfs-adhoc-10 and -12; UNSAT (`UNSAT_CLOSED`: z3 on the
 exported `final/candidate.smt2` says unsat, EXPLORE at its fixed point) for the study checks, each substantive or vacuous
 by construction as its reading says. The report's `PASS` also checks a named bug's declared mechanism; a study check

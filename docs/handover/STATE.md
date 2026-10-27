@@ -64,7 +64,9 @@ table's order, one at a time (concurrency 1), each alone with the 12 lifts as wo
 <concurrency> <case>...` (env `SNAP`, `TREES` required, `WORKERS`, `HEADS`; log `final/series-<round>.log`; `touch
 final/series-<round>.STOP` stops further starts), `lead-watch.sh` (one line per run end, series line, stall, full host),
 `watchdog.sh` (D-state processes, orphaned z3s, a host above 85 % or refusing ssh), `validate.sh <snapshot> <tree set>`.
-First: H1-17897 PASS in 407 s. Results: H1 (results/hdfs) -- the lead fills them in.
+Done 2026-10-27 17:34: the 45 alone in 62555 s (17.4 h; seeding 26126, exploration 32924, compose+solver 2775, other
+534 s); hl-1 (e2a6aebf9) ran the first 25, hl-2 (f7c095f00: plus system/solr's four general fixes) the other 20; every
+verdict equals CloudLab's (`results/hdfs/`).
 
 ## C. HDFS on HBase's engine, on CloudLab (system/hdfs-cloudlab, 2026-10-24) -- the other cluster's record
 

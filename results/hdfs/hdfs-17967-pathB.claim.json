@@ -6,7 +6,7 @@
     "kind": "MARKER_FLIPPED",
     "valuationOrdinal": 1,
     "movedRoots": {
-      "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.1200937e-6d0e-3162-abdf-1d9a219486f8": "true"
+      "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.e6da3db3-9fa9-3473-9cf8-a84a7adfa28e": "true"
     },
     "polarityDecides": true,
     "gaps": [
@@ -56,7 +56,7 @@
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@seed-result-1c4a1d34",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@seed-result-1a84fcea",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
@@ -64,20 +64,6 @@
         "kind": "DECLARATION_MISSING",
         "cls": "DIAGNOSTIC",
         "subject": "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.a8d3bb34-5fdc-360e-9646-4e376cab1858",
-        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "DECLARATION_MISSING",
-        "cls": "DIAGNOSTIC",
-        "subject": "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.e6da3db3-9fa9-3473-9cf8-a84a7adfa28e",
-        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "DECLARATION_MISSING",
-        "cls": "DIAGNOSTIC",
-        "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.91aa642e-6ab3-3cff-9366-942e73f758f2",
         "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
       },
       {
@@ -98,19 +84,33 @@
         "sessionId": "composition",
         "kind": "DECLARATION_MISSING",
         "cls": "DIAGNOSTIC",
+        "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.91aa642e-6ab3-3cff-9366-942e73f758f2",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.1200937e-6d0e-3162-abdf-1d9a219486f8",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
         "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.132427ce-17ec-31e9-a2db-ef6bc72967e3",
         "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
       }
     ]
   },
   "solverRuns": 21,
-  "seedSessionId": "seed-result-1c4a1d34",
+  "seedSessionId": "seed-result-1a84fcea",
   "valuations": [
     {
       "ordinal": 0,
       "status": "unsat",
       "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.1200937e-6d0e-3162-abdf-1d9a219486f8": "false",
+        "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.e6da3db3-9fa9-3473-9cf8-a84a7adfa28e": "false",
         "HDFS.BLOCK_KEY.SERIAL_NO": "119530"
       },
       "moved": {},
@@ -125,33 +125,33 @@
       "ordinal": 1,
       "status": "sat",
       "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.1200937e-6d0e-3162-abdf-1d9a219486f8": "true",
+        "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.e6da3db3-9fa9-3473-9cf8-a84a7adfa28e": "true",
         "HDFS.BLOCK_KEY.SERIAL_NO": "119530"
       },
       "moved": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.1200937e-6d0e-3162-abdf-1d9a219486f8": "true"
+        "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.e6da3db3-9fa9-3473-9cf8-a84a7adfa28e": "true"
       },
-      "selectedPathId": "8925474e3c735770",
-      "selectedSessionId": "88207ff4303e9a6e-e1f98ec5",
+      "selectedPathId": "91cc61ffa232ba51",
+      "selectedSessionId": "bc0831c1f79395d6-86f1ac36",
       "fatalObserved": true,
       "selectedArms": [
         {
-          "selector": "message_arm__0__36490820decc",
+          "selector": "message_arm__0__1b93bd3d5447",
           "family": "message_family__0__039e87083e67",
           "groupId": "ab253645e97bcfc2",
           "attachEndpointIds": [
             "ab253645e97bcfc2"
           ],
-          "sessionId": "88207ff4303e9a6e-e1f98ec5",
+          "sessionId": "bc0831c1f79395d6-86f1ac36",
           "sessionIds": [
-            "88207ff4303e9a6e-e1f98ec5"
+            "bc0831c1f79395d6-86f1ac36"
           ],
-          "producerPathId": "7a97dbe2812d7af4",
+          "producerPathId": "3f8e7cc105989117",
           "interactionIds": [
             "81c617bf5793d71e"
           ],
           "expressionRefs": [
-            "EXPR.55599b252c382989"
+            "EXPR.77981846fea2997f"
           ],
           "attested": true
         }
@@ -163,7 +163,7 @@
       "ordinal": 2,
       "status": "unsat",
       "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.1200937e-6d0e-3162-abdf-1d9a219486f8": "false",
+        "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.e6da3db3-9fa9-3473-9cf8-a84a7adfa28e": "false",
         "HDFS.BLOCK_KEY.SERIAL_NO": "119531"
       },
       "moved": {
@@ -180,7 +180,7 @@
       "ordinal": 3,
       "status": "unsat",
       "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.1200937e-6d0e-3162-abdf-1d9a219486f8": "false",
+        "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.e6da3db3-9fa9-3473-9cf8-a84a7adfa28e": "false",
         "HDFS.BLOCK_KEY.SERIAL_NO": "119532"
       },
       "moved": {
@@ -197,7 +197,7 @@
       "ordinal": 4,
       "status": "unsat",
       "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.1200937e-6d0e-3162-abdf-1d9a219486f8": "false",
+        "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.e6da3db3-9fa9-3473-9cf8-a84a7adfa28e": "false",
         "HDFS.BLOCK_KEY.SERIAL_NO": "119533"
       },
       "moved": {
@@ -214,34 +214,34 @@
       "ordinal": 5,
       "status": "sat",
       "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.1200937e-6d0e-3162-abdf-1d9a219486f8": "true",
+        "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.e6da3db3-9fa9-3473-9cf8-a84a7adfa28e": "true",
         "HDFS.BLOCK_KEY.SERIAL_NO": "119531"
       },
       "moved": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.1200937e-6d0e-3162-abdf-1d9a219486f8": "true",
+        "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.e6da3db3-9fa9-3473-9cf8-a84a7adfa28e": "true",
         "HDFS.BLOCK_KEY.SERIAL_NO": "119531"
       },
-      "selectedPathId": "8925474e3c735770",
-      "selectedSessionId": "88207ff4303e9a6e-e1f98ec5",
+      "selectedPathId": "91cc61ffa232ba51",
+      "selectedSessionId": "bc0831c1f79395d6-86f1ac36",
       "fatalObserved": true,
       "selectedArms": [
         {
-          "selector": "message_arm__0__36490820decc",
+          "selector": "message_arm__0__1b93bd3d5447",
           "family": "message_family__0__039e87083e67",
           "groupId": "ab253645e97bcfc2",
           "attachEndpointIds": [
             "ab253645e97bcfc2"
           ],
-          "sessionId": "88207ff4303e9a6e-e1f98ec5",
+          "sessionId": "bc0831c1f79395d6-86f1ac36",
           "sessionIds": [
-            "88207ff4303e9a6e-e1f98ec5"
+            "bc0831c1f79395d6-86f1ac36"
           ],
-          "producerPathId": "7a97dbe2812d7af4",
+          "producerPathId": "3f8e7cc105989117",
           "interactionIds": [
             "81c617bf5793d71e"
           ],
           "expressionRefs": [
-            "EXPR.55599b252c382989"
+            "EXPR.77981846fea2997f"
           ],
           "attested": true
         }
@@ -253,34 +253,34 @@
       "ordinal": 6,
       "status": "sat",
       "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.1200937e-6d0e-3162-abdf-1d9a219486f8": "true",
+        "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.e6da3db3-9fa9-3473-9cf8-a84a7adfa28e": "true",
         "HDFS.BLOCK_KEY.SERIAL_NO": "119532"
       },
       "moved": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.1200937e-6d0e-3162-abdf-1d9a219486f8": "true",
+        "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.e6da3db3-9fa9-3473-9cf8-a84a7adfa28e": "true",
         "HDFS.BLOCK_KEY.SERIAL_NO": "119532"
       },
-      "selectedPathId": "8925474e3c735770",
-      "selectedSessionId": "88207ff4303e9a6e-e1f98ec5",
+      "selectedPathId": "91cc61ffa232ba51",
+      "selectedSessionId": "bc0831c1f79395d6-86f1ac36",
       "fatalObserved": true,
       "selectedArms": [
         {
-          "selector": "message_arm__0__36490820decc",
+          "selector": "message_arm__0__1b93bd3d5447",
           "family": "message_family__0__039e87083e67",
           "groupId": "ab253645e97bcfc2",
           "attachEndpointIds": [
             "ab253645e97bcfc2"
           ],
-          "sessionId": "88207ff4303e9a6e-e1f98ec5",
+          "sessionId": "bc0831c1f79395d6-86f1ac36",
           "sessionIds": [
-            "88207ff4303e9a6e-e1f98ec5"
+            "bc0831c1f79395d6-86f1ac36"
           ],
-          "producerPathId": "7a97dbe2812d7af4",
+          "producerPathId": "3f8e7cc105989117",
           "interactionIds": [
             "81c617bf5793d71e"
           ],
           "expressionRefs": [
-            "EXPR.55599b252c382989"
+            "EXPR.77981846fea2997f"
           ],
           "attested": true
         }
@@ -292,34 +292,34 @@
       "ordinal": 7,
       "status": "sat",
       "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.1200937e-6d0e-3162-abdf-1d9a219486f8": "true",
+        "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.e6da3db3-9fa9-3473-9cf8-a84a7adfa28e": "true",
         "HDFS.BLOCK_KEY.SERIAL_NO": "119533"
       },
       "moved": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.1200937e-6d0e-3162-abdf-1d9a219486f8": "true",
+        "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.e6da3db3-9fa9-3473-9cf8-a84a7adfa28e": "true",
         "HDFS.BLOCK_KEY.SERIAL_NO": "119533"
       },
-      "selectedPathId": "8925474e3c735770",
-      "selectedSessionId": "88207ff4303e9a6e-e1f98ec5",
+      "selectedPathId": "91cc61ffa232ba51",
+      "selectedSessionId": "bc0831c1f79395d6-86f1ac36",
       "fatalObserved": true,
       "selectedArms": [
         {
-          "selector": "message_arm__0__36490820decc",
+          "selector": "message_arm__0__1b93bd3d5447",
           "family": "message_family__0__039e87083e67",
           "groupId": "ab253645e97bcfc2",
           "attachEndpointIds": [
             "ab253645e97bcfc2"
           ],
-          "sessionId": "88207ff4303e9a6e-e1f98ec5",
+          "sessionId": "bc0831c1f79395d6-86f1ac36",
           "sessionIds": [
-            "88207ff4303e9a6e-e1f98ec5"
+            "bc0831c1f79395d6-86f1ac36"
           ],
-          "producerPathId": "7a97dbe2812d7af4",
+          "producerPathId": "3f8e7cc105989117",
           "interactionIds": [
             "81c617bf5793d71e"
           ],
           "expressionRefs": [
-            "EXPR.55599b252c382989"
+            "EXPR.77981846fea2997f"
           ],
           "attested": true
         }
@@ -375,7 +375,7 @@
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@seed-result-1c4a1d34",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@seed-result-1a84fcea",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
@@ -383,20 +383,6 @@
       "kind": "DECLARATION_MISSING",
       "cls": "DIAGNOSTIC",
       "subject": "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.a8d3bb34-5fdc-360e-9646-4e376cab1858",
-      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "DECLARATION_MISSING",
-      "cls": "DIAGNOSTIC",
-      "subject": "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.e6da3db3-9fa9-3473-9cf8-a84a7adfa28e",
-      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "DECLARATION_MISSING",
-      "cls": "DIAGNOSTIC",
-      "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.91aa642e-6ab3-3cff-9366-942e73f758f2",
       "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
     },
     {
@@ -411,6 +397,20 @@
       "kind": "DECLARATION_MISSING",
       "cls": "DIAGNOSTIC",
       "subject": "REGION.074f9e67-bf11-3cc3-a83a-cd67abb4b6bc.in.312f028d-5aa8-3930-b98a-f56bd4d010ef",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.91aa642e-6ab3-3cff-9366-942e73f758f2",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.1200937e-6d0e-3162-abdf-1d9a219486f8",
       "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
     },
     {
