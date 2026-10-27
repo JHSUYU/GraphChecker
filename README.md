@@ -57,12 +57,13 @@ ruling: `system/hdfs` (the locked body, 39 cases) and `system/hdfs1` (the newest
 engine change); nothing goes to `main`. The remote keeps `main`, `system/hdfs` and `system/hdfs1`; the Hadoop fork keeps
 the four trees the cases read (`graphchecker/*`, STATE §3). Everything a run of the 46 cases needs is on those
 branches: [docs/REPRODUCE.md](docs/REPRODUCE.md) rebuilds it from a fresh clone (the VM image, the four trees, both
-checkouts) and runs the series. **Solr is finished for now** (2026-10-19): the engine's rewrite and the final round
-SGF9 are on `system/solr` (pushed; from `system/hdfs1`), the tree is the Solr fork's `graphchecker/solr-checks`, and
-[docs/REPRODUCE.md](docs/REPRODUCE.md) §6 runs the 20 cases from a fresh clone.
-[docs/handover/START-HERE.md](docs/handover/START-HERE.md) and [docs/handover/STATE.md](docs/handover/STATE.md) §S say
-where it stands, [docs/handover/TODO.md](docs/handover/TODO.md) "Solr: after SGF9" what is left; STATUS "Solr checks"
-each case's result.
+checkouts) and runs the series. **Solr is finished** (2026-10-26): the code is `system/solr` (pushed; from `system/hdfs1`), the adapter the Solr fork's
+`graphchecker/solr-checks`; every one of the 20 cases has its final `.smt`, claim and time row in
+[`results/solr/`](results/solr/README.md) (the 8 bug checks PASS; the 12 study checks SAT, UNSAT or a named bound, the
+eight SGF9 left open finished on 2026-10-22..26, each alone), and [docs/REPRODUCE.md](docs/REPRODUCE.md) §6 runs them
+from a fresh clone of the two. [docs/handover/START-HERE.md](docs/handover/START-HERE.md) and
+[docs/handover/STATE.md](docs/handover/STATE.md) §S say where it stands, [docs/handover/TODO.md](docs/handover/TODO.md)
+"Solr: after the owed cases" what is left; STATUS "Solr checks" each case's result.
 
 The README is an index. The handover documents hold the state, the plan and the rules. Every agent
 that works on this project takes [RULES.md](docs/handover/RULES.md),
