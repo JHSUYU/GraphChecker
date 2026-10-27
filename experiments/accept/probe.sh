@@ -10,6 +10,9 @@ ACCEPT_WHOLE=${PROBE_WHOLE_SECONDS:-60}
 # The probe re-decides what the campaign's DECIDE already decided, for the report alone: its per-path split stops at
 # this budget over the whole probe (solr-adhoc-05, R3: 340 paths x up to 600 s each, serially, held its row for hours).
 ACCEPT_BUDGET=${PROBE_BUDGET_SECONDS:-900}
+# Each path's query repeats the shared body, so the split writes about body x paths: past this size it is not written
+# and the probe says BUDGET (solr-adhoc-05, X1C: a 793 MB body x 349 paths had written 29 GB over NFS in 10 min).
+ACCEPT_SPLIT_MAX_MB=${PROBE_SPLIT_MAX_MB:-2048}
 probe_started=$(date +%s)
 (( ACCEPT_WHOLE > ACCEPT_Z3_TIMEOUT )) && ACCEPT_WHOLE=$ACCEPT_Z3_TIMEOUT
 
@@ -109,7 +112,12 @@ run() {
   echo '(check-sat)' >>"$f"
   t0=$(date +%s)
   out=$(solve "$f" "$ACCEPT_WHOLE")
-  if [[ "$out" != sat && "$out" != unsat ]]; then
+  if [[ "$out" != sat && "$out" != unsat ]] \
+      && (( $(stat -c %s "$work/probe/body.smt2") / 1048576 * $(python3 -c \
+        'import json,sys; print(len(json.load(open(sys.argv[1])).get("paths") or []))' "$M" 2>/dev/null \
+        || echo 0) > ACCEPT_SPLIT_MAX_MB )); then
+    out=BUDGET
+  elif [[ "$out" != sat && "$out" != unsat ]]; then
     split_paths
     undecided=""
     verdict=""
