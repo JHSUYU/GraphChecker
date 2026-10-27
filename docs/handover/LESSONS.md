@@ -263,6 +263,9 @@ Concurrent `git worktree add` races on `.git/config`: take `/localtmp/vnr3ne/wor
 
 ## 10. HDFS on HBase's engine, on CloudLab (2026-10-24)
 
+The port's lessons hold for `system/hdfs-liftlab` too (the same HDFS port, on liftlab); the scheduling ones (CPU-bound,
+charges in hundredths, one pool per round) are CloudLab's and its code is on `system/hdfs-cloudlab` only (PARALLEL §8).
+
 **Porting a system back onto a newer body.** `system/solr`'s cleanup deleted, "system/hdfs keeps them", the Hadoop
 shim (LOC 2a, 980a64b43) and the door entry points only the shim called (LOC 2b, b68e720f0). Read the deletions of the
 line between the two bodies first (`git log --format='%h %s' system/hdfs1..system/hbase | grep -iE 'hdfs|shim|LOC'`):
@@ -293,9 +296,9 @@ run as sweeps (`sweep.sh`, shared pool).
 
 **Charge what is used where cores bind (2026-10-25).** A replay charged its 90th percentile rounded up to whole cores
 (HDFS: mean 1.63, p90 2.46, charged 2 or 3) left a node at 40 cores charged under a load of 25-55: on liftlab memory
-bound first and the rounding cost nothing. The ledger charges hundredths, a replay its mean, and a round runs as one
-pool of every case (`tools/rounds/run-pool.sh`, PARALLEL §8), not lanes and not alone reruns, which only paid on 30 GB
-hosts.
+bound first and the rounding cost nothing. On `system/hdfs-cloudlab` the ledger charges hundredths, a replay its mean,
+and a round runs as one pool of every case (`tools/rounds/run-pool.sh`, PARALLEL §8), not lanes and not alone reruns,
+which only paid on 30 GB hosts; `system/hdfs-liftlab` reverted all of it, since on liftlab memory binds first.
 
 **Cluster setup traps (tools/cloudlab/setup-nodes.sh does them right):** the home directory is local per node, so the
 repositories, worktrees, snapshots, trees, ~/.m2 and z3 must live on the shared /bulk; Ubuntu's `maven` pulls in JDK 11

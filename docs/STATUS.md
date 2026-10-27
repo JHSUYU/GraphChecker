@@ -1,8 +1,9 @@
 # Status
 
 This page describes what the code on this branch (HEAD) does. The HDFS group is finished (46 of 46): "HDFS checks"
-below holds every one of the 46 cases with its branch (`system/hdfs` locked, or this branch `system/hdfs1`), run, verdict
-and its `.smt` read by hand. Every commit that completes or changes something listed here updates this page in the same
+below holds every one of the 46 cases with the branch that closed it (`system/hdfs` locked, or `system/hdfs1`; both now
+superseded by this branch, `system/hdfs-liftlab`), run, verdict and its `.smt` read by hand; "HDFS checks on CloudLab" the
+same cases on HBase's engine, the code this branch runs on liftlab (series H1: H1 (results/hdfs)). Every commit that completes or changes something listed here updates this page in the same
 commit.
 
 - **Done** means the code does it on HEAD.
@@ -94,6 +95,9 @@ remain, each named where it applies:
 
 ## HDFS checks on CloudLab: the 46 cases on HBase's engine (system/hdfs-cloudlab, lead 2026-10-24)
 
+On liftlab: `system/hdfs-liftlab` (2026-10-27, THE HDFS branch) is this code with liftlab's memory-ledger scheduling
+(STATE §L); its series H1 runs the 45 cases but hdfs-11741, each alone on 12 lifts: H1 (results/hdfs).
+
 The same 46 cases as "HDFS checks" above, run on `system/hdfs-cloudlab` (HBase's engine, the Hadoop shim restored) on
 CloudLab's node0-node4 in rounds F1-F8 (`/bulk/gc-out/hdfs-final`); each case's final run, claim, native k/N, time
 breakdown and reading are `results/hdfs/README.md` (one row per case), its `.smt` and claim `results/hdfs/<case>.*`.
@@ -104,7 +108,7 @@ TODO HDFS on CloudLab 12); 33 UNSAT_CLOSED at the fixed point with z3 unsat on t
 arms closed by refuted worlds, 22 vacuous by construction with the reason, 07 at world depth 0 among them); hdfs-adhoc-52
 RUN_DEFECT on the composer's `formula:timeout` while its exported formula is unsat on the file and substantive (TODO 11). No new bug (as above); every guard reading of the table above holds on the new engine.
 What the port needed, per case (each in "Per-system surface" or a case declaration, with its evidence run):
-- world depth 0 for every case (RULES), 11741 at 2, 07 at 6; the ad hoc family plans closures of up to 128 tasks
+- world depth 0 for every case (RULES), 11741 at 2 (07 at 6 until F7, 0 since 94fce7127); the ad hoc family plans closures of up to 128 tasks
   (14, 15, 16 truncated at 64), 14 up to 256; 11 explores up to 24 waves;
 - `seed_replay_time_factor=130`; `replay_timeout_s=7200` for 24, 26, 37 (whole upgrade/rollback replays);
 - the fork's `graphchecker/hdfs-checks` 899c200cc8e: QJM replies in the loggers' order (05-10), a block recovery's

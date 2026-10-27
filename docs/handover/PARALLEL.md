@@ -219,7 +219,15 @@ may be idle).
   the head's hands, one solver at a time) and a dispatch cursor that piles replays on one host -- not capacity; the
   scheduler rewrite (branch solr-stream2) addresses each. During a final round, agents keep off the pool.
 
-## 8. CloudLab: five big-memory nodes, filled by their cores (2026-10-25)
+## 8. CloudLab: five big-memory nodes, filled by their cores (branch system/hdfs-cloudlab, 2026-10-25)
+
+**On CloudLab, branch `system/hdfs-cloudlab` (and `system/zookeeper-cloudlab`): the code of this branch does not carry
+it.** `system/hdfs-liftlab` (THE HDFS branch, 2026-10-27; the owner: "所以为了我们liftlab的并行，你要把system./solr等的并行，
+弄到system/hdfs-liftlab") reverted every step below (2acb6e9f7, 3a9b0a688, 76828e529 with `run-pool.sh`, 3ed666321,
+c3f820ed1): its `run_engine.sh` and shell test equal `system/hbase`'s, the ledger charges memory at 70 % and every choice
+among hosts takes the one with the most memory room, as §1-§7 and PIPELINE §7.7 describe. On liftlab memory binds first,
+so a final series runs each case alone on the cluster (the HDFS series H1, 2026-10-26: the 45 cases but hdfs-11741 one at
+a time on the 12 reachable lifts, for each case's time breakdown, STATE §L). What follows is the other cluster's record.
 
 The owner, 2026-10-25: "我们的cloudlab一般是5个节点，是大内存。这点和之前的liftlab不同。所以在system/hdfs-cloudlab和
 system/zookeeper-cloudlab上，我们的并行策略要最大化cloudlab集群的使用。" The two clusters bind on different resources:

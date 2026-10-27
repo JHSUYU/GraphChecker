@@ -1,45 +1,56 @@
-# START HERE: the 46 HDFS cases on HBase's engine, on CloudLab (system/hdfs-cloudlab, 2026-10-24)
+# START HERE: THE HDFS branch, on liftlab (system/hdfs-liftlab, 2026-10-27)
 
-You take over GraphChecker's HDFS group as it runs on HBase's final engine and on a five-node CloudLab cluster. This
-file is self-contained: the goal, what the branch holds, the cluster, the results, how to run a case and the whole
-series, what is left, and the rules. The takeover files of the other systems are [hbase-START-HERE.md](hbase-START-HERE.md)
-(HBase, `system/hbase`) and STATE §0/§S (HDFS's earlier bodies and Solr).
+You take over GraphChecker's HDFS group: every HDFS case on HBase's final engine, run on liftlab with the memory-ledger
+scheduling of `system/hbase` and `system/solr`. This one branch replaces `system/hdfs` and `system/hdfs1` (the owner,
+2026-10-26: "最终system/hdfs-liftlab一个分支就能彻底取代原先的system/hdfs和system/hdfs1了哈"). This file is self-contained: the
+goal, what the branch holds, the cluster, the trees, the results, how to run a case and the whole series, what is left,
+and the rules. The takeover files of the other systems are [hbase-START-HERE.md](hbase-START-HERE.md) (HBase,
+`system/hbase`) and STATE §S (Solr); HDFS's earlier bodies are STATE §0 and the CloudLab port STATE §C.
 
-- **Repo:** `git@github.com:JHSUYU/GraphChecker.git`, branch **`system/hdfs-cloudlab`** (on the cluster: `/bulk/GraphChecker`,
-  integration worktree `/bulk/wt/gc-hdfs-cloudlab`).
-- **The trees:** the Hadoop fork `https://github.com/JHSUYU/hadoop.git`: `graphchecker/hdfs-checks` (44 cases: every case
-  but hdfs-adhoc-21 and hdfs-11741), `graphchecker/hdfs-checks-adhoc21` (21), `graphchecker/hdfs-11741` (11741);
-  `experiments/hadoop/trees.tsv`. On the cluster the tree sets (worktrees of `/bulk/hadoop`, each with its Maven
-  repository `/bulk/m2/f<k>`): `/bulk/trees/f1` (the fork as F1 started: 75cb90e9dfe, 9478e60313f, 6c86fca9a2b), `f3`
-  (0d2b473db63), `f5` (57e091c8af6), `f6` (899c200cc8e, the branch head); a tree a run reads is never rebuilt, so a tree
-  change during a series is a new set.
-- **From GitHub:** [../REPRODUCE.md](../REPRODUCE.md) §9 makes the cluster, the VM image and the trees and runs the series.
+- **Repo:** `git@github.com:JHSUYU/GraphChecker.git`, branch **`system/hdfs-liftlab`** (local repository
+  `/u/vnr3ne/GraphChecker`, `GC_REPO`; integration worktree `/bigtemp/vnr3ne/wt/gc-hdfs-cloudlab`, on branch
+  `system/hdfs-liftlab` despite its name).
+- **The trees:** the Hadoop fork `https://github.com/JHSUYU/hadoop.git`: `graphchecker/hdfs-checks` (899c200cc8e: every case
+  but hdfs-adhoc-21 and hdfs-11741), `graphchecker/hdfs-checks-adhoc21` (25b4f1e531f: 21), `graphchecker/hdfs-11741`
+  (6c86fca9a2b: 11741); `experiments/hadoop/trees.tsv`. The current tree set is `/bigtemp/vnr3ne/wt/hl-trees-1`
+  (`hadoop-hdfs-study-r7`, `hadoop-hdfs-21`; Maven repositories under `/bigtemp/vnr3ne/m2/hl-1`); a tree a run reads is
+  never rebuilt, so a tree change during a series is a new set.
+- **The cluster:** liftlab, lift02-15 (48 cores and 30 GB each; `/bigtemp/vnr3ne` and the home over NFS). lift11 is the
+  control host (`GC_CONTROL_HOST`: the lead's sessions, neither a worker nor a head); lift07 has been unreachable since the
+  servers went down on 2026-10-23; lift02 and lift03 cannot reach lift15, so they are workers, never heads. The 12
+  workers: lift02-06, lift08-10, lift12-15.
+- **The image:** `/bigtemp/vnr3ne/vm-force12/j2sdk-image` (this branch's VM sources are `system/hbase`'s).
+- **From GitHub:** [../REPRODUCE.md](../REPRODUCE.md) §0-§5 clones the branch and the fork, builds the image and the
+  trees, and runs one case or the series.
 
-## 1. The goal and what was done
+## 1. The goal and what the branch is
 
-The owner's goal (2026-10-24, verbatim in STATE §C): read GraphChecker (every branch's docs) and the Hadoop fork's
-`graphchecker/*` branches; take `system/hbase` as the base ("system/hbase的整个流程优化和system/hdfs已经有很大不同。所以我建议你从
-system/hbase作为基准，开始迁移") and rebuild `system/hdfs` + `system/hdfs1` on its pipeline as `system/hdfs-cloudlab`, which
-runs every HDFS ad hoc check of those two branches to its `.smt`, validates every SAT as HBase does (CONFIRM in the VM,
-native REPRODUCE), applies all of HBase's process (results/, vacuity, the final series), adapts the fork's
-`graphchecker/hdfs-checks` branch, and brings liftlab's parallel scheduling to CloudLab's node0-node4 ("内存很充足").
+The owner's goal (2026-10-26, verbatim in STATE §L): run every HDFS ad hoc check but hdfs-11741 again, on
+`system/hdfs-cloudlab`'s code with liftlab's parallel scheduling instead of CloudLab's ("你要把system./solr等的并行，弄到
+system/hdfs-liftlab"), and measure the 45 cases' time breakdown -- seeding, exploration, compose + solver -- each case
+alone on the cluster ("每个独占集群").
 
-What changed against `system/hbase` (git log has each commit; STATUS "Per-system surface" and LESSONS §10 the why):
+`system/hdfs-liftlab` is `origin/system/hdfs-cloudlab` 3411a49f8 (the HDFS port onto `system/hbase`, below) with
+CloudLab's scheduling reverted (2acb6e9f7, 3a9b0a688, 76828e529 with `tools/rounds/run-pool.sh`, 3ed666321, c3f820ed1)
+and e2a6aebf9, gc-env's liftlab defaults (`GC_BULK=/bigtemp/vnr3ne`, `GC_REPO=~/GraphChecker`, z3 in `~/.local/bin`,
+`LIFTS` lift02-15 but lift11, `GC_CONTROL_HOST=lift11`). **Scheduling is `system/hbase`'s**: `run_engine.sh` and its
+shell test equal `system/hbase`'s; every start is charged on the host ledger by its memory and no host passes 70 %; every
+choice among hosts takes the most memory room (PIPELINE §7.7, PARALLEL §1-§7). CloudLab's core charges, host order by
+free cores and pool of every case are on `system/hdfs-cloudlab` only (PARALLEL §8).
+
+What the HDFS port changed against `system/hbase` (git log has each commit; STATUS "Per-system surface" and LESSONS §10
+the why), all kept here:
 - **The Hadoop shim and its door entry points are back** (eb4b370c5): `src/shim` (the `hadoop-shim` classifier jar) and
   `MessageDoors#captureScope`, `#handingOff`/`#handedOff` (with Identity's received-message hand-off), `#received`,
   `#startupStep`/`#startupDone`, `#replaying`, `#outboundNone`, public `#setAside`/`#putBack`: what `system/solr`'s LOC 2a/2b
   deleted "system/hdfs keeps them". The trees call them unchanged.
-- **CloudLab's scheduling** (agent L): the host ledger charges cores beside memory, across campaigns (a charge
-  `<mb>.<cores>.<host>...`, `CAUSYNTH_HOST_MAX_CORES_PCT`), and every choice among hosts orders by free cores first; gc-env
-  for node0-4 (`GC_BULK=/bulk`, `GC_REPO`, `GC_CONTROL_HOST` empty: every node heads); `tools/cloudlab/setup-nodes.sh`,
-  `tools/vm/build-image-docker.sh`. CloudLab binds on cores (old E5-2660 v2, 40 logical / 20 physical per node), not memory.
 - **DECIDE** (agent D, reviewed twice): a handed-on delivery of the path's own run is the path's own (a two-hop handoff's
   inner arm no longer reads as a re-pairing), and the own-witness pass asks each fatal-observing explored path once in its
   own run, its world's clocks held, within a sixth of the decide budget. hdfs-17897's replayed heartbeat fault is claimed
   MARKER_FLIPPED, no longer a refuted STATE_PAIRING model first.
 - **REPRODUCE** keeps a turn-counted ORDER row in a world that plants no root (c8d40a5d8): hdfs-bugs-slowdisk-zero 10/10.
-- **The HBase process for HDFS's declarations:** world depth 0 for every case (RULES), 11741 at 2 (two clocks), 07 at its
-  6; `seed_replay_time_factor=130` as Solr's and HBase's; `results/hdfs/` (final .smt, claim, table).
+- **The HBase process for HDFS's declarations:** world depth 0 for every case (RULES) but 11741 at 2 (two clocks;
+  07's former 6 dropped by 94fce7127); `seed_replay_time_factor=130` as Solr's and HBase's; `results/hdfs/` (final .smt, claim, table).
 - **The fork** (`graphchecker/hdfs-checks` 899c200cc8e, every step a workaround named in STATUS "Per-system surface"):
   a quorum call's replies in its loggers' order for every QJM check (05-10; 07 no longer reads
   `graphchecker/hdfs-checks-adhoc07`); a block recovery's primary the live replica with the least DataNode UUID, not the
@@ -47,48 +58,64 @@ What changed against `system/hbase` (git log has each commit; STATUS "Per-system
   64 MB heap (52: a 22 GB replay heap made a 33M-bucket INodeMap that every fsimage save walked); TestEncryptedTransfer's
   client without block-acquire retries (11: a race named dn0's second SASL connection a retry or the checksum).
   `graphchecker/hdfs-checks-adhoc21` (25b4f1e531f) is that plus 21's workload with its post-target skip loop trimmed.
-- **Case declarations** (`experiments/hadoop/*/case.sh`, `hdfs-cases.tsv`): the ad hoc family's closures up to 128 tasks
-  (14 at 256), 11 up to 24 waves, `replay_timeout_s=7200` for 24/26/37 (their whole workloads replay in ~1 h here).
+- **Case declarations** (`experiments/hadoop/*/case.sh`, `hdfs-cases.tsv`, whose `branch` column is `system/hdfs-liftlab`
+  for every case): the ad hoc family's closures up to 128 tasks (14 at 256), 11 up to 24 waves, `replay_timeout_s=7200`
+  for 24/26/37 (their whole workloads replay in ~1 h on CloudLab).
 
 ## 2. Results
 
-The final rounds F1-F8 (2026-10-24, `/bulk/gc-out/hdfs-final`; F1 the whole series in 8 lanes, then 5 more, on snapshot
-`/bulk/gc-run/hcF1` = 9c1bbe157 and tree set `/bulk/trees/f1`; F2-F8 the reruns each declaration or workaround needed, on
-their own snapshots and tree sets) are `results/hdfs/README.md`: the rounds, every case's claim, mechanism, native k/N,
-time breakdown and closure, and one reading per case. STATUS "HDFS checks on CloudLab" has the summary and what each case
-needed; STATUS "Per-system surface" each workaround with its evidence run.
+**The series H1** (from 2026-10-26 23:55; STATE §L): the 45 cases of `experiments/hadoop/hdfs-cases.tsv` but hdfs-11741,
+one at a time, each alone with the 12 lifts as workers (head lift10), snapshot `/u/vnr3ne/gc-run/hl-1` (e2a6aebf9), tree
+set `hl-trees-1`, image `vm-force12`; runs `/bigtemp/vnr3ne/gc-out/hdfs-final/accept-H1-<case without hdfs->`. Each
+case's verdict, native k/N, time breakdown (seeding / exploration / compose + solver) and closure: H1 (results/hdfs) --
+the lead fills them in. The first, H1-17897, PASSed in 407 s.
 
-**The pool and the CPU-aware ledger (2026-10-25, PARALLEL §8).** The nine named cases but 11741 ran three times as
-one pool beside the ZooKeeper rounds of `system/zookeeper-cloudlab` (`/bulk/gc-out/hdfs-pool`; snapshots `hcP1`
-3f630e134, `hcP2` a830a3e87, `hcP3` 7828aa909; tree set `f1`): P1 on whole-core charges by the mean (16 ZooKeeper
-cases beside it, 44 % of the CPUs by load), P2 with the load-aware ledger, P3 with its decay fix. Their walls, summed
-over the nine: P1 15710 s, P3 10099 s (the final series' runs of the same nine, before the pool: 9472 s). P3 passed
-9 of 9 (each SAT confirmed in the VM, native 10/10, report.py PASS); in P1 and P2, 17967-pathC (P1, P2) and -pathB
-(P2) were confirmed and reproduced 10/10 natively but withheld by one BLOCKING gap (TODO HDFS on CloudLab 13).
+**The records it stands beside.** The same code on CloudLab (rounds F1-F8, 2026-10-24, `system/hdfs-cloudlab`): 12 SAT
+confirmed in the VM (every named bug's mandated mechanism; 11 reproduced 10/10 natively, hdfs-11741 0/10), 33 UNSAT at the
+fixed point with z3 unsat on the file, hdfs-adhoc-52 a RUN_DEFECT row over an unsat file; no new bug (STATUS "HDFS checks
+on CloudLab", STATE §C; its pool rounds P1-P3, PARALLEL §8). The former branches' readings, each case's chain against the
+HDFS code: STATUS "HDFS checks"; their time breakdown, every case alone on ten lifts: series EX1, PERFORMANCE §6 and the
+`ex1_*` columns of `hdfs-cases.tsv`.
 
 ## 3. Read, in this order
 
-1. This file, then [STATE.md](STATE.md) §C (where everything is on the cluster) and `results/hdfs/README.md`.
-2. [LESSONS.md](LESSONS.md) §10 (this port's traps), §9 (HBase's, which apply), the rest.
-3. [OPERATIONS.md](OPERATIONS.md) §11 (CloudLab), [PARALLEL.md](PARALLEL.md), [RULES.md](RULES.md), [CHECKING.md](CHECKING.md),
-   [AGENTS.md](AGENTS.md).
-4. [TODO.md](TODO.md) "HDFS on CloudLab" (what is left), STATUS "HDFS checks" (the readings of system/hdfs and
-   system/hdfs1, each case's chain against the HDFS code) and "HDFS checks on CloudLab".
-5. `docs/design/PIPELINE.md` for the stage you touch (§7.7 the ledger, §8/§9 DECIDE, §10b REPRODUCE).
+1. This file, then [STATE.md](STATE.md) §L (where everything is) and `results/hdfs/README.md`.
+2. [LESSONS.md](LESSONS.md) §10 (the port's traps), §9 (HBase's, which apply), the rest.
+3. [OPERATIONS.md](OPERATIONS.md) §1 and §4 (liftlab, the ledger, rounds), [PARALLEL.md](PARALLEL.md), [RULES.md](RULES.md),
+   [CHECKING.md](CHECKING.md), [AGENTS.md](AGENTS.md).
+4. [TODO.md](TODO.md) "HDFS on liftlab" (what is left), STATUS "HDFS checks" and "HDFS checks on CloudLab".
+5. `docs/design/PIPELINE.md` for the stage you touch (§7.7 the work pool and the ledger, §8/§9 COMPOSE and DECIDE, §10b
+   REPRODUCE).
 
 ## 4. Running a case and the series
 
-- **Snapshot:** `bash tools/lib/worktree-add.sh /bulk/gc-run/<name> <commit> --detach` (an explicit commit or the caller's
-  HEAD), then `ssh node2 'cd /bulk/gc-run/<name> && mvn -q -o package -DskipTests'`.
-- **One case:** `cd <snapshot> && env GC_OUT=<out> GC_TREES=/bulk/trees/f1 CAUSYNTH_CUSTOM_JDK_HOME=/bulk/vm/hbase/j2sdk-image
-  CASES="<case ids>" CASE_TIMEOUT_SECONDS=14400 PRUNE=0 tools/rounds/launch-round.sh <snapshot> <ROUND>`.
-- **The series:** `tools/rounds/run-pool.sh <ROUND> experiments/hadoop/hdfs-cases.tsv system/hdfs-cloudlab=<snapshot>`,
-  run from the snapshot: one pool of every case over the five nodes, longest first, a start whenever a tenth of the
-  cluster's cores is free (PARALLEL §8; F1 ran before it as lanes of `run-series.sh`,
-  `/bulk/gc-out/hdfs-final/lanes/lane<k>.tsv`). Development rounds: `tools/adhoc/sweep.sh` (shared pool).
+Every command runs with `env -u BASH_ENV` (or `unset BASH_ENV` first), from a lift that reaches every worker (never lift02,
+lift03 or lift11 as a head). Snapshot and tree set are shared read-only once a run reads them.
+- **Snapshot:** `bash tools/lib/worktree-add.sh /u/vnr3ne/gc-run/<name> <commit> --detach` (sparse, no `third_party/`;
+  `GC_REPO` names the repository), then `cd /u/vnr3ne/gc-run/<name> && tools/onlift.sh -g 6 mvn -q -o package -DskipTests`.
+- **A tree set:** `tools/onlift.sh -g 8 env GC_TREES=/bigtemp/vnr3ne/wt/<set> GC_M2=/bigtemp/vnr3ne/m2/<set>
+  experiments/hadoop/prepare-trees.sh hadoop-hdfs-study-r7 hadoop-hdfs-21` from a built checkout (`onlift.sh` forwards no
+  environment, so the variables go inside its command; add `hadoop-hdfs-11741-r6` for 11741): ~20 minutes, its log ends
+  with a `PASSED`/`FAILED`/`MISSING` line per workload. Then every case's `validate`:
+  `bash /bigtemp/vnr3ne/analysis/hdfs-2026-10-26/lead/validate.sh <snapshot> <tree set>`.
+- **One case:** `GC_TREES=<tree set> bash /bigtemp/vnr3ne/analysis/hdfs-2026-10-26/lead/launch.sh <topic> <snapshot> <case>
+  <TAG> [budget s]` (the 12 lifts as workers, `vm-force12`, into `/bigtemp/vnr3ne/gc-out/hdfs-<topic>/accept-<TAG>`; start it
+  detached: `setsid nohup ... > <log> 2>&1 < /dev/null &`). With the branch's own tool: `cd <snapshot> && env
+  GC_OUT=<out> GC_TREES=<tree set> CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force12/j2sdk-image
+  CAUSYNTH_CAMPAIGN_WORKER_HOSTS="<the 12 lifts>" CASE_TIMEOUT_SECONDS=<budget_s> tools/rounds/launch-run.sh <snapshot>
+  <case> <tag>` (it holds the shell until the case ends; the default workers are `LIFTS`, which still names lift07).
+- **The series, each case alone:** H1's driver, `cd /bigtemp/vnr3ne/analysis/hdfs-2026-10-26/lead/final && SNAP=<snapshot>
+  TREES=<tree set> WORKERS='<the 12 lifts>' HEADS='lift10' setsid nohup bash series.sh <round> 1 <case>... &` (started
+  on the head with `ssh -f`; log `series-<round>.log`, START/END per case; `touch series-<round>.STOP` stops further
+  starts; never edit a driver a running series reads: copy it). With the branch's own tool: `cd <snapshot> && env
+  GC_OUT=<out> GC_TREES=<tree set> LIFTS='<the 12 lifts>' CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force12/j2sdk-image
+  tools/rounds/run-series.sh <round> experiments/hadoop/hdfs-cases.tsv system/hdfs-liftlab=<snapshot> [case...]`
+  ([../REPRODUCE.md](../REPRODUCE.md) §4). Development rounds of many cases at once: `tools/adhoc/sweep.sh` (shared pool).
+- **Watching:** `lead-watch.sh` (one line per run end, stall, full host) and `watchdog.sh` (D-state processes, orphaned
+  z3s, a host refusing ssh) in the same directory, each under a Monitor; the decision log `RUNS.txt`.
 - **Reading:** `tools/rounds/round-verify.sh <ROUND>`, `tools/analysis/vacuity.py --latest --detail <run>` on every UNSAT,
-  `tools/analysis/smt-legend.py --repo <tree> <run>/out/<case>` on every SAT, `results/hdfs/final-stats.py`,
-  `results/hdfs/collect-results.sh`. A live watcher: `/bulk/analysis/hdfs-2026-10-24/watch.sh '<round glob>'`.
+  `tools/analysis/smt-legend.py --repo <tree> <run>/out/<case>` on every SAT, `tools/rounds/series-stats.py <ROUND>`,
+  `results/hdfs/final-stats.py`, `results/hdfs/collect-results.sh`.
 
 ## 5. Rules you must keep (RULES.md, LESSONS.md)
 
@@ -98,7 +125,9 @@ over the nine: P1 15710 s, P3 10099 s (the final series' runs of the same nine, 
   COMPOSE/CONFIRM/schedule/identity batch before its merge.
 - A SAT counts when confirmed in the VM, natively reproduced (or NATIVE_PLANT_UNSUPPORTED named) and its chain read; an
   UNSAT when at its fixed point, z3 unsat on the file, and not vacuous (or vacuous by construction with the reason).
+- Memory is the limit on liftlab: every start goes through the host ledger, no host above 70 %; the control host lift11
+  stays light (no builds, no polling there).
 - At most 5 coding agents, each on its own branch, worktree, snapshot and GC_OUT; briefs on disk
-  (`/bulk/analysis/hdfs-2026-10-24/`); design gate for identity/schedule/symbolic/soundness changes.
+  (`/bigtemp/vnr3ne/analysis/hdfs-2026-10-26/`); design gate for identity/schedule/symbolic/soundness changes.
 - Shell and git: kill only by pid (`tools/rounds/stop-run.sh` alone on its line), never `git add -A`, never rebuild a
   snapshot or tree a run reads; commits as Zhenyu Li <zhl136@ucsd.edu> with the Claude trailer; push only what the owner asked.

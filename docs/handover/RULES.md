@@ -138,6 +138,9 @@ recommendation.
   change (codec capture, open arms, rule 1, the retried-call identity) and every case still open is worked on
   `system/hdfs1`, branched from the locked body. The end state is these two branches (owner: "最终就是两个分支，system/hdfs和
   system/hdfs1"): nothing merges back into `system/hdfs` or `main`; STATUS names the branch that closed each case.
+  **Superseded by one branch** (owner 2026-10-26: "最终system/hdfs-liftlab一个分支就能彻底取代原先的system/hdfs和system/hdfs1了哈"):
+  `system/hdfs-liftlab` (HBase's engine with the HDFS port, liftlab's scheduling; STATE §L) is THE HDFS branch; the two
+  stay on the remote for history.
 - **The last open cases close by workarounds** (owner 2026-10-06 ~20:00: "如果加点workaround，是不是小改动就能大大省去我们的很多
   复杂改动"; "我要求你加点workaround"): where a general fix would be an identity, PLAN or runtime change gated on many cases,
   a per-case workaround closes the case instead -- a case declaration (its own loop bounds, world depth), or one small
@@ -332,7 +335,7 @@ recommendation.
   per live round; stacking several big changes is what made rounds regress repeatedly
   (2026-10-01). **Superseded across systems by per-system branches** (owner 2026-10-08, long-term: "solr上现在是全新的开发了。
   引擎和vm可以一次多处修改。不必遵循一次修改一处"; "不止局限于hdfs, 以后，hdfs, solr, zookeeper, hbase都是自己的branch。回归只考虑在自己的
-  system内"): each system lives on its own branch (`system/hdfs` + `system/hdfs1`, `system/solr`, `system/zookeeper`,
+  system内"): each system lives on its own branch (`system/hdfs` + `system/hdfs1`, since 2026-10-26 `system/hdfs-liftlab` alone; `system/solr`, `system/zookeeper`,
   `system/hbase`) and regression is judged only within that system (Solr: its 20 cases, solr-18406 and solr-18413
   first, a final round of all 20 with none regressed). Several engine and VM changes may land per round; another
   system's corpora may serve as offline-gate data, never as a blocker.

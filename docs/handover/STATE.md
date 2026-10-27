@@ -1,21 +1,75 @@
-# State: HDFS on HBase's engine on CloudLab (system/hdfs-cloudlab, 2026-10-24); HDFS, Solr, HBase finished
+# State: HDFS on liftlab (system/hdfs-liftlab, THE HDFS branch, 2026-10-27); HDFS on CloudLab; HDFS, Solr, HBase finished
 
-This branch, `system/hdfs-cloudlab`: section C below (the 46 HDFS cases on HBase's engine, on CloudLab's node0-4; the
-trees the Hadoop fork's `graphchecker/hdfs-checks*` and `graphchecker/hdfs-11741`; [../REPRODUCE.md](../REPRODUCE.md) §9).
+This branch, `system/hdfs-liftlab`: section L below (THE HDFS branch, replacing `system/hdfs` and `system/hdfs1`: every
+HDFS case on HBase's engine with liftlab's memory-ledger scheduling; the trees the Hadoop fork's `graphchecker/hdfs-checks*`
+and `graphchecker/hdfs-11741`; the final series H1 running; [../REPRODUCE.md](../REPRODUCE.md) §0-§5). Section C is the
+same HDFS port on CloudLab (`system/hdfs-cloudlab`, the other cluster's record; [../REPRODUCE.md](../REPRODUCE.md) §9).
 HBase: section H (finished: the code is `system/hbase`, the adapter the HBase fork's `graphchecker/hbase-checks`, both on
 GitHub; [../REPRODUCE.md](../REPRODUCE.md) §7 runs every case from a fresh clone of the two). ZooKeeper finished on its own
-branch `system/zookeeper` (built from `system/hbase`; its STATE §Z). Solr: section S. The HDFS group on its earlier bodies (`system/hdfs`, `system/hdfs1`, liftlab) is finished: all 46 cases have an exported `.smt` read by hand against the HDFS code, one row each in
+branch `system/zookeeper` (built from `system/hbase`; its STATE §Z). Solr: section S. The HDFS group on its earlier bodies (`system/hdfs`, `system/hdfs1`, liftlab; §0, superseded by §L) is finished: all 46 cases have an exported `.smt` read by hand against the HDFS code, one row each in
 [../STATUS.md](../STATUS.md) "HDFS checks" (07, the last, closed on 2026-10-07: EX1-adhoc-07e on `system/hdfs1`
 8c446418b). Every case then ran alone on the ten lifts for its time breakdown (series EX1,
 `/bigtemp/vnr3ne/gc-out/hdfs-excl`; the 46 rows are [../design/PERFORMANCE.md](../design/PERFORMANCE.md) §6). The owner
 then stopped the work; on 2026-10-08 the code, scripts and documents were cleaned ("清理所有无用的文档/死代码/没用的脚本
-fallback") and the remotes cut down to what is kept (§2, §3). Nothing runs on any lift and no agent is working. Read this
+fallback") and the remotes cut down to what is kept (§2, §3). Read this
 file, then [TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [CHECKING.md](CHECKING.md),
 [AGENTS.md](AGENTS.md), [OPERATIONS.md](OPERATIONS.md) and [PARALLEL.md](PARALLEL.md). The design is in
 [../design/](../design/README.md); every check's state is in [../checks/README.md](../checks/README.md); done / partial /
 missing per requirement in [../STATUS.md](../STATUS.md).
 
-## C. HDFS on HBase's engine, on CloudLab (system/hdfs-cloudlab, 2026-10-24) -- read this first if you take over HDFS
+## L. HDFS on liftlab (system/hdfs-liftlab, 2026-10-26/27) -- read this first if you take over HDFS
+
+The owner's goal (2026-10-26, verbatim): "跑完solr之后。再把hdfs除了11741以外的所有adhod check跑一遍。使用的版本是system/hdfs-cloudlab
+但是有一个问题，那个的并行都在cloudlab上。所以为了我们liftlab的并行，你要把system./solr等的并行，弄到system/hdfs-liftlab。你懂吧，就是
+cloudlab分支都能跑通了，只是并行在不同的集群上。然后测出45个hdfs adhoc hcdck的time break down，包括seeding, exploraiton,(compose+solver)
+每个独占集群。" Then: "最终system/hdfs-liftlab一个分支就能彻底取代原先的system/hdfs和system/hdfs1了哈". The lead's decision log is
+`/bigtemp/vnr3ne/analysis/hdfs-2026-10-26/lead/RUNS.txt`.
+
+**`system/hdfs-liftlab`** (THE HDFS branch; `system/hdfs`, `system/hdfs1` and `system/hdfs-cloudlab` are history):
+`origin/system/hdfs-cloudlab` 3411a49f8 (= `system/hbase` 26910df2a, whose code is 5b4b6bae9's, plus the HDFS port of §C: the Hadoop shim and its door
+entry points, DECIDE's own arms and own-run ask, REPRODUCE's plant of a pure re-pairing, the case declarations on HBase's
+process, `results/hdfs/` from CloudLab, the fork's workarounds) with CloudLab's scheduling reverted -- 2acb6e9f7 (reverts
+7828aa909), 3a9b0a688 (7ba1fb13a), 76828e529 (7f1751ac9; `tools/rounds/run-pool.sh` deleted), 3ed666321 (cb82b3bab),
+c3f820ed1 (cd6a573a4) -- and e2a6aebf9, `tools/lib/gc-env.sh`'s liftlab defaults (`GC_BULK=/bigtemp/vnr3ne`,
+`GC_REPO=~/GraphChecker`, `Z3_BIN=~/.local/bin/z3`, `LIFTS` lift02-15 but lift11, `GC_CONTROL_HOST=lift11`).
+`run_engine.sh` and `src/test/shell/run_engine_campaign_helpers_test.sh` equal `system/hbase`'s: the host ledger charges
+memory (70 % of a host), every choice among hosts takes the most memory room, as `system/hbase` and `system/solr`
+(PIPELINE §7.7, PARALLEL §1-§7). Gate green (`mvn package` with the tests, the shell test; on lift14,
+`lead/gate1-mvn.log`, `lead/gate1-shell.log`). Integration worktree `/bigtemp/vnr3ne/wt/gc-hdfs-cloudlab` (on branch
+`system/hdfs-liftlab`, despite its name).
+
+**The cluster** (OPERATIONS §1): liftlab, lift02-15, 48 cores and 30 GB each, `/bigtemp/vnr3ne` and the home over NFS;
+lift11 the control host (the lead's sessions; neither a worker nor a head); lift07 unreachable since the servers went down
+on 2026-10-23; lift02 and lift03 cannot reach lift15, so they are workers, never heads. The workers: the other 12, lift02-06,
+lift08-10, lift12-15.
+
+**The image:** `/bigtemp/vnr3ne/vm-force12/j2sdk-image` (`system/hdfs-liftlab`'s VM sources are `system/hbase`'s).
+
+**The trees** (`experiments/hadoop/trees.tsv`, the fork `https://github.com/JHSUYU/hadoop.git`): tree set
+`/bigtemp/vnr3ne/wt/hl-trees-1` = `hadoop-hdfs-study-r7` (the fork's `graphchecker/hdfs-checks` 899c200cc8e: every case
+but hdfs-adhoc-21 and hdfs-11741) and `hadoop-hdfs-21` (`graphchecker/hdfs-checks-adhoc21` 25b4f1e531f), each with its
+Maven repository under `GC_M2=/bigtemp/vnr3ne/m2/hl-1`; made by `experiments/hadoop/prepare-trees.sh` on lift12 in ~20
+minutes (`lead/prepare-hl-trees-1.log`): 30 workloads PASSED, 0 FAILED; 45 of 45 cases valid (`lead/validate.sh`).
+hdfs-11741's tree (`hadoop-hdfs-11741-r6` = `graphchecker/hdfs-11741`) is not in the set: the series leaves 11741 out
+(owner).
+
+**The snapshot:** `/u/vnr3ne/gc-run/hl-1` (e2a6aebf9, built).
+
+**The series H1** (from 2026-10-26 23:55): the 45 cases of `experiments/hadoop/hdfs-cases.tsv` but hdfs-11741, in the
+table's order, one at a time (concurrency 1), each alone with the 12 lifts as workers and its head on lift10, snapshot
+`hl-1`, trees `hl-trees-1`, image `vm-force12`, each case's budget the table's `budget_s`; runs
+`/bigtemp/vnr3ne/gc-out/hdfs-final/accept-H1-<case without hdfs->`. The drivers are in
+`/bigtemp/vnr3ne/analysis/hdfs-2026-10-26/lead/`: `launch.sh <topic> <snapshot> <case> <TAG> [budget s]` (one run into
+`gc-out/hdfs-<topic>`; env `GC_TREES` required, `WORKERS`, `VM_IMAGE`, `STOP_AFTER`), `final/series.sh <round>
+<concurrency> <case>...` (env `SNAP`, `TREES` required, `WORKERS`, `HEADS`; log `final/series-<round>.log`; `touch
+final/series-<round>.STOP` stops further starts), `lead-watch.sh` (one line per run end, series line, stall, full host),
+`watchdog.sh` (D-state processes, orphaned z3s, a host above 85 % or refusing ssh), `validate.sh <snapshot> <tree set>`.
+First: H1-17897 PASS in 407 s. Results: H1 (results/hdfs) -- the lead fills them in.
+
+## C. HDFS on HBase's engine, on CloudLab (system/hdfs-cloudlab, 2026-10-24) -- the other cluster's record
+
+The HDFS port below is `system/hdfs-liftlab`'s too (§L); what stays CloudLab's alone is its scheduling (the core charges,
+the host order by free cores, `run-pool.sh`: PARALLEL §8), its gc-env defaults and its cluster (OPERATIONS §11).
 
 The owner's goal (2026-10-24, verbatim): "阅读当前目录下graphchecker的全部代码和hadoop的graphchecker/adhoc分支。参考graphchecker的
 system/hbase。用里面整个流程重构现在的graphchecker的system/hdfs和system/hdfs1。开发方式全部在代码文档里，请理解这些开发踩过的坑。grpahchecker
@@ -24,12 +78,12 @@ adhoc check的所有.smt，对于sat做validation就像system/hbase一样。。�
 workaround/test case在graphchecker/hdfs-checks下。这个分支也要对应更新做适配。同时，在cloudlab上你有5个server node0, node1, node2, node3,
 node4彼此互相ssh。而且彼此都可以访问我的git仓库。你要在system/hdfs-cloudlab里把liftlab上那一套并行调度弄过来，需要注意的是我们内存很充足";
 then "system/hbase的整个流程优化和systeem/hdfs已经有很大不同。所以我建议你从system/hbase作为基准，开始迁移" and "开发起来5个ndoe都要用，
-多agent协作也可以参考我们的文档". [START-HERE.md](START-HERE.md) says what was done; this section says where it is.
+多agent协作也可以参考我们的文档". [START-HERE.md](START-HERE.md) §1 says what the port changed; this section says where it is on CloudLab.
 
 **`system/hdfs-cloudlab`** (GitHub; from `system/hbase` 26910df2a): the shim and door entry points restored, the CloudLab
 platform, the cores in the host ledger and the host order by free cores (agent L, branch `hdfs-ledger-cpu`), DECIDE's own
 arms and own-run ask (agent D, branch `hdfs-decide`), REPRODUCE's pure-re-pairing plant, the HDFS declarations on HBase's
-process (depth 0; 11741 2; 07 6; seed factor 130), `results/hdfs/`. Every merge was built and tested (`mvn -q -o package`
+process (depth 0; 11741 2; 07 6 until 94fce7127, then 0; seed factor 130), `results/hdfs/`. Every merge was built and tested (`mvn -q -o package`
 + the shell test) on node1-4; agent D's two COMPOSE batches each had an independent review before the merge.
 
 **The fork's branches** (`/bulk/hadoop`, local -> remote): `gc/hdfs-cloudlab-11` -> `graphchecker/hdfs-checks` 899c200cc8e
@@ -161,12 +215,15 @@ Against SGF7/SGF8 the rewritten engine is faster on every case it finished (21 2
 of PLANNER_HEAP_EXCEEDED, 40 no claim -> 8731 s, 38 1222 -> 922). Fewer paths in 39 (and re-run sessions unplanned in 19,
 13, 09) came from the fixed point beside GROW re-runs, fixed after those runs.
 
-## 0. The end state: two branches (owner 2026-10-06)
+## 0. The end state: two branches (owner 2026-10-06) -- superseded by §L (2026-10-27)
+
+Since 2026-10-27 `system/hdfs-liftlab` (§L) replaces both branches below; they stay on the remote for history, with the
+rounds and evidence of §4.
 
 - **`system/hdfs`** (the locked body d6737d26b plus docs): 39 cases closed by round HL1 and its reruns -- the nine named
   bugs other than 11741 (17897, 17899-bug1/2/3, 17967-pathA/B/C, 17960, slowdisk-zero) and 30 study checks (05 06 08 09
   10 11 12 14 15 16 19 20 22 23 24 25 26 27 28 31 33 34 35 37 38 45 48 49 50 52). Locked: only docs land on it.
-- **`system/hdfs1`** (this branch): the other 7 cases -- 07, 11741, 21, 29, 30, 39, 40 -- and every engine change made
+- **`system/hdfs1`**: the other 7 cases -- 07, 11741, 21, 29, 30, 39, 40 -- and every engine change made
   after the lock. Its STATUS carries all 46 rows, each naming the branch and run that closed it.
 - Nothing merges back into `system/hdfs` or `main` (owner: "最终就是两个分支，system/hdfs和system/hdfs1"). The next system
   starts from `system/hdfs1`, the newer body (TODO).
@@ -211,16 +268,22 @@ that serves throughput.
 
 ## 2. GraphChecker branches (repo `~/GraphChecker`, remote `origin` = github)
 
-The remote keeps one branch per system (2026-10-08 cut down to three by the lead; then one pushed per finished system):
+The remote keeps one branch per system (2026-10-08 cut down to three by the lead; then one pushed per finished system).
+THE HDFS branch is `system/hdfs-liftlab` (§L, 2026-10-27); the three HDFS branches before it stay for history:
 
 | remote branch | what it is |
 | --- | --- |
 | `main` (default) | the 2026-10-03 body (round V25, 14/14 on the named HDFS, Solr and ZooKeeper cases; VM `vm-model-guards2`, HDFS tree `gc/hdfs-unified-dtx`) |
-| `system/hdfs` | the locked HDFS body and its 39 cases (§0) |
-| `system/hdfs1` | the newest HDFS body and the other 7 cases (§0) |
+| `system/hdfs-liftlab` | **THE HDFS branch** (§L): every HDFS case on HBase's engine, liftlab's memory-ledger scheduling, `results/hdfs/`; trees: the fork `JHSUYU/hadoop` `graphchecker/hdfs-checks`, `-adhoc21`, `hdfs-11741`. Replaces the three below |
+| `system/hdfs` | history: the locked HDFS body and its 39 cases (§0) |
+| `system/hdfs1` | history: the newest HDFS body of 2026-10-08 and the other 7 cases (§0) |
+| `system/hdfs-cloudlab` | history, the other cluster: the HDFS port on CloudLab's node0-4 with the core charges (§C, OPERATIONS §11, REPRODUCE §9), from `system/hbase` |
 | `system/solr` | the Solr group (§S; pushed 2026-10-19), from `system/hdfs1`; tree: the fork `JHSUYU/solr` `graphchecker/solr-checks` |
 | `system/hbase` | the HBase group (§H; pushed 2026-10-22), from `system/solr`; tree: the fork `JHSUYU/hbase` `graphchecker/hbase-checks` |
 | `system/zookeeper` | the ZooKeeper group (pushed 2026-10-22; its own STATE §Z), from `system/hbase`; tree: the fork `JHSUYU/zookeeper` `graphchecker/zookeeper-checks` |
+
+Other sessions' branches are on the remote too, each with its own docs: `system/{hbase,solr,zookeeper}-cloudlab` (those
+systems on CloudLab) and `system/{hdfs,hbase,solr,zookeeper}-buggy-detect` (old bugs that make an ad hoc check fail, detected on today's trees: their `docs/handover/BUGGY-DETECT.md`).
 
 Every other remote branch was deleted, bundled first: `/bigtemp/vnr3ne/handover/2026-10-08/graphchecker-remote-branches.bundle`
 (`study`, `hdfs-compose-perf-wip`, `hdfs-container-writers`; `git fetch <bundle> 'refs/remotes/origin/*:refs/remotes/bundle/*'`
@@ -244,7 +307,11 @@ Every branch merged into `system/hdfs1` (`git branch --merged system/hdfs1`) and
 The HDFS trees are worktrees of `~/hadoop`; its remote `origin` is the fork `git@github.com:JHSUYU/hadoop.git`, which keeps
 four branches, one per tree a case reads (2026-10-08; `experiments/hadoop/trees.tsv`). Each case's `case.sh` names its
 tree as `$GC_TREES/<name>` (`tools/lib/gc-env.sh`: `/bigtemp/vnr3ne/wt` here); `experiments/hadoop/prepare-trees.sh` makes
-any of them anew from the fork ([../REPRODUCE.md](../REPRODUCE.md) §3):
+any of them anew from the fork ([../REPRODUCE.md](../REPRODUCE.md) §3). **`system/hdfs-liftlab` reads three of them, at the
+fork's current heads** (§L): `graphchecker/hdfs-checks` 899c200cc8e (every case but 21 and 11741; 07 too, so
+`graphchecker/hdfs-checks-adhoc07` is read by no current case), `graphchecker/hdfs-checks-adhoc21` 25b4f1e531f and
+`graphchecker/hdfs-11741` 6c86fca9a2b; H1's tree set is `/bigtemp/vnr3ne/wt/hl-trees-1`. The local worktrees in the table
+below are the former branches' trees at their 2026-10-08 heads:
 
 | tree (worktree) | local branch, head | remote branch | used by |
 | --- | --- | --- | --- |
@@ -271,13 +338,14 @@ The fork's 16 older `gc/*` branches (the per-bug trees, `gc/hdfs-unified`, `gc/h
 `/bigtemp/vnr3ne/handover/2026-10-08/hadoop-gc-branches.bundle`; `main`'s cases read `gc/hdfs-unified-dtx`
 (`/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx`, local). Any other Hadoop worktree under `/bigtemp/vnr3ne/wt/` is superseded.
 
-VM image `/bigtemp/vnr3ne/vm-hg5/j2sdk-image` serves both HDFS branches (sources `hdfs-vm-hg5` 742f13363, the same in
+VM image `/bigtemp/vnr3ne/vm-force12/j2sdk-image` serves `system/hdfs-liftlab` (its VM sources are `system/hbase`'s).
+VM image `/bigtemp/vnr3ne/vm-hg5/j2sdk-image` serves both former HDFS branches (sources `hdfs-vm-hg5` 742f13363, the same in
 both branches' `third_party/`; `tools/vm/build-image.sh` rebuilds it from either);
 `vm-model-guards2` serves `main`. No VM change was made since. The VM's dead natives (VM.md §8) and
 `exportLeaf`/`mintLeaf` can go in the next VM build.
 
-Snapshots in `~/gc-run/` (frozen; `tools/rounds/snapshot-gc.sh` refuses one in use): `hl1` (`system/hdfs`'s locking
-round) and `rp5` (`system/hdfs1`'s code of the EX1 series; its jar is the offline gate's baseline for this body).
+Snapshots in `~/gc-run/` (frozen; `tools/rounds/snapshot-gc.sh` refuses one in use): `hl-1` (`system/hdfs-liftlab`
+e2a6aebf9, series H1), `hl1` (`system/hdfs`'s locking round) and `rp5` (`system/hdfs1`'s code of the EX1 series; its jar is the offline gate's baseline for this body).
 
 ## 4. Rounds and evidence
 
@@ -285,6 +353,7 @@ Outputs under `/bigtemp/vnr3ne/gc-out/<dir>/accept-<round>-<n>/` (`sweep-<round>
 
 | round | body | what it closed |
 | --- | --- | --- |
+| H1 (2026-10-26/27, §L) | `system/hdfs-liftlab` e2a6aebf9 (snapshot `hl-1`), tree set `hl-trees-1`, `vm-force12`; one case at a time on 12 lifts, `/bigtemp/vnr3ne/gc-out/hdfs-final/accept-H1-*` | the 45 cases but 11741, each alone, with its time breakdown: H1 (results/hdfs) |
 | HL1 + reruns (HL1R-19, HL1R-pathC) | `system/hdfs` d6737d26b, `hdfs-study` | the 39 cases of `system/hdfs` |
 | HF1 | `system/hdfs1` c3e10284f, `hdfs-study` | 29 30 40 (39 ran RUN_DEFECT there: CHECKING trap 18) |
 | HF2 | the same, 14400 s | 11741 PASS (CLOCK_SKEW, 5168 s) |
