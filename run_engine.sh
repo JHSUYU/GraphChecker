@@ -3026,8 +3026,7 @@ campaign_host_read() {
 
 campaign_host_available_mb() {
   campaign_host_read "$1" \
-    "awk '/^MemAvailable:/ {mb = int(\$2 / 1024)} END {getline load <\"/proc/loadavg\"; \
-split(load, f, \" \"); print mb, int(f[1] * 100)}' /proc/meminfo"
+    "awk '/^MemAvailable:/ {print int(\$2 / 1024)}' /proc/meminfo"
 }
 
 campaign_host_total_mb() {
@@ -3069,8 +3068,8 @@ campaign_host_memory_total() {
 }
 
 campaign_host_memory_reading() {
-  local host=$1 dir=$2 now=$3 at=0 mb="" load="" fresh refresh=${2}/refresh
-  read -r at mb _ 2>/dev/null <"${dir}/available" || true
+  local host=$1 dir=$2 now=$3 at=0 mb="" fresh refresh=${2}/refresh
+  read -r at mb 2>/dev/null <"${dir}/available" || true
   [[ "${at}" =~ ^[0-9]+$ && "${mb}" =~ ^[0-9]+$ ]] || at=0
   if (( now - at < campaign_host_poll_s )); then
     printf '%s\n' "${mb}"
@@ -3085,11 +3084,10 @@ campaign_host_memory_reading() {
       < campaign_host_lock_stale_s )) || rmdir "${refresh}" 2>/dev/null
     mkdir "${refresh}" 2>/dev/null || refresh=""
   fi
-  read -r mb load <<<"$(campaign_host_available_mb "${host}" \
-    | grep -E '^[0-9]+( [0-9]+)?$' | tail -n 1)"
+  mb=$(campaign_host_available_mb "${host}" | grep -E '^[0-9]+$' | tail -n 1)
   if [[ "${mb}" =~ ^[0-9]+$ && -n "${refresh}" ]] \
       && fresh=$(mktemp "${dir}/available.XXXXXX"); then
-    printf '%s %s %s\n' "${now}" "${mb}" "${load}" >"${fresh}"
+    printf '%s %s\n' "${now}" "${mb}" >"${fresh}"
     mv -f -- "${fresh}" "${dir}/available"
   fi
   [[ -z "${refresh}" ]] || rmdir "${refresh}" 2>/dev/null
@@ -3136,8 +3134,6 @@ campaign_host_admit() {
   campaign_host_lock "${dir}" "${now}" || return 3
   read -r campaign_host_admitted_charged campaign_host_admitted_cores \
     <<<"$(campaign_host_charged "${dir}" "${now}")"
-  campaign_host_admitted_cores=$(campaign_host_busy_cores "${dir}" "${now}" \
-    "${campaign_host_admitted_cores}")
   if ! campaign_host_fits "${campaign_host_admitted_charged}" "${used}" \
       "${held}" "${need}" "${spare}" "${limit}" \
       "${campaign_host_admitted_cores}" "${cores}" "${core_limit}"; then
@@ -3172,28 +3168,11 @@ campaign_host_refused() {
 held for a head; one needs $5 MB${beside} and at most $7 MB \
 (${campaign_host_max_used_pct}% of $8 MB) may be charged or in use"
   campaign_host_cores_fit "$9" "${10}" "${11}" \
-    || reason+="${reason:+; }$1 has $(campaign_cores_text "$9") cores busy \
-(charged, or its load and the last ${campaign_host_recent_s} s of charges where \
-fewer); one needs $(campaign_cores_text "${10}") and at most \
+    || reason+="${reason:+; }$1 has $(campaign_cores_text "$9") cores charged \
+to what it runs; one needs $(campaign_cores_text "${10}") and at most \
 $(campaign_cores_text "${11}") (${campaign_host_max_cores_pct}% of its cores) \
 may be charged"
   campaign_host_wait_reason=${reason}
-}
-
-campaign_host_recent_s=120
-campaign_host_busy_cores() {
-  local dir=$1 now=$2 charged=$3 at="" mb load="" recent
-  read -r at mb load 2>/dev/null <"${dir}/available" || true
-  if [[ "${at}" =~ ^[0-9]+$ && "${load}" =~ ^[0-9]+$ ]] \
-      && (( now - at < campaign_host_reading_keep_s )); then
-    recent=$(find "${dir}/charges" -maxdepth 1 -type f -printf '%f\n' \
-        2>/dev/null \
-      | awk -F. -v since="$(( now - campaign_host_recent_s ))" '
-          $2 ~ /^[0-9]+$/ && $5 ~ /^[0-9]+$/ && $5 >= since { c += $2 }
-          END { print c + 0 }')
-    (( load + recent >= charged )) || charged=$(( load + recent ))
-  fi
-  printf '%s\n' "${charged}"
 }
 
 campaign_host_core_limit() {
@@ -3338,7 +3317,6 @@ campaign_host_room() {
   core_limit=$(campaign_host_core_limit "${host}") || return 2
   limit=$(campaign_host_limit_mb "${total}")
   read -r charged busy <<<"$(campaign_host_charged "${dir}" "${now}")"
-  busy=$(campaign_host_busy_cores "${dir}" "${now}" "${busy}")
   used=$(( total - available ))
   (( charged > used )) || charged=${used}
   printf '%s %s\n' "$(( limit - charged \
