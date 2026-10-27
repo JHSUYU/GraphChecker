@@ -70,7 +70,7 @@ the declared occurrence by its shape (IDENTITY §9), natively as in the VM. It d
 implementation of §9's order rule (`runtime/AnswerOrder`, GC 93a168e87, reviewed, follow-up 298508ffa) that
 `ConcolicTaskPlan#select` and `RecordingPlant#opened` both call. REPRODUCE counts it as reproducedByShape 10/10 and
 reproduced (exact) 0/10 (HB20642f). The exact count stays the campaign's default, so the claim is kept as the
-fallback; whether the by-shape count is accepted is the owner's decision. HB20642e, counted before the split, gave
+fallback. The owner accepted the by-shape count (2026-10-27): HBASE-20642 is detected. HB20642e, counted before the split, gave
 report.py PASS with "reproduced 10/10".
 
 **No workload gives the retry the declared address.** The retry's preflight differs from the declared one only in
@@ -120,7 +120,7 @@ anchor, not that it threw at the recorded address. REPRODUCE therefore keeps the
 - `PLANT_FATAL` states `byShape`: whether its enclosing anchor activation is the one bound by shape.
 - `atAnchor`, `reproduced` and the "reproduced in N of M" line stay exact-only.
 - `answeredByShape` and `reproducedByShape` count the by-shape fatals and reproductions, the control's too.
-- The lead reports both numbers for this case to the owner, who decides whether the by-shape count is accepted.
+- The lead reported both numbers to the owner, who accepted the by-shape count for this case (2026-10-27).
 - HB20642e's PLANT_FATAL rows predate the `byShape` field, so its counts cannot be recomputed with the new jq;
   HB20642f gives them under the split rule.
 
