@@ -29,7 +29,7 @@ heads=()
 for host in ${LIFTS}; do
   [[ "${host}" != "${owner_host}" ]] || continue
   if room=$(campaign_host_room "${host}"); then
-    heads+=("${host}:${room% *}:${room#* }")
+    heads+=("${host}:${room}")
   else
     echo "the memory of ${host} could not be read: it heads nothing" >&2
   fi

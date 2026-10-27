@@ -2436,7 +2436,7 @@ ${campaign_host_wait_reason}"
 ( run_capturing_status campaign_host_try_start lift14 6000 1
   exit "${status}" ) \
   && fail "another campaign's start ignored the charges on the host"
-[[ "$(campaign_host_room lift14)" == "4221 5" ]] \
+[[ "$(campaign_host_room lift14)" -eq 4221 ]] \
   || fail "the room is not what the charges leave: \
 $(campaign_host_room lift14)"
 run_capturing_status campaign_host_try_start lift14 2000 1 3000
@@ -2447,7 +2447,7 @@ under a 22221 MB ceiling, or not said so: ${campaign_host_wait_reason}"
 campaign_host_try_start lift14 2000 1 2000 \
   || fail "a start of 2000 MB leaving 2000 MB was refused: \
 ${campaign_host_wait_reason}"
-[[ "$(campaign_host_room lift14)" == "2221 4" ]] \
+[[ "$(campaign_host_room lift14)" -eq 2221 ]] \
   || fail "the room left beside a start was charged: \
 $(campaign_host_room lift14)"
 campaign_host_release lift14 "${campaign_host_charge_id}"
@@ -2537,47 +2537,6 @@ done <<'EOF'
 256.2.n.1.1.1@0|50|3|256 2|lift16 has 2 cores charged to what it runs; one needs 3 and at most 4 (50% of its cores) may be charged
 EOF
 rm -rf -- "${cores_dir}"
-while IFS='|' read -r order_need order_rows order_want; do
-  rm -rf -- "${campaign_host_gate_root}"/lift2[123]
-  for order_row in ${order_rows//,/ }; do
-    mkdir -p "${campaign_host_gate_root}/${order_row%%:*}/charges"
-    : >"${campaign_host_gate_root}/${order_row%%:*}/charges/${order_row#*:}"
-  done
-  order_got=$(campaign_hosts_by_room "${order_need}" lift21 lift22 lift23 \
-    | paste -sd ' ' -)
-  [[ "${order_got}" == "${order_want}" ]] \
-    || fail "ORDER: hosts charged ${order_rows} (need ${order_need:-none}) \
-were ordered ${order_got}, not ${order_want}"
-done <<'EOF'
-|lift21:100.6.n.1.1.1,lift22:8000.2.n.1.1.1,lift23:100.2.n.1.1.1|lift23 lift22 lift21
-20000|lift21:100.6.n.1.1.1,lift22:8000.2.n.1.1.1,lift23:100.2.n.1.1.1|lift23 lift21
-|lift21:9000.0.n.1.1.1,lift22:3000.0.n.1.1.1|lift23 lift22 lift21
-|lift21:100.1.n.1.1.1,lift22:100.3.n.1.1.1,lift23:100.2.n.1.1.1|lift21 lift23 lift22
-EOF
-rm -rf -- "${campaign_host_gate_root}"/lift2[123]
-while IFS='|' read -r view_rows view_want; do
-  view_got=$(
-    declare -A stream_host_ledger=() stream_host_view=()
-    declare -a stream_hosts=() order=()
-    campaign_host_poll_s=60
-    for view_row in ${view_rows//,/ }; do
-      IFS=: read -r view_host view_busy view_charged view_used <<<"${view_row}"
-      stream_hosts+=("${view_host}")
-      stream_host_ledger[${view_host}]="${test_tmp}/${view_host} 31744 22221 8"
-      stream_host_view[${view_host}]="${EPOCHSECONDS} ${view_charged} 0 \
-${view_used} 0 ${view_busy}"
-    done
-    campaign_stream_by_room REPLAY cold
-    printf '%s\n' "${order[*]}"
-  )
-  [[ "${view_got}" == "${view_want}" ]] \
-    || fail "VIEW-ORDER: hosts ${view_rows} were ordered ${view_got}, not \
-${view_want}"
-done <<'EOF'
-a:6:100:1744,b:2:8000:1744,c:2:100:1744|c b a
-a:0:9000:1744,b:0:3000:1744,c:0:100:1744|c b a
-a:1:100:1744,b:3:100:1744,c:2:100:1744|a c b
-EOF
 (
   declare -A stream_host_ledger=() stream_host_view=() stream_jobs=() \
     stream_job_charge=()
@@ -2685,7 +2644,7 @@ EOF
   campaign_worker_hosts="lift12"
   campaign_head_most_mb() { echo 20000; }
   campaign_host_try_charge() { status=1; }
-  campaign_host_room() { echo 100 8; }
+  campaign_host_room() { echo 100; }
   sleep() { echo waited >"${never_dir}/waited"; exit 0; }
   campaign_head_place 26496 1 2>/dev/null
   echo placed >"${never_dir}/waited"

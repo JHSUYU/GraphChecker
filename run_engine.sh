@@ -467,7 +467,6 @@ campaign_z3_room_grant() {
   campaign_z3_room_granted_mb=${room}
   campaign_z3_room_grant_id=""
   more=$(campaign_host_room "${host}") || return 0
-  more=${more%% *}
   (( room + more <= campaign_compose_z3_most_room_mb )) \
     || more=$(( campaign_compose_z3_most_room_mb - room ))
   (( more > 0 )) || return 0
@@ -489,7 +488,6 @@ campaign_z3_hosts_grant() {
     [[ "$(campaign_host_key "${host}")" != \
         "$(campaign_host_key "${placed}")" ]] || continue
     more=$(campaign_host_room "${host}") || continue
-    more=${more%% *}
     (( more <= campaign_compose_z3_host_most_mb )) \
       || more=${campaign_compose_z3_host_most_mb}
     more=$(( more / campaign_compose_z3_pair_mb * campaign_compose_z3_pair_mb ))
@@ -3299,50 +3297,19 @@ campaign_head_unreserve() {
 }
 
 campaign_host_room() {
-  local host=$1 dir now total available limit core_limit charged busy used
+  local host=$1 dir now total available limit charged used
   dir="${campaign_host_gate_root}/$(campaign_host_key "${host}")"
   mkdir -p "${dir}"
   now=$(date +%s)
   total=$(campaign_host_memory_total "${host}" "${dir}") || return 2
   available=$(campaign_host_memory_reading "${host}" "${dir}" "${now}") \
     || return 2
-  core_limit=$(campaign_host_core_limit "${host}") || return 2
   limit=$(campaign_host_limit_mb "${total}")
-  read -r charged busy <<<"$(campaign_host_charged "${dir}" "${now}")"
+  read -r charged _ <<<"$(campaign_host_charged "${dir}" "${now}")"
   used=$(( total - available ))
   (( charged > used )) || charged=${used}
-  printf '%s %s\n' "$(( limit - charged \
-    - $(campaign_host_head_room "${dir}" "${now}") ))" \
-    "$(( core_limit - busy ))"
-}
-
-campaign_host_roomier() {
-  (( $1 > $3 || ($1 == $3 && $2 > $4) ))
-}
-
-campaign_hosts_by_room() {
-  local need=$1 host room cores at best
-  local -a hosts=() rooms=() free=()
-  shift
-  for host in "$@"; do
-    read -r room cores <<<"$(campaign_host_room "${host}")" || continue
-    [[ "${room}" =~ ^-?[0-9]+$ && "${cores}" =~ ^-?[0-9]+$ ]] || continue
-    [[ -z "${need}" ]] || (( room >= need )) || continue
-    hosts+=("${host}")
-    rooms+=("${room}")
-    free+=("${cores}")
-  done
-  while (( ${#hosts[@]} > 0 )); do
-    best=0
-    for ((at = 1; at < ${#hosts[@]}; at++)); do
-      ! campaign_host_roomier "${free[at]}" "${rooms[at]}" "${free[best]}" \
-        "${rooms[best]}" || best=${at}
-    done
-    printf '%s\n' "${hosts[best]}"
-    hosts=("${hosts[@]:0:best}" "${hosts[@]:best+1}")
-    rooms=("${rooms[@]:0:best}" "${rooms[@]:best+1}")
-    free=("${free[@]:0:best}" "${free[@]:best+1}")
-  done
+  printf '%s\n' "$(( limit - charged \
+    - $(campaign_host_head_room "${dir}" "${now}") ))"
 }
 
 campaign_host_system_mb=2048
@@ -3587,7 +3554,7 @@ ${#campaign_z3_hosts_grants[@]} more host(s): ${campaign_z3_hosts:-none}" >&2
 
 campaign_placed_host=""
 campaign_head_place() {
-  local need=$1 cores=$2 host said=false status=0 most
+  local need=$1 cores=$2 host room said=false status=0 most
   local since=${SECONDS}
   local campaign_host_max_used_pct=${campaign_head_max_used_pct}
   local -a roomy=()
@@ -3599,10 +3566,12 @@ campaign_head_place() {
       campaign_head_placed "${said}" "${need}" "${since}"
       return 0
     fi
-    mapfile -t roomy < <(campaign_hosts_by_room "${need}" $( \
-      while IFS= read -r host; do
-        campaign_host_is_local "${host}" || printf '%s\n' "${host}"
-      done < <(campaign_worker_host_list)))
+    mapfile -t roomy < <(while IFS= read -r host; do
+        ! campaign_host_is_local "${host}" || continue
+        room=$(campaign_host_room "${host}") || continue
+        (( room >= need )) && printf '%s %s\n' "${room}" "${host}"
+      done < <(campaign_worker_host_list) | sort -s -k1,1nr \
+      | awk '{print $2}')
     for host in "${roomy[@]}"; do
       campaign_host_try_charge "${host}" "${need}" "${cores}"
       if (( status == 0 )); then
@@ -3628,10 +3597,14 @@ host: ${campaign_host_wait_reason}; held on ${campaign_head_hold_host:-no host}"
 
 campaign_head_hold_host=""
 campaign_head_hold_room() {
-  local need=$1 dir
-  local -a roomy=()
-  mapfile -t roomy < <(campaign_hosts_by_room "" $(campaign_worker_host_list))
-  campaign_head_hold_host=${roomy[0]:-}
+  local need=$1 host room best_room="" dir
+  campaign_head_hold_host=""
+  while IFS= read -r host; do
+    room=$(campaign_host_room "${host}") || continue
+    [[ -z "${best_room}" ]] || (( room > best_room )) || continue
+    campaign_head_hold_host=${host}
+    best_room=${room}
+  done < <(campaign_worker_host_list)
   [[ -n "${campaign_head_hold_host}" ]] || return 0
   dir="${campaign_host_gate_root}/$(campaign_host_key \
     "${campaign_head_hold_host}")/heads"
@@ -5070,8 +5043,8 @@ campaign_stream_admit_host() {
 campaign_stream_unread_room=-1073741824
 campaign_stream_by_room() {
   local kind=$1 pass=$2 host at best is dir="" total="" limit=0 seen=""
-  local core_limit=0 charged=0 held=0 used=0 recent=0 busy=0
-  local -a hosts=() rooms=() free=()
+  local charged=0 held=0 used=0 recent=0
+  local -a hosts=() rooms=()
   for host in "${stream_hosts[@]}"; do
     is=cold
     ! campaign_stream_seated "${kind}" || ! campaign_stream_warm "${host}" \
@@ -5079,15 +5052,12 @@ campaign_stream_by_room() {
     [[ "${is}" == "${pass}" ]] || continue
     hosts+=("${host}")
     if campaign_stream_view "${host}" "${EPOCHSECONDS}"; then
-      read -r dir total limit core_limit <<<"${stream_host_ledger[${host}]}"
-      read -r seen charged held used recent busy \
-        <<<"${stream_host_view[${host}]}"
+      read -r dir total limit _ <<<"${stream_host_ledger[${host}]}"
+      read -r seen charged held used recent _ <<<"${stream_host_view[${host}]}"
       used=$(( used + ${recent:-0} ))
       rooms+=("$(( limit - held - (charged > used ? charged : used) ))")
-      free+=("$(( core_limit - ${busy:-0} ))")
     else
       rooms+=("${campaign_stream_unread_room}")
-      free+=("${campaign_stream_unread_room}")
     fi
   done
   order=()
@@ -5095,8 +5065,7 @@ campaign_stream_by_room() {
     best=-1
     for ((at = 0; at < ${#hosts[@]}; at++)); do
       [[ -n "${rooms[at]}" ]] || continue
-      (( best >= 0 )) && ! campaign_host_roomier "${free[at]}" \
-        "${rooms[at]}" "${free[best]}" "${rooms[best]}" || best=${at}
+      (( best >= 0 && rooms[at] <= rooms[best] )) || best=${at}
     done
     order+=("${hosts[best]}")
     rooms[best]=""
