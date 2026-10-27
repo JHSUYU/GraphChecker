@@ -2531,11 +2531,11 @@ was not refused by its cores (${status}): ${campaign_host_wait_reason}"
   fi
 done <<'EOF'
 512.200.n.1.1.1@0,0.0.n.2.1.1@0,1024.300.n.3.1.1.solver@0,700.foreign@0|100|300|2236 500|admit
-512.600.n.1.1.1@0|100|300|512 600|lift16 has 6.00 cores busy (charged, or its load and what its newest starts have yet to add to it where fewer); one needs 3.00 and at most 8.00 (100% of its cores) may be charged
+512.600.n.1.1.1@0|100|300|512 600|lift16 has 6.00 cores busy (charged, or its load and the last 120 s of charges where fewer); one needs 3.00 and at most 8.00 (100% of its cores) may be charged
 512.550.n.1.1.1@0|100|250|512 550|admit
 900.0.n.1.1.1@0|100|1200|900 0|admit
 512.600.n.1.1.1@200,256.400.n.2.1.1@0|100|400|256 400|admit
-256.200.n.1.1.1@0|50|250|256 200|lift16 has 2.00 cores busy (charged, or its load and what its newest starts have yet to add to it where fewer); one needs 2.50 and at most 4.00 (50% of its cores) may be charged
+256.200.n.1.1.1@0|50|250|256 200|lift16 has 2.00 cores busy (charged, or its load and the last 120 s of charges where fewer); one needs 2.50 and at most 4.00 (50% of its cores) may be charged
 EOF
 rm -rf -- "${cores_dir}"
 while IFS='|' read -r order_need order_rows order_want; do
@@ -2635,7 +2635,7 @@ while IFS='|' read -r busy_reading busy_charged busy_want; do
     || fail "BUSY: a host read '${busy_reading}' with ${busy_charged} charged \
 was counted ${busy_got} busy, not ${busy_want}"
 done <<'EOF'
-NOW 1000 900|2300|1082
+NOW 1000 900|2300|1200
 NOW 1000 900|1000|1000
 NOW 1000 3000|2300|2300
 NOW 1000|2300|2300

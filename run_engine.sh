@@ -3173,28 +3173,25 @@ held for a head; one needs $5 MB${beside} and at most $7 MB \
 (${campaign_host_max_used_pct}% of $8 MB) may be charged or in use"
   campaign_host_cores_fit "$9" "${10}" "${11}" \
     || reason+="${reason:+; }$1 has $(campaign_cores_text "$9") cores busy \
-(charged, or its load and what its newest starts have yet to add to it where \
+(charged, or its load and the last ${campaign_host_recent_s} s of charges where \
 fewer); one needs $(campaign_cores_text "${10}") and at most \
 $(campaign_cores_text "${11}") (${campaign_host_max_cores_pct}% of its cores) \
 may be charged"
   campaign_host_wait_reason=${reason}
 }
 
-campaign_host_load_tau_s=60
+campaign_host_recent_s=120
 campaign_host_busy_cores() {
-  local dir=$1 now=$2 charged=$3 at="" mb load="" unseen
+  local dir=$1 now=$2 charged=$3 at="" mb load="" recent
   read -r at mb load 2>/dev/null <"${dir}/available" || true
   if [[ "${at}" =~ ^[0-9]+$ && "${load}" =~ ^[0-9]+$ ]] \
       && (( now - at < campaign_host_reading_keep_s )); then
-    unseen=$(find "${dir}/charges" -maxdepth 1 -type f -printf '%f\n' \
+    recent=$(find "${dir}/charges" -maxdepth 1 -type f -printf '%f\n' \
         2>/dev/null \
-      | awk -F. -v at="${at}" -v tau="${campaign_host_load_tau_s}" '
-          $2 ~ /^[0-9]+$/ && $5 ~ /^[0-9]+$/ {
-            age = at - $5
-            c += age > 0 ? $2 * exp(-age / tau) : $2
-          }
-          END { print int(c + 0.5) }')
-    (( load + unseen >= charged )) || charged=$(( load + unseen ))
+      | awk -F. -v since="$(( now - campaign_host_recent_s ))" '
+          $2 ~ /^[0-9]+$/ && $5 ~ /^[0-9]+$/ && $5 >= since { c += $2 }
+          END { print c + 0 }')
+    (( load + recent >= charged )) || charged=$(( load + recent ))
   fi
   printf '%s\n' "${charged}"
 }
