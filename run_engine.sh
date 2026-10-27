@@ -401,7 +401,7 @@ ceiling: its z3s run in the least, %s MB\n' "${main##*.}" "${heap}" \
     campaign_z3_room_flag room "${main}" "${start}"
     campaign_head_charged "${room[@]}" \
       "$(campaign_jvm_charge_mb "${main}" "${start}")" \
-      "${campaign_engine_cores}" campaign_engine_jvm \
+      campaign_engine_jvm \
       "${campaign_root:+${campaign_root}/engine_peak_mb}" \
       env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${start}" "${java_bin}" \
       "${campaign_engine_oom[@]}" "${campaign_engine_stack}" "$@" \
@@ -422,7 +422,7 @@ ceiling: its z3s run in the least, %s MB\n' "${main##*.}" "${heap}" \
   campaign_z3_room_flag room "${main}" "${heap}"
   campaign_head_charged "${room[@]}" \
     "$(campaign_jvm_charge_mb "${main}" "${heap}")" \
-    "${campaign_engine_cores}" campaign_engine_jvm \
+    campaign_engine_jvm \
     "${campaign_root:+${campaign_root}/engine_peak_mb}" \
     env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" \
     "${campaign_engine_oom[@]}" "${campaign_engine_stack}" "$@"
@@ -470,7 +470,7 @@ campaign_z3_room_grant() {
   (( room + more <= campaign_compose_z3_most_room_mb )) \
     || more=$(( campaign_compose_z3_most_room_mb - room ))
   (( more > 0 )) || return 0
-  campaign_host_head_start=1 campaign_host_try_charge "${host}" "${more}" 0
+  campaign_host_head_start=1 campaign_host_try_charge "${host}" "${more}"
   (( status == 0 )) || return 0
   campaign_z3_room_granted_mb=$(( room + more ))
   campaign_z3_room_grant_id=${campaign_host_charge_id}
@@ -492,7 +492,7 @@ campaign_z3_hosts_grant() {
       || more=${campaign_compose_z3_host_most_mb}
     more=$(( more / campaign_compose_z3_pair_mb * campaign_compose_z3_pair_mb ))
     (( more > 0 )) || continue
-    campaign_host_try_charge "${host}" "${more}" 0
+    campaign_host_try_charge "${host}" "${more}"
     (( status == 0 )) || continue
     name=${host}
     ! campaign_host_is_local "${host}" || name=$(hostname -s)
@@ -2073,8 +2073,7 @@ with"
     || charge=${campaign_replay_min_need_mb}
   charge=$(campaign_replay_charge_mb "${charge}")
   for runs in 1 2; do
-    campaign_head_charged "${charge}" "${campaign_replay_cores}" \
-      campaign_seed_replay "${iteration_dir}" \
+    campaign_head_charged "${charge}" campaign_seed_replay "${iteration_dir}" \
       "${causynth_static_scope_map}" "${charge}" "${bound}" \
       "seed_replay_time_factor=${seed_replay_time_factor} x the recording's \
 ${campaign_recorded_workload_s}s workload and at least \
@@ -2706,7 +2705,7 @@ campaign_start_solver() {
     charge="${handed}.solver"
     need=${handed%%.*}
   else
-    campaign_host_try_charge localhost "${need}" "${campaign_solve_cores}"
+    campaign_host_try_charge localhost "${need}"
     (( status == 0 )) || return 1
     charge=${campaign_host_charge_id}
   fi
@@ -2976,16 +2975,6 @@ campaign_head_max_used_pct=88
   && (( campaign_host_max_used_pct > 0 && campaign_host_max_used_pct <= 100 )) \
   || die "CAUSYNTH_HOST_MAX_USED_PCT must be a percentage in 1..100: \
 ${campaign_host_max_used_pct}"
-campaign_host_max_cores_pct=${CAUSYNTH_HOST_MAX_CORES_PCT}
-[[ "${campaign_host_max_cores_pct}" =~ ^[0-9]+$ ]] \
-  && (( campaign_host_max_cores_pct > 0 \
-        && campaign_host_max_cores_pct <= 100 )) \
-  || die "CAUSYNTH_HOST_MAX_CORES_PCT must be a percentage in 1..100: \
-${campaign_host_max_cores_pct}"
-campaign_solve_cores=2
-campaign_engine_cores=1
-campaign_reproduce_cores=1
-campaign_fanout_job_cores=1
 campaign_host_poll_s=5
 campaign_host_reading_keep_s=30
 campaign_ssh_patience_s=300
@@ -3099,8 +3088,8 @@ campaign_host_lock() {
 campaign_host_wait_reason=""
 campaign_host_charge_id=""
 campaign_host_try_start() {
-  local host=$1 need=$2 cores=$3 spare=${4:-0} key dir now available total
-  local limit core_limit used held=0
+  local host=$1 need=$2 spare=${3:-0} key dir now available total limit
+  local used held=0
   key=$(campaign_host_key "${host}")
   dir="${campaign_host_gate_root}/${key}"
   mkdir -p "${dir}"
@@ -3108,68 +3097,41 @@ campaign_host_try_start() {
   total=$(campaign_host_memory_total "${host}" "${dir}") || return 2
   available=$(campaign_host_memory_reading "${host}" "${dir}" "${now}") \
     || return 2
-  core_limit=$(campaign_host_core_limit "${host}") || return 2
   limit=$(campaign_host_limit_mb "${total}")
   used=$(( total - available ))
   [[ "${campaign_host_head_start}" == 1 ]] \
     || held=$(campaign_host_head_room "${dir}" "${now}")
   campaign_host_admit "${dir}" "${total}" "${limit}" "${used}" "${held}" \
-    "${need}" "${spare}" "${cores}" "${core_limit}"
+    "${need}" "${spare}"
 }
 
 campaign_host_admitted_charged=0
-campaign_host_admitted_cores=0
 campaign_host_admit() {
-  local dir=$1 total=$2 limit=$3 used=$4 held=$5 need=$6 spare=$7 cores=$8
-  local core_limit=$9 now=${EPOCHSECONDS}
+  local dir=$1 total=$2 limit=$3 used=$4 held=$5 need=$6 spare=$7
+  local now=${EPOCHSECONDS}
   campaign_host_lock "${dir}" "${now}" || return 3
-  read -r campaign_host_admitted_charged campaign_host_admitted_cores \
-    <<<"$(campaign_host_charged "${dir}" "${now}")"
+  campaign_host_admitted_charged=$(campaign_host_charged "${dir}" "${now}")
   if ! campaign_host_fits "${campaign_host_admitted_charged}" "${used}" \
-      "${held}" "${need}" "${spare}" "${limit}" \
-      "${campaign_host_admitted_cores}" "${cores}" "${core_limit}"; then
+      "${held}" "${need}" "${spare}" "${limit}"; then
     rmdir "${dir}/lock"
     campaign_host_refused "${dir##*/}" "${campaign_host_admitted_charged}" \
-      "${used}" "${held}" "${need}" "${spare}" "${limit}" "${total}" \
-      "${campaign_host_admitted_cores}" "${cores}" "${core_limit}"
+      "${used}" "${held}" "${need}" "${spare}" "${limit}" "${total}"
     return 1
   fi
-  campaign_host_charge_row "${dir}" "${need}" "${cores}"
+  campaign_host_charge_row "${dir}" "${need}"
   return 0
 }
 
 campaign_host_fits() {
-  campaign_host_mb_fit "$1" "$2" "$3" "$4" "$5" "$6" \
-    && campaign_host_cores_fit "$7" "$8" "$9"
-}
-
-campaign_host_mb_fit() {
   (( $1 + $3 + $4 + $5 <= $6 && $2 + $3 + $4 + $5 <= $6 ))
 }
 
-campaign_host_cores_fit() {
-  (( $1 == 0 || $1 + $2 <= $3 ))
-}
-
 campaign_host_refused() {
-  local beside="" reason=""
+  local beside=""
   (( $6 == 0 )) || beside=" and $6 MB room beside it"
-  campaign_host_mb_fit "$2" "$3" "$4" "$5" "$6" "$7" \
-    || reason="$1 has $2 MB charged to what it runs, $3 MB in use and $4 MB \
-held for a head; one needs $5 MB${beside} and at most $7 MB \
+  campaign_host_wait_reason="$1 has $2 MB charged to what it runs, $3 MB \
+in use and $4 MB held for a head; one needs $5 MB${beside} and at most $7 MB \
 (${campaign_host_max_used_pct}% of $8 MB) may be charged or in use"
-  campaign_host_cores_fit "$9" "${10}" "${11}" \
-    || reason+="${reason:+; }$1 has $9 cores charged to what it runs; one \
-needs ${10} and at most ${11} (${campaign_host_max_cores_pct}% of its cores) \
-may be charged"
-  campaign_host_wait_reason=${reason}
-}
-
-campaign_host_core_limit() {
-  local cores
-  cores=$(campaign_host_cores "$1") || return 1
-  cores=$(( cores * campaign_host_max_cores_pct / 100 ))
-  printf '%s\n' "$(( cores > 0 ? cores : 1 ))"
 }
 
 campaign_host_limit_mb() {
@@ -3179,25 +3141,21 @@ campaign_host_limit_mb() {
 
 campaign_host_charged() {
   local dir=$1 now=$2
-  [[ -d "${dir}/charges" ]] || { echo 0 0; return 0; }
+  [[ -d "${dir}/charges" ]] || { echo 0; return 0; }
   find "${dir}/charges" -maxdepth 1 -type f -printf '%T@ %f\n' 2>/dev/null \
     | awk -v now="${now}" -v lease="${campaign_host_lease_s}" \
         -v dir="${dir}/charges" '
         { age = now - int($1); split($2, name, ".") }
-        age < lease && name[1] ~ /^[0-9]+$/ {
-          mb += name[1]
-          if (name[2] ~ /^[0-9]+$/) cores += name[2]
-          next
-        }
+        age < lease && name[1] ~ /^[0-9]+$/ { mb += name[1]; next }
         age >= 10 * lease { system("rm -f -- \"" dir "/" $2 "\"") }
-        END { print mb + 0, cores + 0 }'
+        END { print mb + 0 }'
 }
 
 campaign_host_charge_row() {
-  local dir=$1 need=$2 cores=$3 id
+  local dir=$1 need=$2 id
   [[ -d "${dir}/charges" ]] || mkdir -p "${dir}/charges"
   while :; do
-    id="${need}.${cores}.$(hostname -s).${BASHPID}.${EPOCHSECONDS}.${RANDOM}"
+    id="${need}.$(hostname -s).${BASHPID}.${EPOCHSECONDS}.${RANDOM}"
     [[ -e "${dir}/charges/${id}" ]] || break
   done
   campaign_host_charge_id=${id}
@@ -3247,7 +3205,7 @@ campaign_host_try_grow() {
 ${total} MB, and ${mb} MB more would put over ${pct}% of it in use"
     return 1
   fi
-  campaign_host_charge_row "${dir}" "${mb}" 0
+  campaign_host_charge_row "${dir}" "${mb}"
   return 0
 }
 
@@ -3305,7 +3263,7 @@ campaign_host_room() {
   available=$(campaign_host_memory_reading "${host}" "${dir}" "${now}") \
     || return 2
   limit=$(campaign_host_limit_mb "${total}")
-  read -r charged _ <<<"$(campaign_host_charged "${dir}" "${now}")"
+  charged=$(campaign_host_charged "${dir}" "${now}")
   used=$(( total - available ))
   (( charged > used )) || charged=${used}
   printf '%s\n' "$(( limit - charged \
@@ -3324,7 +3282,7 @@ campaign_head_most_mb() {
     available=$(campaign_host_memory_reading "${host}" "${dir}" "${now}") \
       || continue
     limit=$(campaign_host_limit_mb "${total}")
-    read -r charged _ <<<"$(campaign_host_charged "${dir}" "${now}")"
+    charged=$(campaign_host_charged "${dir}" "${now}")
     used=$(( total - available ))
     own=$(( used > charged ? used - charged : 0 ))
     (( own <= campaign_host_system_mb )) || own=${campaign_host_system_mb}
@@ -3341,9 +3299,7 @@ campaign_pool_slots() {
     dir="${campaign_host_gate_root}/$(campaign_host_key "${host}")"
     mkdir -p "${dir}"
     total=$(campaign_host_memory_total "${host}" "${dir}") || continue
-    cores=$(campaign_host_core_limit "${host}") || continue
-    cores=$(( cores / campaign_replay_cores ))
-    (( cores > 0 )) || cores=1
+    cores=$(campaign_host_cores "${host}") || continue
     fit=$(( total * campaign_host_max_used_pct / 100 / need ))
     (( fit <= cores )) || fit=${cores}
     slots=$(( slots + fit ))
@@ -3501,20 +3457,19 @@ its host was charged ${charged} MB for it$( (( held == charged )) \
 }
 
 campaign_head_charged() {
-  local need cores id status busy="" host room="" grant="" remote
+  local need id status busy="" host room="" grant="" remote
   if [[ "$1" == --room ]]; then
     room=$2
     shift 2
   fi
   need=$1
-  cores=$2
-  shift 2
+  shift
   if [[ "${campaign_head_charging}" != 1 ]]; then
     "$@" ${room:+--z3-room-mb "${room}"}
     return
   fi
   campaign_head_heartbeat
-  campaign_head_place "${need}" "${cores}" >&2
+  campaign_head_place "${need}" >&2
   host=${campaign_placed_host}
   id=${campaign_host_charge_id}
   if campaign_host_is_local "${host}" \
@@ -3554,32 +3509,33 @@ ${#campaign_z3_hosts_grants[@]} more host(s): ${campaign_z3_hosts:-none}" >&2
 
 campaign_placed_host=""
 campaign_head_place() {
-  local need=$1 cores=$2 host room said=false status=0 most
+  local need=$1 host room best best_room said=false status=0 most
   local since=${SECONDS}
   local campaign_host_max_used_pct=${campaign_head_max_used_pct}
-  local -a roomy=()
   while true; do
-    campaign_host_head_start=1 campaign_host_try_charge localhost "${need}" \
-      "${cores}"
+    campaign_host_head_start=1 campaign_host_try_charge localhost "${need}"
     if (( status == 0 )); then
       campaign_placed_host=localhost
       campaign_head_placed "${said}" "${need}" "${since}"
       return 0
     fi
-    mapfile -t roomy < <(while IFS= read -r host; do
-        ! campaign_host_is_local "${host}" || continue
-        room=$(campaign_host_room "${host}") || continue
-        (( room >= need )) && printf '%s %s\n' "${room}" "${host}"
-      done < <(campaign_worker_host_list) | sort -s -k1,1nr \
-      | awk '{print $2}')
-    for host in "${roomy[@]}"; do
-      campaign_host_try_charge "${host}" "${need}" "${cores}"
+    best=""
+    best_room=-1
+    while IFS= read -r host; do
+      ! campaign_host_is_local "${host}" || continue
+      room=$(campaign_host_room "${host}") || continue
+      (( room >= need && room > best_room )) || continue
+      best=${host}
+      best_room=${room}
+    done < <(campaign_worker_host_list)
+    if [[ -n "${best}" ]]; then
+      campaign_host_try_charge "${best}" "${need}"
       if (( status == 0 )); then
-        campaign_placed_host=${host}
+        campaign_placed_host=${best}
         campaign_head_placed "${said}" "${need}" "${since}"
         return 0
       fi
-    done
+    fi
     if [[ "${said}" == false ]]; then
       most=$(campaign_head_most_mb)
       (( most == 0 || need <= most )) || die "a head step of ${need} MB: no \
@@ -3763,10 +3719,12 @@ campaign_explore() {
   local stream_admitted_pass="" stream_seated_ms=0 stream_seated_n=0
   local stream_read_mb_s=0
   local -A stream_job_tree=() stream_flying=() stream_pool_slots=()
+  local -A stream_job_cores=()
   local -A stream_entry_need=()
-  local -A stream_host_unread=() stream_host_solves=()
+  local -A stream_host_busy=() stream_host_cores=() stream_host_unread=()
+  local -A stream_host_solves=()
   local -A stream_host_ledger=() stream_host_view=()
-  local stream_sharers="" stream_reading=""
+  local stream_admitted_cores="" stream_sharers="" stream_reading=""
   local -a stream_hard=()
   local -A stream_solver_seen=() stream_confirming=() stream_queued_at=()
   local -A stream_reruns=() stream_growing=() stream_withdrawn=() \
@@ -4142,7 +4100,7 @@ campaign_planner_alive() {
 campaign_planner_start() {
   local heap=$1 need=$2 state="${iteration_dir}/planner" host charge id
   local busy=""
-  campaign_head_place "${need}" "${campaign_engine_cores}" >&2
+  campaign_head_place "${need}" >&2
   host=${campaign_placed_host}
   charge=${campaign_host_charge_id}
   id="$(date +%s%N)"
@@ -4867,21 +4825,16 @@ campaign_stream_reap() {
 }
 
 campaign_stream_release() {
-  local kind round id host mb cores at charged held used recent busy
+  local kind round id host mb at charged held used recent
   [[ -n "${stream_job_charge[$1]:-}" ]] || return 0
   read -r kind round id host _ <<<"${stream_jobs[$1]}"
   campaign_host_release "${host}" "${stream_job_charge[$1]}"
   mb=${stream_job_charge[$1]%%.*}
-  cores=${stream_job_charge[$1]#*.}
-  cores=${cores%%.*}
-  if [[ "${mb}" =~ ^[0-9]+$ && "${cores}" =~ ^[0-9]+$ \
-      && -n "${stream_host_view[${host}]:-}" ]]; then
-    read -r at charged held used recent busy <<<"${stream_host_view[${host}]}"
+  if [[ "${mb}" =~ ^[0-9]+$ && -n "${stream_host_view[${host}]:-}" ]]; then
+    read -r at charged held used recent <<<"${stream_host_view[${host}]}"
     charged=$(( charged > mb ? charged - mb : 0 ))
     recent=$(( ${recent:-0} > mb ? recent - mb : 0 ))
-    busy=$(( ${busy:-0} > cores ? busy - cores : 0 ))
-    stream_host_view[${host}]="${at} ${charged} ${held} ${used} ${recent} \
-${busy}"
+    stream_host_view[${host}]="${at} ${charged} ${held} ${used} ${recent}"
   fi
   unset 'stream_job_charge[$1]'
 }
@@ -4978,10 +4931,10 @@ campaign_stream_has_slot() {
     charge=$(campaign_stream_charge_mb)
     stream_pass_memo[slot]=${charge}
   fi
-  [[ -n "${stream_pool_slots[${charge}:${campaign_replay_cores}]:-}" ]] \
-    || stream_pool_slots[${charge}:${campaign_replay_cores}]=$( \
-      campaign_pool_slots "${charge}" "${stream_hosts[@]}")
-  slots=${stream_pool_slots[${charge}:${campaign_replay_cores}]}
+  [[ -n "${stream_pool_slots[${charge}]:-}" ]] \
+    || stream_pool_slots[${charge}]=$(campaign_pool_slots "${charge}" \
+      "${stream_hosts[@]}")
+  slots=${stream_pool_slots[${charge}]}
   share=$(( slots / sharers ))
   (( share > 0 )) || share=1
   (( ${#stream_jobs[@]} >= share )) || return 0
@@ -5052,8 +5005,8 @@ campaign_stream_by_room() {
     [[ "${is}" == "${pass}" ]] || continue
     hosts+=("${host}")
     if campaign_stream_view "${host}" "${EPOCHSECONDS}"; then
-      read -r dir total limit _ <<<"${stream_host_ledger[${host}]}"
-      read -r seen charged held used recent _ <<<"${stream_host_view[${host}]}"
+      read -r dir total limit <<<"${stream_host_ledger[${host}]}"
+      read -r seen charged held used recent <<<"${stream_host_view[${host}]}"
       used=$(( used + ${recent:-0} ))
       rooms+=("$(( limit - held - (charged > used ? charged : used) ))")
     else
@@ -5151,23 +5104,21 @@ campaign_stream_charge_mb() {
 }
 
 campaign_stream_try_host() {
-  local host=$1 mb=$2 kind=$3 cores=$4 own=${5:-} status=0
+  local host=$1 mb=$2 kind=${3:-} cores=${4:-1} own=${5:-} status=0
   local spare=$(( campaign_replay_spikes * campaign_replay_spike_mb ))
-  if campaign_stream_seated "${kind}" \
-      && ! campaign_stream_has_seat "${host}"; then
-    campaign_host_wait_reason="${host}'s solver of this exploration has no \
-free seat"
-    return 1
-  fi
+  campaign_stream_has_cores "${host}" "${cores}" || return 1
+  ! campaign_stream_seated "${kind}" || campaign_stream_has_seat "${host}" \
+    || return 1
   [[ -z "${own}" ]] || spare=0
   case "${kind}" in
-    OBLIGATION|HARD) campaign_stream_try_charge "${host}" "${mb}" "${cores}" ;;
-    *) campaign_stream_try_charge "${host}" "${mb}" "${cores}" "${spare}" ;;
+    OBLIGATION|HARD) campaign_stream_try_charge "${host}" "${mb}" ;;
+    *) campaign_stream_try_charge "${host}" "${mb}" "${spare}" ;;
   esac
   case "${status}" in
     0)
       stream_admitted_host=${host}
       stream_admitted_mb=${mb}
+      stream_admitted_cores=${cores}
       unset 'stream_host_unread[$host]'
       stream_waiting=""
       return 0 ;;
@@ -5177,9 +5128,23 @@ free seat"
   return 1
 }
 
+campaign_stream_has_cores() {
+  local host=$1 need=${2:-1} cores
+  if [[ -z "${stream_host_cores[${host}]+x}" ]]; then
+    if ! cores=$(campaign_host_cores "${host}"); then
+      campaign_stream_unreadable "${host}"
+      return 1
+    fi
+    stream_host_cores[${host}]=${cores}
+  fi
+  (( ${stream_host_busy[${host}]:-0} == 0 \
+     || ${stream_host_busy[${host}]:-0} + need \
+       <= ${stream_host_cores[${host}]} ))
+}
+
 campaign_stream_kind_cores() {
   case "${1:-}" in
-    OBLIGATION|HARD) printf '%s\n' "${campaign_solve_cores}" ;;
+    OBLIGATION|HARD) printf '2\n' ;;
     *) printf '%s\n' "${campaign_replay_cores}" ;;
   esac
 }
@@ -5199,57 +5164,48 @@ campaign_stream_has_seat() {
 }
 
 campaign_stream_try_charge() {
-  local host=$1 need=$2 cores=$3 spare=${4:-0} dir total limit core_limit
-  local at charged held used recent=0 busy=0
+  local host=$1 need=$2 spare=${3:-0} dir total limit at charged held used
+  local recent=0
   status=0
   if ! campaign_stream_view "${host}" "${EPOCHSECONDS}"; then
     status=2
     return 0
   fi
-  read -r dir total limit core_limit <<<"${stream_host_ledger[${host}]}"
-  read -r at charged held used recent busy <<<"${stream_host_view[${host}]}"
+  read -r dir total limit <<<"${stream_host_ledger[${host}]}"
+  read -r at charged held used recent <<<"${stream_host_view[${host}]}"
   if ! campaign_host_fits "${charged}" "${used}" "${held}" "${need}" \
-      "${spare}" "${limit}" "${busy}" "${cores}" "${core_limit}"; then
+      "${spare}" "${limit}"; then
     campaign_host_refused "${dir##*/}" "${charged}" "${used}" "${held}" \
-      "${need}" "${spare}" "${limit}" "${total}" "${busy}" "${cores}" \
-      "${core_limit}"
+      "${need}" "${spare}" "${limit}" "${total}"
     status=1
     return 0
   fi
   held=$(campaign_host_head_room "${dir}" "${EPOCHSECONDS}")
   campaign_host_unlocked campaign_host_admit "${dir}" "${total}" \
-    "${limit}" "${used}" "${held}" "${need}" "${spare}" "${cores}" \
-    "${core_limit}"
+    "${limit}" "${used}" "${held}" "${need}" "${spare}"
   charged=${campaign_host_admitted_charged}
-  busy=${campaign_host_admitted_cores}
-  if (( status == 0 )); then
-    charged=$(( charged + need ))
-    recent=$(( ${recent:-0} + need ))
-    busy=$(( busy + cores ))
-  fi
-  stream_host_view[${host}]="${at} ${charged} ${held} ${used} ${recent:-0} \
-${busy}"
+  (( status != 0 )) || charged=$(( charged + need ))
+  (( status != 0 )) || recent=$(( ${recent:-0} + need ))
+  stream_host_view[${host}]="${at} ${charged} ${held} ${used} ${recent:-0}"
 }
 
 campaign_stream_view() {
-  local host=$1 now=$2 dir total limit core_limit at available charged busy
+  local host=$1 now=$2 dir total limit at available
   if [[ -z "${stream_host_ledger[${host}]:-}" ]]; then
     dir="${campaign_host_gate_root}/$(campaign_host_key "${host}")"
     mkdir -p "${dir}"
     total=$(campaign_host_memory_total "${host}" "${dir}") || return 1
-    core_limit=$(campaign_host_core_limit "${host}") || return 1
     stream_host_ledger[${host}]="${dir} ${total} \
-$(campaign_host_limit_mb "${total}") ${core_limit}"
+$(campaign_host_limit_mb "${total}")"
   fi
   read -r at _ <<<"${stream_host_view[${host}]:-0}"
   (( now - at >= campaign_host_poll_s )) || return 0
-  read -r dir total limit core_limit <<<"${stream_host_ledger[${host}]}"
+  read -r dir total limit <<<"${stream_host_ledger[${host}]}"
   available=$(campaign_host_poll_s=${campaign_host_reading_keep_s} \
     campaign_host_memory_reading "${host}" "${dir}" "${now}") || return 1
-  read -r charged busy <<<"$(campaign_host_charged "${dir}" "${now}")"
-  stream_host_view[${host}]="${now} ${charged} \
-$(campaign_host_head_room "${dir}" "${now}") $(( total - available )) 0 \
-${busy}"
+  stream_host_view[${host}]="${now} $(campaign_host_charged "${dir}" \
+"${now}") $(campaign_host_head_room "${dir}" "${now}") \
+$(( total - available )) 0"
 }
 
 campaign_stream_read_hosts() {
@@ -5343,11 +5299,15 @@ campaign_stream_start() {
     ${EPOCHREALTIME/./} / 1000 )) ${stream_admitted_pass:-}"
   stream_job_worker[$!]=${worker}
   stream_job_tree[$!]="${classes} ${plan}"
-  campaign_stream_host_count "${host}" "${kind}" 1
+  stream_job_cores[$!]=${stream_admitted_cores}
+  campaign_stream_host_count "${host}" "${kind}" 1 "${stream_job_cores[$!]}"
 }
 
 campaign_stream_host_count() {
-  local host=$1 kind=$2 delta=$3
+  local host=$1 kind=$2 delta=$3 cores=${4:-}
+  [[ -n "${cores}" ]] || cores=$(campaign_stream_kind_cores "${kind}")
+  stream_host_busy[${host}]=$(( ${stream_host_busy[${host}]:-0} \
+    + delta * cores ))
   ! campaign_stream_seated "${kind}" \
     || stream_host_solves[${host}]=$(( ${stream_host_solves[${host}]:-0} \
       + delta ))
@@ -5406,7 +5366,8 @@ campaign_stream_ended() {
     campaign_stream_event collect "${kind}" "${id}" "${host}" "${status}"
     campaign_stream_release "${pid}"
     campaign_replay_measured "${worker}"
-    campaign_stream_host_count "${host}" "${kind}" -1
+    campaign_stream_host_count "${host}" "${kind}" -1 \
+      "${stream_job_cores[${pid}]:-}"
     answer=""
     again=""
     if [[ "${status}" -eq 0 ]] && campaign_stream_replays "${kind}" \
@@ -5470,7 +5431,7 @@ campaign_stream_ended() {
         "${kind} ${round} ${id} ${host} ${status} ${session}"
     fi
     unset 'stream_jobs[$pid]' 'stream_job_worker[$pid]' \
-      'stream_job_tree[$pid]' 'stream_job_since[$pid]'
+      'stream_job_tree[$pid]' 'stream_job_since[$pid]' 'stream_job_cores[$pid]'
   fi
 }
 
@@ -6610,8 +6571,7 @@ campaign_confirm_claim() {
         charge=${full}
         (( need >= full )) || need=${full}
       fi
-      ( campaign_head_charged "${charge}" "${campaign_replay_cores}" \
-          campaign_confirm_replay "${dir}" \
+      ( campaign_head_charged "${charge}" campaign_confirm_replay "${dir}" \
           "${iteration_dir}/instrumented-classes" \
           "${iteration_dir}/seed-replay/execution_task_plan.jsonl" \
           "${charge}" "${need}" ) || status=$?
@@ -7018,7 +6978,7 @@ campaign_confirmed_session() {
 campaign_reproduce_one() {
   local run=$1 bound=$2 plant=$3 charge=$4 control=$5
   mkdir -p "${run}"
-  campaign_head_charged "${charge}" "${campaign_reproduce_cores}" \
+  campaign_head_charged "${charge}" \
     campaign_reproduce_run "${analysis_classes_dir}" \
     "${run}" "${bound}" "${plant}" "${charge}" "${control}" \
     || campaign_log "reproduce: $(basename "${run}") exited nonzero; its \

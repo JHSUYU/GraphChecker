@@ -31,11 +31,9 @@ memory, through one ledger, so any number of campaigns, gates and agent runs can
 running out of memory, and a single case alone takes the whole cluster.
 
 - **The host ledger** (`$CAUSYNTH_HOST_LEDGER/<host>/charges/`, PIPELINE §7.7): every start (a replay, a solve, an
-  engine JVM, a gate JVM, a `fanout.sh` job) is first charged on its host, its MB and the cores it keeps busy. A start
-  goes only when both the host's live charges and its real use (`MemTotal - MemAvailable`), plus the start and any
-  head's held room, stay within 70 % of `MemTotal`, and the live charged cores plus its own within
-  `CAUSYNTH_HOST_MAX_CORES_PCT` (100) percent of `nproc` (any one start on a host whose charges keep no core busy);
-  memory binds on liftlab, cores on CloudLab. A charge is a file whose mtime is a 120 s lease renewed every 10 s by its holder, so a
+  engine JVM, a recording, a gate JVM, a `fanout.sh` job) is first charged on its host. A start goes only when both
+  the host's live charges and its real use (`MemTotal - MemAvailable`), plus the start and any head's held room, stay
+  within 70 % of `MemTotal`. A charge is a file whose mtime is a 120 s lease renewed every 10 s by its holder, so a
   killed run's charges lapse; it is removed the moment what it ran returns. A running JVM that outgrows its charge asks
   for the excess and gets it unless the host's REAL use would pass the ceiling.
 - **Measured charges** (2026-10-05): a replay is charged the campaign's measured replay need (the largest resident
@@ -149,7 +147,7 @@ if it is clearly wrong, name the cause in code.
 | where EXPLORE's time went: per verdict the run time and the queue wait, the concurrency over time, the refusal reasons | `tools/rounds/obl-times.py <case>/schedule` |
 | time per stage, per round, per job | `out/<case>/schedule/stage_metrics.tsv`; `tools/analysis/timeline.py <case dir>` |
 | what the exploration did per round | the log's `[campaign] round N (wave W): K obligation(s), E exposure(s), F in flight` and `exploration stopped (<END>)` lines |
-| is the ledger the bottleneck | the log's `waiting for room: no host admits one more start (<host> has X MB charged ..., Y MB in use and Z MB held for a head ...` or `<host> has N cores charged to what it runs ...)`; `ls -l $CAUSYNTH_HOST_LEDGER/<host>/charges/` (live = mtime < 120 s) |
+| is the ledger the bottleneck | the log's `waiting for room: no host admits one more start (<host> has X MB charged ..., Y MB in use and Z MB held for a head ...)`; `ls -l $CAUSYNTH_HOST_LEDGER/<host>/charges/` (live = mtime < 120 s) |
 | why a seed replay stalls | `grep -c 'did not happen' .../seed-result/focused/replay.log`, then which events did not happen and on which thread; `jstack` the replay JVM (`ps -g $(cat <run>/pgid)` on the head host) |
 | where a JVM spends its time | sample `jstack <pid>` every few seconds (5-10 samples) and count the top frames; for IO, `strace -f -c` |
 | a replay's memory | the replay log's `the workload JVM's resident memory peaked at X MB; its host was charged Y MB` |

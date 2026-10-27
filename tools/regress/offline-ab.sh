@@ -82,8 +82,7 @@ ab_place() {
       best=${host}
       best_room=${room}
     done
-    if [[ -n "${best}" ]] && campaign_host_try_start "${best}" "${need}" \
-        "${campaign_engine_cores}"; then
+    if [[ -n "${best}" ]] && campaign_host_try_start "${best}" "${need}"; then
       ab_placed_host=${best}
       ab_placed_charge=${campaign_host_charge_id}
       return 0

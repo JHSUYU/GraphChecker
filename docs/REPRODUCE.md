@@ -41,8 +41,7 @@ Which branch runs which case, with the case's budget and what series EX1 ended w
 
 Where things go is stated once, in [`tools/lib/gc-env.sh`](../tools/lib/gc-env.sh): `GC_BULK` (the shared storage),
 `GC_OUT` (run outputs), `GC_TREES` (the system trees), `GC_M2` (their Maven repositories), `Z3_BIN`, `LIFTS` (the
-hosts), `CAUSYNTH_HOST_MAX_USED_PCT` (70: no start may leave a host fuller) and `CAUSYNTH_HOST_MAX_CORES_PCT` (100: the
-percent of a host's cores its live charges may keep busy). On another cluster, edit those
+hosts) and `CAUSYNTH_HOST_MAX_USED_PCT` (70: no start may leave a host fuller). On another cluster, edit those
 defaults in that file on both checkouts. A value exported in the shell that starts a run also works: every hop of the
 run passes them on (`gc_env_words`); `tools/onlift.sh` does not, so give it `env NAME=value` in its command. The
 commands from step 2 on use these variables: `source ~/GraphChecker-hdfs1/tools/lib/gc-env.sh` in the shell first.

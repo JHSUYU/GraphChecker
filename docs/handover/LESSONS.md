@@ -287,13 +287,9 @@ obligations over 68 rounds where EX1 asked 30 in 4, and its first claims were re
 **CloudLab is CPU-bound, not memory-bound.** node0-4: 251 GB and 40 logical (20 physical, Xeon E5-2660 v2, 2013) cores
 each. The host ledger was memory-only; liftlab's 30 GB hosts capped every start by memory, so the per-head core count
 never mattered. Here nine campaigns each filled every host to 40 cores on its own: load 70-93 on 40 CPUs, seed replays
-3-5x slower than EX1. The ledger now charges cores too: every charge row names the cores it keeps busy (a replay the
-campaign's measured `campaign_replay_cores`, a solve two, an engine JVM one), and a start needs room in both memory
-and the node's cores summed over every campaign (`campaign_host_fits`), so a quiet "waiting for room" line names the
-cores it waits for. Campaigns of an older build charge no cores: judge a host by its load as well as its charges; one
-uncapped campaign (`launch-round.sh`) can take the whole pool, so development rounds run as sweeps (`sweep.sh`,
-shared pool). A fixture that limits a test host's cores must count the head's planner service (one core for the
-exploration).
+3-5x slower than EX1. Judge a host by its
+load as well as its memory; one uncapped campaign (`launch-round.sh`) can take the whole pool, so development rounds
+run as sweeps (`sweep.sh`, shared pool).
 
 **Charge what is used where cores bind (2026-10-25).** A replay charged its 90th percentile rounded up to whole cores
 (HDFS: mean 1.63, p90 2.46, charged 2 or 3) left a node at 40 cores charged under a load of 25-55: on liftlab memory
