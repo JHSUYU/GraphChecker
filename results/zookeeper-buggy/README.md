@@ -15,9 +15,9 @@ Again: `GC_OUT=<dir> results/zookeeper-buggy/collect-results.sh experiments/zook
 (seeding = PREFLIGHT..IMPORT and ZKKEYS; exploration = EXPLORE; compose+solver = COMPOSE + SOLVE + DECIDE; other =
 CONFIRM + EMIT + REPRODUCE; regions / occurrences = the final closure; rounds = EXPLORE's generations).
 
-| case | bug | point | run | claim | report.py | mechanism | CONFIRM | native REPRODUCE | wall (s) | seeding (s) | exploration (s) | compose+solver (s) | other (s) | regions | occurrences | rounds |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| zk-buggy-710 | ZOOKEEPER-710 | zk-adhoc-02 | B1-zk-buggy-710 | SAT_CANDIDATE | PASS | STATE_PAIRING_FLIPPED | yes | 10/10; control 0/10 | 308 | 162 | 113 | 6 | 22 | 3 | 34 | 5 |
-| zk-buggy-2886 | ZOOKEEPER-2886 | zk-adhoc-02 | B1-zk-buggy-2886 | SAT_CANDIDATE | PASS | STATE_PAIRING_FLIPPED | yes | 10/10; control 0/10 | 294 | 150 | 114 | 3 | 23 | 3 | 33 | 5 |
+| case | bug | point | run | claim | report.py | mechanism | CONFIRM | native REPRODUCE | wall (s) | seeding (s) | exploration (s) | compose+solver (s) | other (s) | refuted claims (s) | regions | occurrences | rounds |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| zk-buggy-710 | ZOOKEEPER-710 | zk-adhoc-02 | B1-zk-buggy-710 | SAT_CANDIDATE | PASS | STATE_PAIRING_FLIPPED | yes | 10/10; control 0/10 | 308 | 162 | 113 | 6 | 22 | - | 3 | 34 | 5 |
+| zk-buggy-2886 | ZOOKEEPER-2886 | zk-adhoc-02 | B1-zk-buggy-2886 | SAT_CANDIDATE | PASS | STATE_PAIRING_FLIPPED | yes | 10/10; control 0/10 | 294 | 150 | 114 | 3 | 23 | - | 3 | 33 | 5 |
 
 2 of 2 cases ran (B1, beside each other on liftlab); wall 602 s; seeding 312, exploration 227, compose+solver 9, other 45
