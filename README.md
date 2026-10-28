@@ -37,7 +37,7 @@ kept only as the tags `archive/system/<x>-cloudlab`.
 | --- | --- |
 | `hadoop` | `graphchecker/hdfs-checks` (the HDFS ad hoc tree), `graphchecker/hdfs-checks-adhoc07`, `graphchecker/hdfs-checks-adhoc21`, `graphchecker/hdfs-11741`; `graphchecker/hdfs-bug-<jira>` (11741, 17383, 12931, 5766, 10609, 14075, 14311) |
 | `hbase` | `graphchecker/hbase-checks` (the HBase ad hoc tree); `graphchecker/hbase-bug-<jira>` (15039, 20642, 28533) |
-| `zookeeper` | `graphchecker/zookeeper-checks` (the ZooKeeper ad hoc tree); `graphchecker/zk-bug-<jira>` and `graphchecker/zk-bug-<jira>-control` (710, 2886) |
+| `zookeeper` | the tag `graphchecker/zookeeper-checks-liftlab` (51b213562, the ZooKeeper ad hoc tree `results/zookeeper` was made on), `graphchecker/zookeeper-checks` (it plus CloudLab's three workload workarounds); `graphchecker/zk-bug-<jira>` and `graphchecker/zk-bug-<jira>-control` (710, 2886) |
 | `solr` | `graphchecker/solr-checks` (the Solr ad hoc tree); `graphchecker/solr-bug-<jira>` (9440, 6101, 6197) |
 
 **HDFS** (46 cases, finished): `system/hdfs-liftlab` runs every case on HBase's engine with liftlab's scheduling
