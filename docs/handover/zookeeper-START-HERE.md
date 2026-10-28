@@ -2,8 +2,8 @@
 
 You take over a finished system. This file is self-contained: what was done, where every piece is, how to run a case
 and the whole series, what is left, and the rules. (It is `system/zookeeper`'s START-HERE. On
-`system/zookeeper-buggy-detect`, which carries the same 16 cases, [START-HERE.md](START-HERE.md) is the old bugs', and
-`trees.tsv`'s `zookeeper-checks` row is the fork's branch `graphchecker/zookeeper-checks`, 889f0e96, not the tag.)
+`system/zookeeper-buggy-detect`, which carries the same 16 cases, [START-HERE.md](START-HERE.md) is the old bugs'; both
+branches' `trees.tsv` name the tag `graphchecker/zookeeper-checks-liftlab` for `zookeeper-checks`.)
 - **Repo:** `/u/vnr3ne/GraphChecker`, GitHub `git@github.com:JHSUYU/GraphChecker.git`.
 - **The code:** GraphChecker's branch `system/zookeeper` (pushed 2026-10-22), worktree `/bigtemp/vnr3ne/wt/gc-zookeeper`.
 - **Engine:** HBase's final engine (`system/hbase` 5b4b6bae9) plus this session's ZooKeeper work (STATE §Z).

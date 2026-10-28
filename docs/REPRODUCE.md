@@ -329,8 +329,7 @@ final series' `.smt`, claims and time table: [`results/zookeeper/`](../results/z
    ```
 
    `prepare-trees.sh` clones the fork's tag `graphchecker/zookeeper-checks-liftlab` (51b213562, the final series' tree;
-   2b6e17bf8 for every case but 04 and 13, which differ only there; `system/zookeeper`'s `trees.tsv`; on this branch
-   `trees.tsv` names the fork's branch instead, §9) into `$GC_TREES/zookeeper-checks` (the
+   2b6e17bf8 for every case but 04 and 13, which differ only there; `trees.tsv` on both ZooKeeper branches) into `$GC_TREES/zookeeper-checks` (the
    fork's branch `graphchecker/zookeeper-checks` has moved on to 889f0e96, the buggy-detect trees' base; a directory
    already there is only built), installs the checkout's jar into the tree's Maven repository (`ZOOKEEPER_MAVEN_REPO`,
    by default `$GC_M2/zookeeper<the tree's path, / as _>`; `tools/onlift.sh` passes no environment, so give it inside
@@ -380,8 +379,8 @@ final series' `.smt`, claims and time table: [`results/zookeeper/`](../results/z
 the workload and every run), on liftlab. It needs one more thing from GitHub: the fork's tree branches
 `graphchecker/zk-bug-710` and `graphchecker/zk-bug-2886` (`trees.tsv` rows `zookeeper-bug-<jira>`, on the fork commit
 92c0f2b5 = `graphchecker/zookeeper-checks` 889f0e96 plus workload ports below the ephemeral range), and for the
-fixed-code controls `graphchecker/zk-bug-<jira>-control`. On this branch `trees.tsv`'s `zookeeper-checks` row is the
-fork's branch `graphchecker/zookeeper-checks` (889f0e96), not `system/zookeeper`'s tag.
+fixed-code controls `graphchecker/zk-bug-<jira>-control`. `trees.tsv`'s `zookeeper-checks` row names the tag
+`graphchecker/zookeeper-checks-liftlab` (51b213562), as on `system/zookeeper`.
 
 1. **GraphChecker and the image**, as §8.1-§8.2 on the branch `system/zookeeper-buggy-detect` (its VM sources are
    `system/zookeeper`'s; on the cluster `/bigtemp/vnr3ne/vm-force13/j2sdk-image`).

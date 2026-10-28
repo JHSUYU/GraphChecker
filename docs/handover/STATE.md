@@ -95,9 +95,9 @@ document; lead/RUNS.txt is the full log of runs and decisions.
 - 29b8812dc: CloudLab's scheduling layer reverted (the memory ledger, `tools/lib/gc-env.sh`, `launch-round.sh` and
   `results/zookeeper/` are `system/zookeeper`'s).
 
-Here `trees.tsv`'s `zookeeper-checks` row is the fork's branch `graphchecker/zookeeper-checks` (889f0e96: the tag
-51b213562 plus the two 2026-10-25 workarounds, STATUS "Per-system surface"), the bug trees' base; `system/zookeeper`'s
-names the tag. The bug trees: `graphchecker/zk-bug-710` 4260614d and `-2886` b8b7149f on 92c0f2b5 (889f0e96 plus
+Here `trees.tsv`'s `zookeeper-checks` row names the tag `graphchecker/zookeeper-checks-liftlab` (51b213562), as
+`system/zookeeper`'s does; the fork's branch `graphchecker/zookeeper-checks` (889f0e96: the tag plus the 2026-10-25
+workarounds, STATUS "Per-system surface") is the bug trees' base. The bug trees: `graphchecker/zk-bug-710` 4260614d and `-2886` b8b7149f on 92c0f2b5 (889f0e96 plus
 workload ports below the ephemeral range), the controls `-control` c0488b9b, 328765d1. On liftlab (2026-10-28): the
 snapshot `/u/vnr3ne/gc-run/bd-zookeeper-1` (29b8812dc), the tree set `/bigtemp/vnr3ne/wt/bd-trees-1`
 (`zookeeper-bug-710`, `zookeeper-bug-2886`) with its Maven repositories `/bigtemp/vnr3ne/m2/bd-1/zookeeper_*`, the image
