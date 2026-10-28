@@ -9,8 +9,9 @@ and the whole series, what is left, and the rules.
   repo `/u/vnr3ne/zookeeper`, branch `gc/zk-checks`): the automatic cluster, the message doors, the markers, the workloads.
 - **From GitHub:** clone the two and check out those branches; [../REPRODUCE.md](../REPRODUCE.md) §8 builds the VM image
   and the tree and runs every case.
-- **Finished systems:** HDFS, Solr, HBase and ZooKeeper. STATE §0, §S, §H and §Z describe them, each on its own branch.
-  HBase's takeover file is [hbase-START-HERE.md](hbase-START-HERE.md).
+- **Finished systems:** HDFS, Solr, HBase and ZooKeeper. STATE §0, §S, §H and §Z describe them; each system's own
+  branch is its authority (README "The branches"). ZooKeeper's old bugs put back (ZOOKEEPER-710, -2886) are the branch
+  `system/zookeeper-buggy-detect`.
 
 ## 1. The goal and the result
 
@@ -84,9 +85,12 @@ TODO "ZooKeeper" lists each item with its evidence; none blocks a verdict:
 Open from the final series:
 - om reproduces 4/10 natively, and 03 does too.
 - Both branches are on GitHub: GraphChecker's `system/zookeeper` (pushed 2026-10-22 with the owner's OK) and the fork's
-  `graphchecker/zookeeper-checks` at 51b213562 (`gc/zk-hostseed`, which contains the final `gc/zk-checks` 2b6e17bf8;
-  the step adds only the client's constant host-order seed in a workload and 04's read-only writable-server hold;
-  of the 16 cases only 04 and 13 give a client more than one server, so the others ran on 2b6e17bf8 unchanged).
+  `graphchecker/zookeeper-checks`. The final series ran on 51b213562 (`gc/zk-hostseed`, which contains the final
+  `gc/zk-checks` 2b6e17bf8; the step adds only the client's constant host-order seed in a workload and 04's read-only
+  writable-server hold; of the 16 cases only 04 and 13 give a client more than one server, so the others ran on
+  2b6e17bf8 unchanged). The fork's branch has since moved to 889f0e96 (2026-10-25: `QuorumBase` starts its peers from
+  the highest id down; a workload's wait of `CONNECTION_TIMEOUT` or more for a server never times out), the base of the
+  buggy-detect trees; REPRODUCE §8 checks out 51b213562 to rebuild the final series' tree.
 
 ## 4. Running a case and the series
 
@@ -95,7 +99,8 @@ Mechanics as HBase's (OPERATIONS.md §10).
    ```
    flock /localtmp/vnr3ne/worktree-add.lock bash tools/lib/worktree-add.sh /u/vnr3ne/gc-run/<name> <commit> --detach
    ```
-   Always give an explicit commit: `HEAD` resolves in the main repo. Then run `mvn -q -o package -DskipTests` on a lift.
+   Always give an explicit commit: `HEAD` resolves in the main repo. Then run `mvn -q -o package -DskipTests` on a
+   Maven host (lift02-06, lift08-10).
    Never rebuild a snapshot a run reads.
 2. **Tree set:** `git -C /u/vnr3ne/zookeeper worktree add --detach <dir>/zookeeper-checks <tree commit>`, then
    ```
@@ -112,7 +117,7 @@ Mechanics as HBase's (OPERATIONS.md §10).
    unobserved: read a selector that way, then write it into `case.sh` / `checks.tsv`.
 4. **The series:** `/bigtemp/vnr3ne/analysis/zookeeper-2026-10-21/lead/final/` (PLAN.md):
    - `SNAP=... TREES=... series.sh <round> <concurrency> <case>...`: F1* concurrent (runs under 30 min), F2*/F3* alone on
-     all 14 hosts.
+     every lift (14 then).
    - `final-stats.py --order ... --cases <SNAP>/experiments/zookeeper/zookeeper-cases.tsv` prints the table.
    - `SNAP=... ORDER=... collect-results.sh <repo>` fills `results/zookeeper/`.
    - Or the generic `tools/rounds/run-series.sh <round> experiments/zookeeper/zookeeper-cases.tsv
@@ -142,7 +147,7 @@ PLAN.md §2 tabulates them.
 - Java 8 for every workload. Workloads are existing unit tests where one exercises the bug; a self-written
   `Causynth*Test` only where none does, and it must pass natively on the buggy tree.
 - Per-case run settings live in `case.sh` / `workflow.properties`.
-- The final series: runs under 30 min may run concurrently; every longer case runs alone on all 14 hosts; scope a
+- The final series: runs under 30 min may run concurrently; every longer case runs alone on every worker; scope a
   too-slow case.
 - Heaps: replays and solvers use at most 70 % of a host; a head is charged its heap for life.
 - Shell and git:
@@ -162,8 +167,9 @@ STATE §Z has the full list. In short:
   `/bigtemp/vnr3ne/wt/zk-int-trees-11` (2b6e17bf8) for every single-host case, and `zk-int-trees-12` (`gc/zk-hostseed`
   51b213562, the RO client's constant host seed) for 04 and 13.
 - **VM image:** `/bigtemp/vnr3ne/vm-force13/j2sdk-image` (vm-force12 plus the failed-CAS answer).
-- **Runs:** `/bigtemp/vnr3ne/gc-out/zookeeper-final` (the series) and `zookeeper-{tree,qwork,quorum,learner,engine}` (the
-  agents' runs).
+- **Runs:** `/bigtemp/vnr3ne/gc-out/zookeeper-final` (the series) and `zookeeper-fresh` (the fresh-clone check,
+  REPRODUCE §8); the agents' development runs are deleted.
 - **Evidence:** `/bigtemp/vnr3ne/analysis/zookeeper-2026-10-21/` (lead/RUNS.txt: every run and decision;
   lead/readings.md; lead/final/).
-- **Hosts:** lift02-15, 48 cores and 30 GB each.
+- **Hosts:** lift02-15, 48 cores and 30 GB each; lift11 is the control host (no worker, no Maven), lift07 has been
+  unreachable since 2026-10-23, Maven and Ant only on lift02-06 and lift08-10 (README "The cluster").

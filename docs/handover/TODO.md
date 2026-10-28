@@ -161,7 +161,7 @@ limit); one heavy question halves every host's pairs. Left: 22 of 05's 340 paths
 that want an unsat core go only to the local pair (4316 MB room on 05, would answer memout); the body is still built as
 one String.
 
-**3. GROW rows carry their shape -- branch solr-growshape 727d48ea5 (gated, NOT merged).** Most GROW re-runs re-expose
+**3. GROW rows carry their shape -- tag `archive/local/solr-growshape` 727d48ea5 (gated, NOT merged).** Most GROW re-runs re-expose
 an occurrence already planned under another name (tick ordinal, anchor id, loop index: timing counts): rename-only
 re-runs 05 19, 40 25, 10 13 (its 34-min tail), 19 80, 09 8 (`growchain/FINDINGS.txt`). GROW rows lacked the
 contextShape/recordedBeside seed rows carry, so the runtime's answer-by-shape could not take them. The branch fills
@@ -1018,7 +1018,7 @@ STATUS "tree: a txn's header crosses the learner stream"). Two things are not ca
 Also from the review: make message-ness one catalog concept, a `messages` member on CODEC rows in place of the MESSAGE
 kind. Build when a case needs an envelope field.
 
-**6. The reply -> synchronous-caller edge (TODO HBase 15's F4; parked branch `hbase-e15`).** It needs the engine's
+**6. The reply -> synchronous-caller edge (TODO HBase 15's F4; parked: tag `archive/local/hbase-e15`).** It needs the engine's
 happens-before over message edges.
 - **Evidence.** COMPOSE pairs a client-level bug's target read with writes the caller made BEFORE it. CONFIRM refutes
   each by the client's program order at the order timeout (ZA2/ZA3-quota: 3 pure pairings, each refuted after 300 s;
@@ -1094,7 +1094,7 @@ attempt applied) or a duplicate sequential node -- is planted nowhere since make
 (`makepath-create-tree.patch`). A general in-retry door: the system names its retry wrapper (a doors.jsonl row), and a
 door inside the wrapper's operation plants a fault on one attempt only, the wrapper retrying as it would.
 
-**WIRE-CODEC (`wire-codec-p1`; the system body carries none of it).** Resume only when a system's chain needs a
+**WIRE-CODEC (tag `archive/local/wire-codec-p1`; the system body carries none of it).** Resume only when a system's chain needs a
 codec hole (a value carried inside an opaque payload); then rebase it onto the body, which deleted its runtime.
 
 **VM performance.** The VM sends each expression node once per channel (STATUS open item 41). A plan budget should

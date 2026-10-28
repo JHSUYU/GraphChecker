@@ -214,7 +214,7 @@ may be idle).
 
 - The head's memory is no longer the limit: compaction (OPTIMIZATIONS 1.26, 1.28-1.30) and the holding composer (1.27)
   keep the planner at ~3.5 GB and the composer at ~1.9 GB on 05 r5 / 07, so session sharding of the planner is shelved
-  (branches solr-parplan 3df494a3a, solr-shard d3b663462 kept, not merged).
+  (tags `archive/local/solr-parplan` 3df494a3a, `archive/local/solr-shard` d3b663462, not merged).
 - Measured on 07 (idle-pool/): the pool idles because of the head's serial chain (landing, the import gate, GROW in
   the head's hands, one solver at a time) and a dispatch cursor that piles replays on one host -- not capacity; the
   scheduler rewrite (branch solr-stream2) addresses each. During a final round, agents keep off the pool.
