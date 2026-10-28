@@ -19,6 +19,10 @@ defaulted.
 
 ## Branches (github.com/JHSUYU/GraphChecker; every system on liftlab)
 
+[docs/handover/HANDOVER-2026-10-28.md](docs/handover/HANDOVER-2026-10-28.md) is the map of everything on liftlab:
+every GraphChecker branch and fork branch (and the archive tags), the tree sets, snapshots, images, the runs of
+record, the buggy-detect results and how to run a case. The same file is on all eight `system/*` branches.
+
 Each system has two GraphChecker branches: its ad hoc checks, and the old bugs put back by hand on its current tree
 (`system/<x>-buggy-detect` = `system/<x>` plus the old-bug cases and their engine support). The tree under test is a
 branch of the system's fork (github.com/JHSUYU/{hadoop,solr,hbase,zookeeper}); nothing goes to `main` (the 2026-10-03
