@@ -29,7 +29,7 @@ body, round V25).
 | HDFS | `system/hdfs-liftlab` | `system/hdfs-buggy-detect` | hadoop `graphchecker/hdfs-checks`, `-adhoc07`, `-adhoc21`, `graphchecker/hdfs-11741`, `graphchecker/hdfs-bug-<jira>` |
 | Solr | `system/solr` | `system/solr-buggy-detect` (this branch) | solr `graphchecker/solr-checks`, `graphchecker/solr-bug-<jira>` |
 | HBase | `system/hbase` | `system/hbase-buggy-detect` | hbase `graphchecker/hbase-checks`, `graphchecker/hbase-bug-<jira>` |
-| ZooKeeper | `system/zookeeper` | `system/zookeeper-buggy-detect` | zookeeper `graphchecker/zookeeper-checks`, `graphchecker/zk-bug-<jira>`, `graphchecker/zk-bug-<jira>-control` |
+| ZooKeeper | `system/zookeeper` | `system/zookeeper-buggy-detect` | zookeeper: the tag `graphchecker/zookeeper-checks-liftlab` (51b213562), `graphchecker/zookeeper-checks`, `graphchecker/zk-bug-<jira>`, `graphchecker/zk-bug-<jira>-control` |
 
 - **HDFS:** `system/hdfs-liftlab` runs every HDFS case on HBase's engine (`results/hdfs/`; series H1, 2026-10-27: the
   45 cases but hdfs-11741, each alone, 17.4 h); it replaces `system/hdfs` (the locked body, 39 cases) and
@@ -41,7 +41,7 @@ body, round V25).
 - **HBase:** `system/hbase` runs the 22 HBase cases (finished 2026-10-21, `results/hbase/`) on `graphchecker/hbase-checks`.
   `system/hbase-buggy-detect`: HBASE-15039, -20642, -28533 on `graphchecker/hbase-bug-<jira>`.
 - **ZooKeeper:** `system/zookeeper` runs the 16 ZooKeeper cases (finished 2026-10-22, `results/zookeeper/`) on
-  `graphchecker/zookeeper-checks`. `system/zookeeper-buggy-detect`: ZOOKEEPER-710, -2886 on `graphchecker/zk-bug-<jira>`,
+  the fork's tag `graphchecker/zookeeper-checks-liftlab` (51b213562). `system/zookeeper-buggy-detect`: ZOOKEEPER-710, -2886 on `graphchecker/zk-bug-<jira>`,
   with `graphchecker/zk-bug-<jira>-control` the same workloads on the fixed code.
 
 Each branch's `docs/REPRODUCE.md` runs its cases from a fresh clone of it and its fork branch. The CloudLab ports of
@@ -72,7 +72,7 @@ times; nothing waits in series except on a real dependency.** How the last leads
    not be flooded: offline gates go through `onlift.sh` off `lift11` (the owner's machine), a few cases at a time.
    **The control host stays light:** the sessions run on lift11 -- `unset BASH_ENV` in every session (a wedged `/sw`
    stalled every bash there), no polling or builds there, lift11 never in `LIFTS` (`tools/lib/gc-env.sh`'s default
-   names every lift: export `LIFTS` without lift07 and lift11). Maven and Ant are on lift02-06 and lift08-10 only:
+   is the 11 reachable workers). Maven and Ant are on lift02-06 and lift08-10 only:
    builds go there. The whole recipe as run on 2026-10-12, with commands: [PARALLEL.md](docs/handover/PARALLEL.md) §6.
 6. **At every lull, look at the lifts** (memory and load on each) and fill them with whatever does not wait on a fix.
 7. **Parallelism serves throughput, never itself** (owner 2026-10-06: "你也不要过分并行哈。合理的并行"; "并行你要记住是让吞吐提升。
@@ -205,7 +205,7 @@ is written.
 `tools/lib/gc-env.sh` states, once for every tool and for `run_engine.sh`, the output root
 `GC_OUT` (default `/bigtemp/vnr3ne/gc-out`), the host ledger `CAUSYNTH_HOST_LEDGER` (default
 `/bigtemp/vnr3ne/gc-out/hosts`, one for the cluster whatever `GC_OUT` a run writes) and the hosts
-`LIFTS` (lift02–15 by default; export it without lift11, the control host, and lift07, unreachable since 2026-10-23).
+`LIFTS` (its default is the 11 reachable workers: lift02-15 without lift07, lift11 and lift15).
 
 Obligations of a campaign (each a solve, then its replay when the solver answers SAT, two starts),
 and GROW's re-runs, fan out over the hosts in
