@@ -28,30 +28,25 @@ case_head_reserve_mb() {
 }
 
 heads_choose() {
-  local entry need case_id host best mb free
-  local -A room=() cores=() headed=()
+  local entry need case_id host best
+  local -A room=() headed=()
   for entry in "$@"; do
-    IFS=: read -r host mb free <<<"${entry}"
-    room[${host}]=${mb}
-    cores[${host}]=${free}
-    headed[${host}]=0
+    room[${entry%%:*}]=${entry#*:}
+    headed[${entry%%:*}]=0
   done
   (( ${#room[@]} > 0 )) || return 1
   sort -s -k1,1nr | while read -r need case_id; do
     best=""
     for entry in "$@"; do
       host=${entry%%:*}
-      if [[ -z "${best}" ]] || (( headed[${host}] < headed[${best}] )) \
-          || { (( headed[${host}] == headed[${best}] )) \
-               && campaign_host_roomier "${cores[${host}]}" \
-                 "${room[${host}]}" "${cores[${best}]}" "${room[${best}]}"; }
-      then
+      if [[ -z "${best}" ]] || (( headed[${host}] < headed[${best}] \
+          || (headed[${host}] == headed[${best}] \
+              && room[${host}] > room[${best}]) )); then
         best=${host}
       fi
     done
     printf '%s %s\n' "${case_id}" "${best}"
     headed[${best}]=$(( headed[${best}] + 1 ))
     room[${best}]=$(( room[${best}] - need ))
-    cores[${best}]=$(( cores[${best}] - campaign_engine_cores ))
   done
 }

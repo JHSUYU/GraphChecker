@@ -1,26 +1,26 @@
-# The 20 Solr cases (docs/handover/TODO.md "Solr", docs/STATUS.md "Solr checks") on CloudLab: the GraphChecker branch that runs
+# The 20 Solr cases (docs/handover/TODO.md "Solr", docs/STATUS.md "Solr checks"): the GraphChecker branch that runs
 # each and its case budget (CASE_TIMEOUT_SECONDS), for tools/rounds/run-series.sh.  Its tree is its case.sh's repo=
 # (experiments/solr/trees.tsv).  The eight bug checks must end SAT_CANDIDATE; the twelve study checks with a right
 # .smt, SAT confirmed or UNSAT at the fixed point.  solr-adhoc-05, -07 and -14 need the longest budget (SGF9: 05's
 # exploration alone took 10701 s and its decide ran past 14400 s).
 # case	branch	budget_s
-solr-18406	system/solr-cloudlab	14400
-solr-18413	system/solr-cloudlab	14400
-solr-bugs-reindex-cleanup	system/solr-cloudlab	14400
-solr-bugs-migrate-buffer-leak	system/solr-cloudlab	14400
-solr-bugs-overseer-lock-leak	system/solr-cloudlab	14400
-solr-bugs-snapshot-no-active	system/solr-cloudlab	14400
-solr-bugs-restore-construction	system/solr-cloudlab	14400
-solr-bugs-tra-start-overwrite	system/solr-cloudlab	14400
-solr-adhoc-05	system/solr-cloudlab	21600
-solr-adhoc-07	system/solr-cloudlab	21600
-solr-adhoc-09	system/solr-cloudlab	14400
-solr-adhoc-10	system/solr-cloudlab	14400
-solr-adhoc-13	system/solr-cloudlab	14400
-solr-adhoc-14	system/solr-cloudlab	21600
-solr-adhoc-19	system/solr-cloudlab	14400
-solr-adhoc-21	system/solr-cloudlab	14400
-solr-adhoc-31	system/solr-cloudlab	14400
-solr-adhoc-38	system/solr-cloudlab	14400
-solr-adhoc-39	system/solr-cloudlab	14400
-solr-adhoc-40	system/solr-cloudlab	14400
+solr-18406	system/solr	14400
+solr-18413	system/solr	14400
+solr-bugs-reindex-cleanup	system/solr	14400
+solr-bugs-migrate-buffer-leak	system/solr	14400
+solr-bugs-overseer-lock-leak	system/solr	14400
+solr-bugs-snapshot-no-active	system/solr	14400
+solr-bugs-restore-construction	system/solr	14400
+solr-bugs-tra-start-overwrite	system/solr	14400
+solr-adhoc-05	system/solr	21600
+solr-adhoc-07	system/solr	21600
+solr-adhoc-09	system/solr	14400
+solr-adhoc-10	system/solr	14400
+solr-adhoc-13	system/solr	14400
+solr-adhoc-14	system/solr	21600
+solr-adhoc-19	system/solr	14400
+solr-adhoc-21	system/solr	14400
+solr-adhoc-31	system/solr	14400
+solr-adhoc-38	system/solr	14400
+solr-adhoc-39	system/solr	14400
+solr-adhoc-40	system/solr	14400
