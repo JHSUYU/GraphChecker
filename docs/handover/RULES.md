@@ -184,7 +184,7 @@ recommendation.
 - **A large rewrite is allowed, old code is gone for good** ("由于现在代码太过于臃肿，我已经允许你大改动了", "你可以大规模
   重写了，最后20个case重跑一遍debug就行", "旧的代码就要全部删除了。再也不用了"): one implementation per concept, no
   flag or fallback, nothing kept for comparison (references are old run outputs and old jars); acceptance of the rewrite =
-  all 20 Solr cases rerun and debugged. The plan is REFACTOR-PLAN.md.
+  all 20 Solr cases rerun and debugged. Carried out on `system/solr` (2026-10-18/19).
 - **Read what exists before building** ("总之你好好读读现在已有的代码机制和细节吧，不要重复造轮子了 ... 包括system/hdfs
   上的上一个版本的代码，包括vm"): an inventory of the engine, both branches and the VM precedes a new mechanism
   (analysis/solr-2026-10-18/capabilities/INVENTORY.md).
@@ -220,7 +220,7 @@ recommendation.
   code的更改，类似地，也要给fork的solr repo推一个分支。这样别人之后从github pull下来就能直接跑我们的代码，同时请你更新对应的文档。然后剩余的case
   我们不跑了，不要了"): the round's fixes are finished and merged, `system/solr` is pushed to GitHub with the fork's
   `graphchecker/solr-checks`, the documents say how to run it from a fresh clone; the cases not rerun stay as they are
-  (TODO "Solr: after SGF9").
+  (later run alone on `system/solr`, finished 2026-10-26).
 - **HBase runs with no write-ahead log** (2026-10-19: "HBase 自带的 disabled WAL provider，把这些线程整个去掉 没事。我直接允许你
   这么做，就这么做"; "什么fshlog可以全部换成本地，都没啥问题。减少这样的问题"): in an automatic cluster every WAL the region servers
   and the master's local region ask for is HBase's own `DisabledWALProvider`'s (the tree's `CausynthHBaseCluster#configure`),
@@ -260,7 +260,7 @@ recommendation.
 - **Heavy replays are fine; the final verdicts come from an exclusive series** (2026-10-20: "没事，有的Replay太重也ok。最终我们会让
   每个case独占集群跑一遍，这种极致并行往往可以优化性能"): a case whose replays are heavy under a shared pool is not narrowed for
   it (no fault kinds or scope cut only to fit); every case runs once alone on the whole cluster for its final verdict and
-  time breakdown (TODO HBase 1).
+  time breakdown (done: the final series, `results/hbase/`).
 
 **Engineering**
 - **General fixes only.** No per-case code, no fixes derived from a case's expected verdict, no
