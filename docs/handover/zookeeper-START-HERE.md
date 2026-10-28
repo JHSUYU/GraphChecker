@@ -166,9 +166,10 @@ STATE §Z has the full list. In short:
 - **GraphChecker:** `system/zookeeper` at `/bigtemp/vnr3ne/wt/gc-zookeeper`.
 - **Final snapshot:** `/u/vnr3ne/gc-run/zk-int-13` (system/zookeeper d73c28302). The int-12 runs (d4fbcd97c) stand: int-13
   adds only D's COMPOSE fix, and an offline A/B is identical except om.
-- **Tree:** `/u/vnr3ne/zookeeper`, `gc/zk-checks` = the fork's tag `graphchecker/zookeeper-checks-liftlab`. Final tree set:
-  `/bigtemp/vnr3ne/wt/zk-int-trees-11` (2b6e17bf8) for every single-host case, and `zk-int-trees-12` (`gc/zk-hostseed`
-  51b213562, the RO client's constant host seed) for 04 and 13.
+- **Tree:** `/u/vnr3ne/zookeeper`, `gc/zk-checks` = the fork's tag `graphchecker/zookeeper-checks-liftlab`. The final
+  series ran on the tree sets zk-int-trees-11 (2b6e17bf8, every single-host case) and zk-int-trees-12 (`gc/zk-hostseed`
+  51b213562, the RO client's constant host seed, 04 and 13); `/bigtemp/vnr3ne/wt/zk-int-trees-12` is kept (it builds
+  every case), trees-11 is deleted.
 - **VM image:** `/bigtemp/vnr3ne/vm-force13/j2sdk-image` (vm-force12 plus the failed-CAS answer).
 - **Runs:** `/bigtemp/vnr3ne/gc-out/zookeeper-final` (the series) and `zookeeper-fresh` (the fresh-clone check,
   REPRODUCE §8); the agents' development runs are deleted.

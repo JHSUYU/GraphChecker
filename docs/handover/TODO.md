@@ -136,9 +136,9 @@ BLOCKING.
 
 Read STATE.md §S first (`system/solr`'s START-HERE is Solr's takeover file). `system/solr` (pushed) holds the rewrite and every fix the
 final round SGF9 found; the owner ended the round on 2026-10-19 with 14, 07 and 31 not rerun. Evidence is under
-`/bigtemp/vnr3ne/analysis/solr-2026-10-18/final9/` (named per item). Merge each branch into `solr-int`
-(`/bigtemp/vnr3ne/wt/gc-solr-merge`), gate it (mvn package with tests + `src/test/shell/run_engine_campaign_helpers_test.sh`
-on an idle host), fast-forward `system/solr` (`/bigtemp/vnr3ne/wt/gc-solr`); push only with the owner's OK.
+`/bigtemp/vnr3ne/analysis/solr-2026-10-18/final9/` (named per item). Merge each branch into an
+integration worktree of `system/solr`, gate it (mvn package with tests + `src/test/shell/run_engine_campaign_helpers_test.sh`
+on an idle Maven host), fast-forward `system/solr` (`/bigtemp/vnr3ne/wt/gc-solr`); push only with the owner's OK.
 
 **1. Cases owed a run on the current `system/solr`** (each alone, the round driver of `system/solr`'s START-HERE §3; budget 21600 s for
 the big ones). None of the three fixes below has run on a case yet, so the first run of each is also its check:
