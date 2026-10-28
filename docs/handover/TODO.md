@@ -9,7 +9,7 @@ Order:
 3. The cross-cutting engine items (last section), when a system needs them.
 
 HBase, ZooKeeper and Solr are finished; each one's plan is its own branch's TODO (`system/hbase`, `system/zookeeper`,
-`system/solr`), and each old-bug branch's open items are in its START-HERE (`system/<x>-buggy-detect`); a "TODO HBase
+`system/solr`), and each old-bug branch's open items are in its own docs (`system/<x>-buggy-detect`); a "TODO HBase
 <n>" or "TODO Solr ..." that STATUS, the design or the check tables cite is that item of `system/hbase`'s or
 `system/solr`'s TODO. The owner:
 "hdfs所有的case跑完为一组，不要有回归。然后就到另一个系统". Each system is finished when every one of its checks has an exported
