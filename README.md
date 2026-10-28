@@ -29,7 +29,7 @@ body, round V25).
 | HDFS | `system/hdfs-liftlab` | `system/hdfs-buggy-detect` | hadoop `graphchecker/hdfs-checks`, `-adhoc07`, `-adhoc21`, `graphchecker/hdfs-11741`, `graphchecker/hdfs-bug-<jira>` |
 | Solr | `system/solr` (this branch) | `system/solr-buggy-detect` | solr `graphchecker/solr-checks`, `graphchecker/solr-bug-<jira>` |
 | HBase | `system/hbase` | `system/hbase-buggy-detect` | hbase `graphchecker/hbase-checks`, `graphchecker/hbase-bug-<jira>` |
-| ZooKeeper | `system/zookeeper` | `system/zookeeper-buggy-detect` | zookeeper `graphchecker/zookeeper-checks`, `graphchecker/zk-bug-<jira>`, `graphchecker/zk-bug-<jira>-control` |
+| ZooKeeper | `system/zookeeper` | `system/zookeeper-buggy-detect` | zookeeper: the tag `graphchecker/zookeeper-checks-liftlab` (51b213562), `graphchecker/zookeeper-checks`, `graphchecker/zk-bug-<jira>`, `graphchecker/zk-bug-<jira>-control` |
 
 - **HDFS:** `system/hdfs-liftlab` runs every HDFS case on HBase's engine (`results/hdfs/`; series H1, 2026-10-27: the
   45 cases but hdfs-11741, each alone, 17.4 h); it replaces `system/hdfs` (the locked body, 39 cases) and
@@ -41,7 +41,7 @@ body, round V25).
 - **HBase:** `system/hbase` runs the 22 HBase cases (finished 2026-10-21, `results/hbase/`) on `graphchecker/hbase-checks`.
   `system/hbase-buggy-detect`: HBASE-15039, -20642, -28533 on `graphchecker/hbase-bug-<jira>`.
 - **ZooKeeper:** `system/zookeeper` runs the 16 ZooKeeper cases (finished 2026-10-22, `results/zookeeper/`) on
-  `graphchecker/zookeeper-checks`. `system/zookeeper-buggy-detect`: ZOOKEEPER-710, -2886 on `graphchecker/zk-bug-<jira>`,
+  the fork's tag `graphchecker/zookeeper-checks-liftlab` (51b213562). `system/zookeeper-buggy-detect`: ZOOKEEPER-710, -2886 on `graphchecker/zk-bug-<jira>`,
   with `graphchecker/zk-bug-<jira>-control` the same workloads on the fixed code.
 
 Each branch's `docs/REPRODUCE.md` runs its cases from a fresh clone of it and its fork branch. The CloudLab ports of
