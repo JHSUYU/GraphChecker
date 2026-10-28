@@ -262,7 +262,7 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   - Why: a PEWorker enters `TraceUtil.trace(this::runProcedure)`'s lambda `call()` between its poll
     wake and the step's claim, at `call@k`, where `k` counts that worker's steps since its last wake.
     Each next step's start, filed inside the claim, carried it, so one step on a busier worker
-    renamed every later step of its procedure (TODO HBase 21: hbase-adhoc-10's sessions activated
+    renamed every later step of its procedure (hbase-adhoc-10's sessions activated
     7-8 of the seed plan's 41 createTable-chain steps; hbase-adhoc-04's disable step stood at
     `call@1/...` in 2 of 10 native runs).
 - **Occurrence index** = frames from the scope base to the region entry (`#regionEnter`); for an

@@ -249,7 +249,7 @@ reads and whose code writes what it reads (owner 2026-10-19: "范围弄小点").
 Tree: the fork's `graphchecker/hbase-checks` = local `gc/hbase-checks` `985a0dfe91` (sites first re-located on
 `c72b1d7e80`; every site of §D was re-located there: none moved). Engine: `system/hbase` (STATE §H). Summary at the
 stop: 1 PASS (backup-lock-reply-lost), 1 SAT confirmed in the VM awaiting REPRODUCE (04 = HBASE-30484, PASS since 2026-10-20: NR3-04), 5 UNSAT all
-vacuous (08, 13, 31-old, 34, 37), the rest stopped mid-run or not run; the next runs are TODO HBase 1. Each target is marked `throw new @CausynthExceptionTarget("<case>") E(..)`. Native: each workload alone,
+vacuous (08, 13, 31-old, 34, 37), the rest stopped mid-run or not run; the final series since is `results/hbase/`. Each target is marked `throw new @CausynthExceptionTarget("<case>") E(..)`. Native: each workload alone,
 JDK 8, the automatic cluster on the local filesystem (no DataNode or NameNode), the test's own time from its surefire
 report (`/bigtemp/vnr3ne/analysis/hbase-2026-10-19/checks/native.tsv`). The row's scope is the case's classes
 (`root=:class`, the class and its nested classes): the target's class, the class whose field its guard reads, and

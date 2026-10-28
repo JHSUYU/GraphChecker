@@ -238,4 +238,4 @@ fatal boundary variable is unbound).
   claimed, the IPC hand-off naming (r6/r7 trees), the owed-path bound, codec capture, open arms (`WORLD_REFUTED`,
   configuration domains), the wait deadline and the open-arm keys (STATE §0). Parked: confirm-first, the loop prefix
   as its own occurrence, the reply consumer by request ordinal (TODO HDFS §2-§5).
-- WIRE-CODEC (codec holes in opaque payloads) is not in the body: branch `wire-codec-p1`.
+- WIRE-CODEC (codec holes in opaque payloads) is not in the body: tag `archive/local/wire-codec-p1`.

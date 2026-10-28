@@ -7,18 +7,21 @@ cluster's disks is assumed besides the operating system packages below (§0).
 
 | repository | branch | what it holds |
 | --- | --- | --- |
-| `git@github.com:JHSUYU/GraphChecker.git` (private) | `system/hdfs` | the locked body: the engine that closed 39 cases (the named bugs but 11741, and 30 study checks) |
-| | `system/hdfs1` | the newest body: the other 7 cases (07 11741 21 29 30 39 40), these tools, the VM sources |
+| `git@github.com:JHSUYU/GraphChecker.git` (private) | `system/hdfs-liftlab` | THE HDFS branch since 2026-10-27: every HDFS case on `system/hbase`'s engine; its own REPRODUCE runs them |
+| | `system/hdfs` | history: the locked body that closed 39 cases (the named bugs but 11741, and 30 study checks); §1-§5 below |
+| | `system/hdfs1` | history: the body of the other 7 cases (07 11741 21 29 30 39 40); §1-§5 below |
 | | `system/solr` | the 20 Solr cases (§6) |
 | | `system/hbase` | the 22 HBase cases (§7), `results/hbase/` |
 | | `system/zookeeper` | the 16 ZooKeeper cases (§8), `results/zookeeper/` |
+| | `system/<x>-buggy-detect` (x = hdfs, hbase, zookeeper, solr) | the old bugs put back, one case each; its own REPRODUCE and START-HERE run them |
 | `https://github.com/JHSUYU/hadoop.git` (public fork) | `graphchecker/hdfs-checks` | the HDFS tree of 43 cases (tree `hadoop-hdfs-study-r7`) |
 | | `graphchecker/hdfs-checks-adhoc07` | hdfs-adhoc-07's tree (`hadoop-hdfs-study-r8`) |
 | | `graphchecker/hdfs-checks-adhoc21` | hdfs-adhoc-21's tree (`hadoop-hdfs-21`) |
 | | `graphchecker/hdfs-11741` | hdfs-11741's tree (`hadoop-hdfs-11741-r6`): trunk with HDFS-11741's fix reverted |
 | `https://github.com/JHSUYU/solr.git` (public fork) | `graphchecker/solr-checks` | the Solr tree (`lucene-solr-checks`) |
 | `https://github.com/JHSUYU/hbase.git` (public fork) | `graphchecker/hbase-checks` | the HBase tree (`hbase-checks`) |
-| `https://github.com/JHSUYU/zookeeper.git` (public fork) | `graphchecker/zookeeper-checks` | the ZooKeeper tree (`zookeeper-checks`) |
+| `https://github.com/JHSUYU/zookeeper.git` (public fork) | tag `graphchecker/zookeeper-checks-liftlab` | the ZooKeeper tree (`zookeeper-checks`, 51b213562) |
+| each fork | `graphchecker/<x>-bug-<jira>` | one old bug put back on the system's tree (the buggy-detect branches' cases) |
 
 Which branch runs which case, with the case's budget and what series EX1 ended with, is
 [`experiments/hadoop/hdfs-cases.tsv`](../experiments/hadoop/hdfs-cases.tsv); which fork branch each tree is,
@@ -27,7 +30,8 @@ Which branch runs which case, with the case's budget and what series EX1 ended w
 
 ## 0. The machines
 
-- Linux x86_64 hosts (Ubuntu 22.04 here: ten hosts `lift06`-`lift15`, 48 cores and 30 GB each). One host works; a case
+- Linux x86_64 hosts (Ubuntu 22.04 here: `lift02`-`lift15`, 48 cores and 30 GB each; `lift11` the control host,
+  `lift07` unreachable since 2026-10-23, Maven only on `lift02`-`lift06` and `lift08`-`lift10`). One host works; a case
   then takes several times longer (PERFORMANCE §6 was measured on ten).
 - One filesystem mounted at the same path on every host (`GC_BULK`, here `/bigtemp/vnr3ne`), the home directory shared
   too, passwordless `ssh -o BatchMode=yes` between the hosts, and a local scratch directory `/localtmp/$USER` on each.
@@ -45,6 +49,9 @@ run passes them on (`gc_env_words`); `tools/onlift.sh` does not, so give it `env
 commands from step 2 on use these variables: `source ~/GraphChecker-hdfs1/tools/lib/gc-env.sh` in the shell first.
 
 ## 1. GraphChecker, both branches
+
+§1-§5 rebuild the HDFS record on its two history branches as it was closed; `system/hdfs-liftlab` is the HDFS branch
+now, and its own REPRODUCE runs every HDFS case on today's engine.
 
 ```bash
 for b in hdfs1 hdfs; do
@@ -285,7 +292,7 @@ The 16 ZooKeeper cases ([`experiments/zookeeper/zookeeper-cases.tsv`](../experim
 case, branch, budget; each check's target, workload and state: [checks/ZOOKEEPER.md](checks/ZOOKEEPER.md) §E; the
 final series' `.smt`, claims and time table: [`results/zookeeper/`](../results/zookeeper/README.md)) need two branches:
 - **the code:** GraphChecker's `system/zookeeper` (the engine, every case's settings, the VM sources);
-- **the adapter:** the branch `graphchecker/zookeeper-checks` of the public fork `https://github.com/JHSUYU/zookeeper.git`
+- **the adapter:** the tag `graphchecker/zookeeper-checks-liftlab` (51b213562) of the public fork `https://github.com/JHSUYU/zookeeper.git`
   (tree `zookeeper-checks`, [`experiments/zookeeper/trees.tsv`](../experiments/zookeeper/trees.tsv)): Apache ZooKeeper
   master `eab165995` on Java 8, with ZOOKEEPER-5094 and ZOOKEEPER-5088 unfixed (their fixes, PR 2459 and PR 2454, are
   the fork's branches `fix-trunc-sync-shutdown-state` and `fix/observer-master-pending-proposals`), plus the adapter
@@ -321,7 +328,9 @@ final series' `.smt`, claims and time table: [`results/zookeeper/`](../results/z
    tools/onlift.sh -g 8 experiments/zookeeper/prepare-trees.sh > $GC_BULK/prepare-zookeeper.log 2>&1
    ```
 
-   `prepare-trees.sh` clones the fork's `graphchecker/zookeeper-checks` into `$GC_TREES/zookeeper-checks` (a directory
+   `prepare-trees.sh` clones the fork's tag `graphchecker/zookeeper-checks-liftlab` (51b213562, the final series' tree;
+   2b6e17bf8 for every case but 04 and 13, which differ only there; `trees.tsv`) into `$GC_TREES/zookeeper-checks` (the
+   fork's branch `graphchecker/zookeeper-checks` has moved on to 889f0e96, the buggy-detect trees' base; a directory
    already there is only built), installs the checkout's jar into the tree's Maven repository (`ZOOKEEPER_MAVEN_REPO`,
    by default `$GC_M2/zookeeper<the tree's path, / as _>`; `tools/onlift.sh` passes no environment, so give it inside
    the command, `env ZOOKEEPER_MAVEN_REPO=...`): the tree compiles against GraphChecker's `MessageDoors` and
