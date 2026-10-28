@@ -51,15 +51,14 @@ document; lead/RUNS.txt is the full log of runs and decisions.
 - The agents' tree branches are merged into it: `gc/zk-tree` (A), `gc/zk-tree-contfb` (A, container-reuse's fallback),
   `gc/zk-quorum-bugs` (B), `gc/zk-quorum` (C) and `gc/zk-learner` (D). `gc/zk-unified` and `gc/zk-unified-hb` are the
   old branch-3.9 trees.
-- Maven repositories: `/bigtemp/vnr3ne/m2/zookeeper-int11`, `-int12` (the final tree sets'); the other integrations' and
-  the agents' are deleted.
+- Maven repository: `/bigtemp/vnr3ne/m2/zookeeper-int12` (the kept tree set's); the others are deleted.
 
 **Snapshots, images, tree sets.**
 - Snapshots: `/u/vnr3ne/gc-run/zk-int-12` (d4fbcd97c) and `zk-int-13` (d73c28302 = the final engine, D's COMPOSE fix on
   12); the earlier integrations' (6 797c9d5ad, 7 b18c7a484, 8 494d2a9af, 9 c01b741ac, 10 ac69ab4b1, 11 8524ead2f) and the
   agents' are deleted.
-- Tree sets: `/bigtemp/vnr3ne/wt/zk-int-trees-11` (2b6e17bf8) and `zk-int-trees-12` (51b213562, for 04 and 13), the
-  final series'. Never rebuild one a run reads.
+- Tree sets: the final series ran on zk-int-trees-11 (2b6e17bf8, deleted since) and `/bigtemp/vnr3ne/wt/zk-int-trees-12`
+  (51b213562, for 04 and 13; kept). Never rebuild one a run reads.
 - Image: `/bigtemp/vnr3ne/vm-force13/j2sdk-image` = vm-force12 plus the failed-CAS comparand (OPERATIONS.md images row).
   Every run from integration 9 on uses it.
 
@@ -84,8 +83,7 @@ platform, H2 ZooKeeper, H3 RPC, H4 checks, H5 engine analysis) took over from ST
 `experiments/hbase/hbase-cases.tsv`. **All five of the owner's bugs PASS.** Read `system/hbase`'s START-HERE (HBase's
 takeover file), then [TODO.md](TODO.md) "HBase", then LESSONS §9.
 
-**`system/hbase`** (the code; pushed to GitHub 2026-10-22, owner; = `hbase-int`; worktrees `/bigtemp/vnr3ne/wt/gc-hbase` and
-`/bigtemp/vnr3ne/wt/gc-hbase-merge`, the latter for merges and gates on lift11): `system/solr`'s engine plus the first
+**`system/hbase`** (the code; pushed to GitHub 2026-10-22, owner; = `hbase-int`; worktree `/bigtemp/vnr3ne/wt/gc-hbase`): `system/solr`'s engine plus the first
 session's HBase work (doors `HBASE_RPC` and ZooKeeper, continuation and timer identity, the VM's enums and sorted maps,
 PLAN/COMPOSE/CONFIRM fixes, `tools/analysis/vacuity.py`) and, from the second session, each gated:
 - heads: `engine_memory_mb` 12288 for both HBase workflow files (measured peaks ~3 GB; a head is charged its heap for life);
@@ -143,8 +141,8 @@ lift12-15, at world depth 0, on VM `vm-force10` and the tree set `sg3j-trees`. T
 everything gathered on `system/solr`, pushed with the fork's tree, and documented ("剩余的case我们不跑了，不要了"). Nothing
 runs on any lift. Read `system/solr`'s START-HERE (Solr's takeover file) first, then [TODO.md](TODO.md) "Solr: after SGF9".
 
-**`system/solr`** (GitHub `JHSUYU/GraphChecker`, pushed 2026-10-19; = `solr-int`, worktrees
-`/bigtemp/vnr3ne/wt/gc-solr`, `/bigtemp/vnr3ne/wt/gc-solr-merge`) holds, gated: the compaction of the corpus and walk
+**`system/solr`** (GitHub `JHSUYU/GraphChecker`, pushed 2026-10-19; = `solr-int`, worktree
+`/bigtemp/vnr3ne/wt/gc-solr`) holds, gated: the compaction of the corpus and walk
 state; the holding composer (every session's rows held until a sweep finds the old generation past 60 %, let go before
 the body is lowered); the GROW pipeline (a GROW re-run holds the fixed point until it lands: OPTIMIZATIONS 1.37
 reverted); the superstep + window walk; the parallel round and Frontier; the stream scheduler (replays spread by room,
@@ -271,21 +269,21 @@ any of them anew from the fork ([../REPRODUCE.md](../REPRODUCE.md) §3):
 
 | tree (worktree) | local branch, head | remote branch | used by |
 | --- | --- | --- | --- |
-| `/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r7` | `gc/hdfs-study-r7` `bd72fcc1a13` | `graphchecker/hdfs-checks` | every HDFS case but 07, 21 and 11741 on both branches (43 cases): trunk 734dd8a67cd with the 49 study points' markers, the named cases' markers and workloads, the adapter, the IPC, SASL and DataTransfer doors, and the time family's workarounds (STATUS "Per-system surface"). Maven repo `/bigtemp/vnr3ne/m2/hdfs-study-r7` |
-| `/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r8` | `gc/hdfs-study-r8` `e3dab6266a7` | `graphchecker/hdfs-checks-adhoc07` | hdfs-adhoc-07 only (`case.sh`): r7 + QJM's reply maps in the loggers' order. Maven repo `/bigtemp/vnr3ne/m2/hdfs-study-r8` |
-| `/bigtemp/vnr3ne/wt/hadoop-hdfs-21` | `gc/hdfs-study-r7-21` `c360d869629` | `graphchecker/hdfs-checks-adhoc21` | hdfs-adhoc-21 only (`case.sh`): r7 + the DataNode handshake on its own joined thread |
-| `/bigtemp/vnr3ne/wt/hadoop-hdfs-11741-r6` | `gc/hdfs-11741-r6` `6c86fca9a2b` | `graphchecker/hdfs-11741` | hdfs-11741: trunk 734dd8a67cd with HDFS-11741's fix reverted, its own hook generation. Maven repo `/bigtemp/vnr3ne/m2/hdfs-11741-r6` |
+| `$GC_TREES/hadoop-hdfs-study-r7` (worktree deleted; `prepare-trees.sh` makes it) | `gc/hdfs-study-r7` `bd72fcc1a13` | `graphchecker/hdfs-checks` | every HDFS case but 07, 21 and 11741 on both branches (43 cases): trunk 734dd8a67cd with the 49 study points' markers, the named cases' markers and workloads, the adapter, the IPC, SASL and DataTransfer doors, and the time family's workarounds (STATUS "Per-system surface"). |
+| `$GC_TREES/hadoop-hdfs-study-r8` (worktree deleted; `prepare-trees.sh` makes it) | `gc/hdfs-study-r8` `e3dab6266a7` | `graphchecker/hdfs-checks-adhoc07` | hdfs-adhoc-07 only (`case.sh`): r7 + QJM's reply maps in the loggers' order. |
+| `$GC_TREES/hadoop-hdfs-21` (worktree deleted; `prepare-trees.sh` makes it) | `gc/hdfs-study-r7-21` `c360d869629` | `graphchecker/hdfs-checks-adhoc21` | hdfs-adhoc-21 only (`case.sh`): r7 + the DataNode handshake on its own joined thread |
+| `$GC_TREES/hadoop-hdfs-11741-r6` (worktree deleted; `prepare-trees.sh` makes it) | `gc/hdfs-11741-r6` `6c86fca9a2b` | `graphchecker/hdfs-11741` | hdfs-11741: trunk 734dd8a67cd with HDFS-11741's fix reverted, its own hook generation. |
 | `/bigtemp/vnr3ne/wt/sg3j-trees/lucene-solr-checks` (worktree of `~/lucene-solr-8_11`) | `gc/solr-zktrace2` `12d23091d1` | `graphchecker/solr-checks` on the fork `JHSUYU/solr` (pushed 2026-10-16, unchanged since) | THE Solr tree of every `system/solr` case since SGF8 (SGF8, SGF9; REPRODUCE §6 clones it); its history is the local branches `gc/solr-checks`, `gc/solr-bugs`, `gc/solr-body`, `gc/solr-zk-next`, `gc/solr-zk-doors`, `gc/solr-zk2` of `~/lucene-solr-8_11` (their worktrees are deleted) |
-| `/bigtemp/vnr3ne/wt/lucene-solr-storing` | `gc/solr-unified-storing` `04f8489` | none | solr-18406, solr-18413 (`main`) |
+| (worktree deleted) | `gc/solr-unified-storing` `04f8489` | none | solr-18406, solr-18413 (`main`) |
 | `/u/vnr3ne/hbase` | `gc/hbase-checks` `b5d5cc6a20` | `graphchecker/hbase-checks` on the fork `JHSUYU/hbase` | THE HBase tree of every `system/hbase` case (REPRODUCE §7 clones it; STATE §H) |
-| `/u/vnr3ne/zookeeper` | `gc/zk-checks` `51b213562` | the tag `graphchecker/zookeeper-checks-liftlab` on the fork `JHSUYU/zookeeper` (the branch `graphchecker/zookeeper-checks` is at 889f0e96 since) | THE ZooKeeper tree of every `system/zookeeper` case (REPRODUCE §8 clones it; STATE §Z; the final series' tree sets `/bigtemp/vnr3ne/wt/zk-int-trees-11`, `-12`) |
+| `/u/vnr3ne/zookeeper` | `gc/zk-checks` `51b213562` | the tag `graphchecker/zookeeper-checks-liftlab` on the fork `JHSUYU/zookeeper` (the branch `graphchecker/zookeeper-checks` is at 889f0e96 since) | THE ZooKeeper tree of every `system/zookeeper` case (REPRODUCE §8 clones it; STATE §Z; the final series' tree sets zk-int-trees-11, -12) |
 | `$GC_TREES/zookeeper-bug-710`, `zookeeper-bug-2886` (made by `prepare-trees.sh` on `system/zookeeper-buggy-detect`) | none (clones of the fork) | `graphchecker/zk-bug-710`, `graphchecker/zk-bug-2886` (and their `-control` branches, the fixed code) | the buggy-detect cases `zk-buggy-710`, `zk-buggy-2886` (that branch's `BUGGY-DETECT.md`) |
-| `/bigtemp/vnr3ne/wt/zookeeper-unified`, `zookeeper-hb` | `gc/zk-unified` `8f18cf3a4`, `gc/zk-unified-hb` `47ddc8b36` | none (never push: apache remote) | the zk-bugs cases (`main`) |
+| (worktrees deleted) | `gc/zk-unified` `8f18cf3a4`, `gc/zk-unified-hb` `47ddc8b36` | none (never push: apache remote) | the zk-bugs cases (`main`) |
 
 The fork's 16 older `gc/*` branches (the per-bug trees, `gc/hdfs-unified`, `gc/hdfs-unified-dtx`, `gc/hdfs-bugs`,
 `gc/hdfs-study-r5`/`r6`, `gc/hdfs-11741`/`-r5`) were deleted, bundled first in
 `/bigtemp/vnr3ne/handover/2026-10-08/hadoop-gc-branches.bundle`; `main`'s cases read `gc/hdfs-unified-dtx`
-(`/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx`, local). Any other Hadoop worktree under `/bigtemp/vnr3ne/wt/` is superseded.
+(local branch of `~/hadoop`; its worktree is deleted).
 The fork's `graphchecker/hdfs-checks` (899c200cc8e) and `graphchecker/hdfs-checks-adhoc21` (25b4f1e531f) have moved
 past the local heads above (the HDFS work of 2026-10-24 on; `system/hdfs-liftlab` documents the trees it runs).
 
@@ -294,8 +292,8 @@ both branches' `third_party/`; `tools/vm/build-image.sh` rebuilds it from either
 `vm-model-guards2` serves `main`. No VM change was made since. The VM's dead natives (VM.md §8) and
 `exportLeaf`/`mintLeaf` can go in the next VM build.
 
-Snapshots in `~/gc-run/` (frozen; `tools/rounds/snapshot-gc.sh` refuses one in use): `hl1` (`system/hdfs`'s locking
-round) and `rp5` (`system/hdfs1`'s code of the EX1 series; its jar is the offline gate's baseline for this body).
+The HDFS snapshots of this record (`hl1`, `system/hdfs`'s locking round; `rp5`, `system/hdfs1`'s code of the EX1 series)
+are deleted; `system/hdfs-liftlab` names its own.
 
 ## 4. Rounds and evidence
 
@@ -324,9 +322,9 @@ New bugs: none. The 10 named bugs pass by mandate (11741 CLOCK_SKEW; the others 
 - `/bigtemp/vnr3ne/analysis/study-2026-10-06b/`: the 2026-10-06 session's agent briefs (`brief-*.md`), the `.smt` readings draft
   (`status-readings.md`), `anchor-check.py` (whether each case's seed reached its declared occurrence) and notes
   (`smt-checks.md`).
-- Agents' evidence: `/bigtemp/vnr3ne/gc-out/hdfs-open-arms/` (S), `hdfs-wait-deadline/` and `hdfs-time-r6/` (T: probes,
-  `probe-table.py`), `hdfs-codec-capture/` (C), `hdfs-rule1/` (R: key gates, probes), `hdfs-21w/` (W21),
-  `hdfs1-open-arm-keys/` (T's 39 runs).
+- The agents' run dirs (`gc-out/hdfs-open-arms`, `hdfs-wait-deadline`, `hdfs-time-r6`, `hdfs-codec-capture`, `hdfs-rule1`,
+  `hdfs-21w`, `hdfs1-open-arm-keys`) are deleted (2026-10-28); STATUS and TODO still cite their run names. Kept:
+  `/bigtemp/vnr3ne/gc-out/hdfs-study` (the HDFS group's rounds) and `hdfs-excl` (EX1).
 - `/bigtemp/vnr3ne/analysis/excl-2026-10-07/` (the EX1 driver), `cleanup-2026-10-08/` (the cleanup's briefs).
 - `/bigtemp/vnr3ne/handover/`: bundles of deleted branches (`2026-10-08/`: the remote branches of §2 and §3; older
   dated bundles), WIP patches of stopped agents, the 10-06 scratch.
