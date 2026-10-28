@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "kind": "CLAIM",
+  "anchor": "auto0/peer5#epoch0/region/REGION.3cfb4ed2-6604-303b-82a1-6cb936dd8da0/ctx:Anchor:d1b3ac4cd40c5ae3@ZK_QUORUM/test/idx:\u003corg.apache.zookeeper.server.quorum.Leader: void lead()\u003e@0/\u003corg.apache.zookeeper.server.quorum.Leader: void startZkServer()\u003e@0/\u003corg.apache.zookeeper.server.quorum.LeaderZooKeeperServer: void startup()\u003e@0/\u003corg.apache.zookeeper.server.quorum.LeaderZooKeeperServer: void setupRequestProcessors()\u003e@0/\u003corg.apache.zookeeper.server.PrepRequestProcessor: void run()\u003e@0/\u003corg.apache.zookeeper.server.quorum.Leader: void submitLearnerRequest(org.apache.zookeeper.server.Request)\u003e@0/\u003corg.apache.zookeeper.server.quorum.LeaderZooKeeperServer: void submitLearnerRequest(org.apache.zookeeper.server.Request)\u003e@0/\u003corg.apache.zookeeper.server.PrepRequestProcessor: void processRequest(org.apache.zookeeper.server.Request)\u003e@0/\u003corg.apache.zookeeper.server.PrepRequestProcessor: void processRequest(org.apache.zookeeper.server.Request)\u003e#u5@0",
+  "claim": {
+    "kind": "STATE_PAIRING_FLIPPED",
+    "valuationOrdinal": 0,
+    "movedRoots": {},
+    "polarityDecides": true,
+    "gaps": []
+  },
+  "solverRuns": 8,
+  "seedSessionId": "seed-result-56fa488c",
+  "valuations": [
+    {
+      "ordinal": 0,
+      "status": "sat",
+      "assignment": {},
+      "moved": {},
+      "selectedPathId": "38c8ea551f6e61b0",
+      "selectedSessionId": "f02ce3c8de933a9e-7589262f",
+      "fatalObserved": true,
+      "selectedArms": [
+        {
+          "selector": "writer_arm__0__aabcb0922c28",
+          "family": "writer_family__0__aabcb0922c28",
+          "groupId": "403550f3bc24a134",
+          "attachEndpointIds": [],
+          "sessionId": "f02ce3c8de933a9e-7589262f",
+          "sessionIds": [
+            "f02ce3c8de933a9e-7589262f"
+          ],
+          "producerPathId": "d1f6b6aa0a2be39d",
+          "interactionIds": [
+            "293b1ee3c5b1fdfd"
+          ],
+          "expressionRefs": [
+            "EXPR.078ae97738a99afd"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "writer_arm__0__aabcb0922c28"
+      ],
+      "unsatCore": []
+    }
+  ],
+  "gaps": []
+}

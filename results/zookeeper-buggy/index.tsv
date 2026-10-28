@@ -1,0 +1,3 @@
+case	run	claim	smt	claim_json
+zk-buggy-710	buggy-detect/accept-B1-zk-buggy-710	SAT_CANDIDATE	zk-buggy-710.smt2.gz	zk-buggy-710.claim.json
+zk-buggy-2886	buggy-detect/accept-B1-zk-buggy-2886	SAT_CANDIDATE	zk-buggy-2886.smt2.gz	zk-buggy-2886.claim.json
