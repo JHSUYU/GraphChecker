@@ -51,7 +51,7 @@ Engine support, on these branches only, each independently reviewed:
 - Solr: 61e881776 + e5c894636 + ad3d08028 (native REPRODUCE plants a field-backed CONFIG root at the plan's read sites,
   guarded by a GETFIELD count; getter CONFIG roots stay refused).
 
-Decided by the owner (2026-10-27): HBASE-20642's by-shape native reproduction is accepted; HDFS-14311 (capability
+Decided by the owner (2026-10-27/28): the 5 caveated cases count as detected (the bug makes the ad hoc check fail); HBASE-20642's by-shape native reproduction is accepted; HDFS-14311 (capability
 limit), HBASE-28533 and SOLR-6763 (not reachable on today's code) are closed as they stand; the branches are pushed.
 Left as follow-ups, not done: a CONFIRM change for HDFS-14311's post-fatal ORDER timeout; the native getter-CONFIG plant
 scope (wider than the VM, kept disabled); three minor native-plant report gaps (6101-notes.md). Superseded tree sets and
