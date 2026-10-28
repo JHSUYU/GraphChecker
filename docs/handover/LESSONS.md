@@ -1,6 +1,6 @@
 # Lessons: the traps we fell into, how we measure, how we debug (2026-10-18)
 
-Read after RULES.md, AGENTS.md, OPERATIONS.md, PARALLEL.md, CHECKING.md and REFACTOR-PLAN.md. Every item below
+Read after RULES.md, AGENTS.md, OPERATIONS.md, PARALLEL.md and CHECKING.md. Every item below
 cost us time at least once; the date or the case it came from is named so it can be checked.
 
 ## 1. How we work (pointers; the rules themselves are in RULES.md)

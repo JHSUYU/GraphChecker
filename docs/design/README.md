@@ -236,6 +236,6 @@ fatal boundary variable is unbound).
   to 30 s old.
 - In the body since the 10-06 handover: every static export site woven and a witness's own chain closed before it is
   claimed, the IPC hand-off naming (r6/r7 trees), the owed-path bound, codec capture, open arms (`WORLD_REFUTED`,
-  configuration domains), the wait deadline and the open-arm keys (STATE §0). Parked: confirm-first, the loop prefix
+  configuration domains), the wait deadline and the open-arm keys (`system/hdfs1`'s, inherited by every later branch). Parked: the loop prefix
   as its own occurrence, the reply consumer by request ordinal (TODO HDFS §2-§5).
-- WIRE-CODEC (codec holes in opaque payloads) is not in the body: branch `wire-codec-p1`.
+- WIRE-CODEC (codec holes in opaque payloads) is not in the body: tag `archive/local/wire-codec-p1`.

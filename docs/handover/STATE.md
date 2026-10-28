@@ -1,17 +1,15 @@
-# State: HDFS finished; Solr ended; HBase finished (final series 2026-10-21: all five owner bugs PASS)
+# State: HBase finished (`system/hbase`, final series 2026-10-21: all five owner bugs PASS)
 
 HBase: section H below (finished: the code is this branch, `system/hbase`, the adapter the HBase fork's
 `graphchecker/hbase-checks`, both on GitHub; [../REPRODUCE.md](../REPRODUCE.md) §7 runs every case from a fresh clone
-of the two). ZooKeeper finished after it on its own branch `system/zookeeper` (built from this one; its STATE §Z). Solr: section S. The HDFS group is finished: all 46 cases have an exported `.smt` read by hand against the HDFS code, one row each in
-[../STATUS.md](../STATUS.md) "HDFS checks" (07, the last, closed on 2026-10-07: EX1-adhoc-07e on `system/hdfs1`
-8c446418b). Every case then ran alone on the ten lifts for its time breakdown (series EX1,
-`/bigtemp/vnr3ne/gc-out/hdfs-excl`; the 46 rows are [../design/PERFORMANCE.md](../design/PERFORMANCE.md) §6). The owner
-then stopped the work; on 2026-10-08 the code, scripts and documents were cleaned ("清理所有无用的文档/死代码/没用的脚本
-fallback") and the remotes cut down to what is kept (§2, §3). Nothing runs on any lift and no agent is working. Read this
-file, then [TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [CHECKING.md](CHECKING.md),
-[AGENTS.md](AGENTS.md), [OPERATIONS.md](OPERATIONS.md) and [PARALLEL.md](PARALLEL.md). The design is in
-[../design/](../design/README.md); every check's state is in [../checks/README.md](../checks/README.md); done / partial /
-missing per requirement in [../STATUS.md](../STATUS.md).
+of the two). The old HBase bugs put back on today's tree run on `system/hbase-buggy-detect` (this branch plus their
+cases; its `docs/handover/BUGGY-DETECT.md`). Every other system is finished on its own pair of branches (§2): HDFS on
+`system/hdfs-liftlab`, ZooKeeper on `system/zookeeper` (built from this branch), Solr on `system/solr` (this branch's
+base); each branch's STATE says where it stands. Nothing runs on any lift for HBase. Read this file, then
+[TODO.md](TODO.md) (what is left), [RULES.md](RULES.md), [CHECKING.md](CHECKING.md), [AGENTS.md](AGENTS.md),
+[OPERATIONS.md](OPERATIONS.md) and [PARALLEL.md](PARALLEL.md). The design is in [../design/](../design/README.md);
+every check's state is in [../checks/README.md](../checks/README.md); done / partial / missing per requirement in
+[../STATUS.md](../STATUS.md).
 
 ## H. HBase (finished: final series 2026-10-21) -- read this first if you take over HBase
 
@@ -20,10 +18,9 @@ The first session (2026-10-19, a lead and five coding agents) built the HBase pl
 stopped it for a handover at 23:10. The second session (2026-10-19 23:40 to 2026-10-20, a new lead and five agents: H1
 platform, H2 ZooKeeper, H3 RPC, H4 checks, H5 engine analysis) took over from START-HERE and ran every case of
 `experiments/hbase/hbase-cases.tsv`. **All five of the owner's bugs PASS.** Read [START-HERE.md](START-HERE.md), then
-[TODO.md](TODO.md) "HBase" (item 1, the owner's final series, is done; the rest are parked engine items), then LESSONS §9.
+[TODO.md](TODO.md) "HBase" (the parked engine items), then LESSONS §9.
 
-**`system/hbase`** (the code; pushed to GitHub 2026-10-22, owner; = `hbase-int`; worktrees `/bigtemp/vnr3ne/wt/gc-hbase` and
-`/bigtemp/vnr3ne/wt/gc-hbase-merge`, the latter for merges and gates on lift11): `system/solr`'s engine plus the first
+**`system/hbase`** (the code; pushed to GitHub 2026-10-22, owner; worktree `/bigtemp/vnr3ne/wt/gc-hbase`): `system/solr`'s engine plus the first
 session's HBase work (doors `HBASE_RPC` and ZooKeeper, continuation and timer identity, the VM's enums and sorted maps,
 PLAN/COMPOSE/CONFIRM fixes, `tools/analysis/vacuity.py`) and, from the second session, each gated:
 - heads: `engine_memory_mb` 12288 for both HBase workflow files (measured peaks ~3 GB; a head is charged its heap for life);
@@ -66,90 +63,13 @@ checks".
 **Where things are:** the final series' drivers and tables `/bigtemp/vnr3ne/analysis/hbase-2026-10-20/lead/` (`series.sh`,
 `excl.sh`, `excl2.sh`, `final-stats.py`, `collect-results.sh`, the series logs) beside the second session's briefs, helpers
 and evidence in `/bigtemp/vnr3ne/analysis/hbase-2026-10-20/` (`readings.md`, the agents' E1-E4 and H1-H5 reports); run outputs
-`/bigtemp/vnr3ne/gc-out/hbase-final` (and the development runs in `hbase-{platform,zk,rpc,checks,reask,e07,e10,e15,e19,e21,lead}`);
+`/bigtemp/vnr3ne/gc-out/hbase-final` (the development runs' outputs are deleted);
 the final snapshots `/u/vnr3ne/gc-run/hb-int-16` (319428f7d) and `hb-int-17` (e53c3c882); the final tree set
 `/bigtemp/vnr3ne/wt/hb-int-trees-6` (b5d5cc6a20, Maven repository `/bigtemp/vnr3ne/m2/hbase-int6`); the image
-`/bigtemp/vnr3ne/vm-force12`. The parked happens-before work (TODO HBase 15) is branch `hbase-e15` (7940b6d09, not merged) and
-tree branch `gc/hb-e15` (231d8c7246).
+`/bigtemp/vnr3ne/vm-force12`. The parked happens-before work (TODO HBase 15) is the tag `archive/local/hbase-e15` (7940b6d09, not merged)
+and the tree branch `gc/hb-e15` (231d8c7246).
 
-## S. Solr after the final round SGF9 (2026-10-19) -- read this first if you take over Solr
-
-The owner stopped the 2026-10-18 final round to rewrite the engine's bottlenecks (REFACTOR-PLAN workstreams A-H); the
-rewrite was merged into `system/solr` and the final round SGF9 ran the 12 study checks, each alone on lift02-10 +
-lift12-15, at world depth 0, on VM `vm-force10` and the tree set `sg3j-trees`. The owner ended it on 2026-10-19 and had
-everything gathered on `system/solr`, pushed with the fork's tree, and documented ("剩余的case我们不跑了，不要了"). Nothing
-runs on any lift. Read [START-HERE.md](START-HERE.md) first, then [TODO.md](TODO.md) "Solr: after SGF9".
-
-**`system/solr`** (GitHub `JHSUYU/GraphChecker`, pushed 2026-10-19; = `solr-int`, worktrees
-`/bigtemp/vnr3ne/wt/gc-solr`, `/bigtemp/vnr3ne/wt/gc-solr-merge`) holds, gated: the compaction of the corpus and walk
-state; the holding composer (every session's rows held until a sweep finds the old generation past 60 %, let go before
-the body is lowered); the GROW pipeline (a GROW re-run holds the fixed point until it lands: OPTIMIZATIONS 1.37
-reverted); the superstep + window walk; the parallel round and Frontier; the stream scheduler (replays spread by room,
-multi-question solvers, z3 answers reused by query text, the served planner charged its heap's footprint: 1.36
-reverted); the VM's one-channel read-out with parallel record decode and the replay's stop at its window close; the
-replay need from the 90th percentile of peaks with an out-of-heap rerun; SEED's serial speedups; gzip rows through one
-opener (old plain run dirs must be GzCopy'd); EMIT's gap ledger in Java; the nearest world for every sort; the z3 pairs
-of the decide re-asked at twice their slot after a memout while a host holds it. Its VM sources are under
-`third_party/` (image `/bigtemp/vnr3ne/vm-force10/j2sdk-image`, built from this branch; the runtime refuses an older
-image by name). Not merged: session sharding (solr-parplan, solr-shard: shelved), the generational bound D2
-(solr-explore a2bd510cb: unsound as reviewed), GROW rows carrying their shape (solr-growshape 727d48ea5: gated, its
-read-out cost unmeasured; TODO).
-
-**The tree:** the fork `https://github.com/JHSUYU/solr.git` branch `graphchecker/solr-checks` = local
-`gc/solr-zktrace2` 12d23091d1 (2026-10-16; `/u/vnr3ne/lucene-solr-8_11`, worktree set `/bigtemp/vnr3ne/wt/sg3j-trees`):
-Solr `branch_8_11` with the adapter, every case's target marker and the bug checks' workloads. No Solr source changed
-after it.
-
-**Results** (STATUS "Solr checks" has each case's row; times `analysis/solr-2026-10-14/final-stats.py SGF9`):
-
-| case | SGF9 snapshot | result | wall (s) | seeding / exploration / compose+solver |
-| --- | --- | --- | --- | --- |
-| solr-adhoc-38 | sgf9e baa62b2d6 | SAT MARKER_FLIPPED, confirmed in the VM, native 0/10 (as SGF7) | 922 | 335 / 226 / 10 (+344 CONFIRM, REPRODUCE) |
-| solr-adhoc-21 | sgf9 495d754b5 | UNSAT_CLOSED, 18 paths | 994 | 340 / 618 / 23 |
-| solr-adhoc-39 | sgf9e | UNSAT_CLOSED, 8 paths (SGF8 57: the re-runs' round never ran) | 1200 | 501 / 672 / 17 |
-| solr-adhoc-09 | sgf9c 662745589 | formula UNSAT at FIXED_POINT, 1 BLOCKING (truncated closure) | 1417 | 356 / 886 / 135 |
-| solr-adhoc-13 | sgf9b f3032afa4 | formula UNSAT at FIXED_POINT, 1 BLOCKING (truncated closure), 127 paths | 1762 | 508 / 922 / 296 |
-| solr-adhoc-19 | sgf9c | formula UNSAT at FIXED_POINT, 2 of 44 paths composed (unplaced clock cells) | 2672 | 411 / 1991 / 164 |
-| solr-adhoc-10 | sgf9c | formula UNSAT at FIXED_POINT, 1 BLOCKING (truncated closure), 370 paths | 5532 | 734 / 4430 / 277 |
-| solr-adhoc-40 | sgf9c | formula UNSAT at FIXED_POINT, 4 BLOCKING, 315 paths | 8731 | 715 / 5673 / 2209 |
-| solr-adhoc-05 | sgf9d 19fe33ff0 | MISSING: budget in DECIDE (340/340 paths composed, every z3 memout); re-decided offline with the slot fix: NO_SUPPORTED_WITNESS, 340 unsat, 22 at the path limit | 14400 | 807 / 10701 / ~2880 |
-| solr-adhoc-14, -07, -31 | not rerun (owner) | SGF8 evidence: 14 SGF8OOM, 07 1 of 309 composed (offline 309/309 UNSAT_CLOSED), 31 SGF9KILLED at round 26 | | |
-
-Against SGF7/SGF8 the rewritten engine is faster on every case it finished (21 2363 -> 994 s, 13 3076 -> 1762, 09
-6887 -> 1417, 19 6752 -> 2672 and to its fixed point instead of the budget, 10 7660 -> 5532 and to its fixed point instead
-of PLANNER_HEAP_EXCEEDED, 40 no claim -> 8731 s, 38 1222 -> 922). Fewer paths in 39 (and re-run sessions unplanned in 19,
-13, 09) came from the fixed point beside GROW re-runs, fixed after those runs.
-
-## 0. The end state: two branches (owner 2026-10-06)
-
-- **`system/hdfs`** (the locked body d6737d26b plus docs): 39 cases closed by round HL1 and its reruns -- the nine named
-  bugs other than 11741 (17897, 17899-bug1/2/3, 17967-pathA/B/C, 17960, slowdisk-zero) and 30 study checks (05 06 08 09
-  10 11 12 14 15 16 19 20 22 23 24 25 26 27 28 31 33 34 35 37 38 45 48 49 50 52). Locked: only docs land on it.
-- **`system/hdfs1`** (this branch): the other 7 cases -- 07, 11741, 21, 29, 30, 39, 40 -- and every engine change made
-  after the lock. Its STATUS carries all 46 rows, each naming the branch and run that closed it.
-- Nothing merges back into `system/hdfs` or `main` (owner: "最终就是两个分支，system/hdfs和system/hdfs1"). The next system
-  starts from `system/hdfs1`, the newer body (TODO).
-
-What `system/hdfs1` adds to the locked body, each merged with its gate (git log has the numbers):
-- **Open arms** (`hdfs-open-arms` 3bdf1ec4f): a faithful replay that never enters an open arm's occurrence refutes that
-  world (`WORLD_REFUTED`); configuration domains from the recorded comparisons; a version no activation wrote is named
-  (`UNATTRIBUTED_STORE`) and re-pairable through its own symbol. Closed 39 and 40 first.
-- **The Cone fix** (3e7becca7): a body's Cone read once and indexed by selector (11741's COMPOSE was quadratic).
-- **Wait deadline** (`hdfs-wait-deadline` 9565537f2): a timed wait that takes its WAKE slot returns no sooner than its
-  own deadline (29, 30: a DataNode skipped heartbeats and the NameNode chose the other recovery primary).
-- **Codec capture** (`hdfs-codec-capture` d502ddbc7): the IPC and DataTransfer doors walk the protobuf message they
-  carry; a field's value is exported at its builder's setter and staged by the door; the engine's plumbing is never
-  state; an arm's input shape names its deliverers as a sorted set. Reviewed: open defects 52-56.
-- **21's workaround** (`hdfs1-21-workaround` 085b9a9ed): tree `gc/hdfs-study-r7-21` and `loop-bounds-21.jsonl`.
-- **07's workaround** (`hdfs1-07-wa` 98e283425): tree `gc/hdfs-study-r8` and world depth 6 for 07 only.
-- **Open-arm keys** (`hdfs1-open-arm-keys` fd0b0cd8a): each path's open arm judged by its own flip's answers where it
-  has any, else the shared verdict; a replay that did not run its world is asked once more; a flip no variable reaches
-  is UNSAT on its path (`NOT_FLIPPABLE`) unless a HELD value or refused construct feeds it.
-- **The relay plan and solver sizing** (`hdfs1-relay-plan` ffda51bfb, what closed 07): PLAN follows a reply a client
-  relays into its next request; a read no write explains is held to its object's identity; host solvers and retried
-  solves run at the case's engine heap, at most two solves per host (STATUS open defects 61-63).
-
-## 1. The goals (verbatim) and what they mean
+## 1. The goals (verbatim)
 
 The 2026-10-04 goal (the four systems):
 
@@ -170,106 +90,59 @@ that serves throughput.
 
 ## 2. GraphChecker branches (repo `~/GraphChecker`, remote `origin` = github)
 
-The remote keeps one branch per system (2026-10-08 cut down to three by the lead; then one pushed per finished system):
-
 | remote branch | what it is |
 | --- | --- |
 | `main` (default) | the 2026-10-03 body (round V25, 14/14 on the named HDFS, Solr and ZooKeeper cases; VM `vm-model-guards2`, HDFS tree `gc/hdfs-unified-dtx`) |
-| `system/hdfs` | the locked HDFS body and its 39 cases (§0) |
-| `system/hdfs1` | the newest HDFS body and the other 7 cases (§0) |
-| `system/solr` | the Solr group (§S; pushed 2026-10-19), from `system/hdfs1`; tree: the fork `JHSUYU/solr` `graphchecker/solr-checks` |
+| `system/hdfs-liftlab` | THE HDFS branch: every HDFS case on HBase's engine with liftlab's scheduling (`results/hdfs/`); replaces `system/hdfs` (the locked body, 39 cases) and `system/hdfs1` (the other 7), which stay on the remote as history (series EX1 ran on them) |
+| `system/hdfs-buggy-detect` | `system/hdfs-liftlab` plus the old HDFS bugs put back |
+| `system/solr` | the Solr group (finished 2026-10-26), from `system/hdfs1`; tree: the fork `JHSUYU/solr` `graphchecker/solr-checks` |
+| `system/solr-buggy-detect` | `system/solr` plus the old Solr bugs put back |
 | `system/hbase` | the HBase group (§H; pushed 2026-10-22), from `system/solr`; tree: the fork `JHSUYU/hbase` `graphchecker/hbase-checks` |
+| `system/hbase-buggy-detect` | `system/hbase` plus HBASE-15039, -20642 and -28533 put back (trees `graphchecker/hbase-bug-<jira>`) |
 | `system/zookeeper` | the ZooKeeper group (pushed 2026-10-22; its own STATE §Z), from `system/hbase`; tree: the fork `JHSUYU/zookeeper` `graphchecker/zookeeper-checks` |
+| `system/zookeeper-buggy-detect` | `system/zookeeper` plus the old ZooKeeper bugs put back |
 
-Every other remote branch was deleted, bundled first: `/bigtemp/vnr3ne/handover/2026-10-08/graphchecker-remote-branches.bundle`
-(`study`, `hdfs-compose-perf-wip`, `hdfs-container-writers`; `git fetch <bundle> 'refs/remotes/origin/*:refs/remotes/bundle/*'`
-gets them back). The study's data moved to `docs/checks/` (`study.txt`, `SELECTION.md`, `new-bugs.txt`). The local
-branches still exist (`git branch`, their worktrees in `git worktree list`); those holding parked work for later:
+The CloudLab branches of 2026-10-24..28 are deleted from the remote; their heads are the tags
+`archive/system/{hdfs,hbase,zookeeper,solr}-cloudlab`. Every older remote branch was deleted, bundled first:
+`/bigtemp/vnr3ne/handover/2026-10-08/graphchecker-remote-branches.bundle` (`study`, `hdfs-compose-perf-wip`,
+`hdfs-container-writers`; `git fetch <bundle> 'refs/remotes/origin/*:refs/remotes/bundle/*'` gets them back). The
+study's data moved to `docs/checks/` (`study.txt`, `SELECTION.md`, `new-bugs.txt`). Parked local work is kept as tags
+`archive/local/<branch>` in `~/GraphChecker` (not pushed; the branches themselves were deleted on 2026-10-28):
 
-| local branch | head | state |
+| tag `archive/local/...` | head | state |
 | --- | --- | --- |
-| `hdfs1-confirm-first` | `da913cd7c` | no witness attempt starts while a confirmation is queued, running or returned; merge only if a confirmation is seen waiting > 10 min (TODO HDFS §5) |
-| `hdfs1-prefix-span`, `hdfs-rule1`, `hdfs-u18-fix` | `40127e2b5`, `7d2819214`, `8ed56ddeb` | not for merge: the merged-span prefix (superseded by TODO HDFS §3's design), rule 1 and the own-fault key (missed the throughput bar, open defect 51) |
-| `solr-bug-reindex` | `12283e3f1` | Solr #04 and Solr replay fidelity; SBR26 13/14 (solr-18413 regressed). For the Solr turn |
-| `hb-schedule` + `hb-sync` | `1fb4a475a`, `53f16e8b6` | one per-session happens-before relation; reviewed; for the ZooKeeper turn |
+| `hbase-e15` | `7940b6d09` | the client thread's happens-before through procedures (TODO HBase 15), with the tree branch `gc/hb-e15` (231d8c7246, `/u/vnr3ne/hbase`); not merged |
 | `hbase-startup` | `3afb27f13` | HBase #14; two design questions (TODO HBase) |
-| `wire-codec-p1` | `3e9cb3182` | WIRE-CODEC; superseded for HDFS by codec capture |
+| `hb-schedule`, `hb-sync` | `1fb4a475a`, `53f16e8b6` | one per-session happens-before relation; reviewed |
+| `hdfs1-prefix-span`, `hdfs-rule1`, `hdfs-u18-fix` | `40127e2b5`, `7d2819214`, `8ed56ddeb` | not for merge: the merged-span prefix (superseded by TODO HDFS §3's design), rule 1 and the own-fault key (missed the throughput bar, open defect 51) |
+| `solr-bug-reindex` | `12283e3f1` | Solr #04 and Solr replay fidelity; SBR26 13/14 (solr-18413 regressed) |
+| `solr-growshape` | `727d48ea5` | GROW rows carrying their shape (TODO "Engine items found on Solr" 3); gated, not merged |
+| `solr-explore`, `solr-parplan`, `solr-shard` | `b0e712ceb`, `3df494a3a`, `d3b663462` | the generational bound D2 (unsound as reviewed) and session sharding (shelved) |
+| `wire-codec-p1` | `3e9cb3182` | WIRE-CODEC (TODO "Cross-cutting") |
 
-Every branch merged into `system/hdfs1` (`git branch --merged system/hdfs1`) and the superseded ones (`hdfs-time-model`,
-`hdfs-clock-replay`, `hdfs-construction-only-values`, the `main-*` merge branches, ...) carry nothing still owed.
+## 3. System trees, VM images, snapshots
 
-## 3. System trees (the code under test)
-
-The HDFS trees are worktrees of `~/hadoop`; its remote `origin` is the fork `git@github.com:JHSUYU/hadoop.git`, which keeps
-four branches, one per tree a case reads (2026-10-08; `experiments/hadoop/trees.tsv`). Each case's `case.sh` names its
-tree as `$GC_TREES/<name>` (`tools/lib/gc-env.sh`: `/bigtemp/vnr3ne/wt` here); `experiments/hadoop/prepare-trees.sh` makes
-any of them anew from the fork ([../REPRODUCE.md](../REPRODUCE.md) §3):
-
-| tree (worktree) | local branch, head | remote branch | used by |
-| --- | --- | --- | --- |
-| `/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r7` | `gc/hdfs-study-r7` `bd72fcc1a13` | `graphchecker/hdfs-checks` | every HDFS case but 07, 21 and 11741 on both branches (43 cases): trunk 734dd8a67cd with the 49 study points' markers, the named cases' markers and workloads, the adapter, the IPC, SASL and DataTransfer doors, and the time family's workarounds (STATUS "Per-system surface"). Maven repo `/bigtemp/vnr3ne/m2/hdfs-study-r7` |
-| `/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r8` | `gc/hdfs-study-r8` `e3dab6266a7` | `graphchecker/hdfs-checks-adhoc07` | hdfs-adhoc-07 only (`case.sh`): r7 + QJM's reply maps in the loggers' order. Maven repo `/bigtemp/vnr3ne/m2/hdfs-study-r8` |
-| `/bigtemp/vnr3ne/wt/hadoop-hdfs-21` | `gc/hdfs-study-r7-21` `c360d869629` | `graphchecker/hdfs-checks-adhoc21` | hdfs-adhoc-21 only (`case.sh`): r7 + the DataNode handshake on its own joined thread |
-| `/bigtemp/vnr3ne/wt/hadoop-hdfs-11741-r6` | `gc/hdfs-11741-r6` `6c86fca9a2b` | `graphchecker/hdfs-11741` | hdfs-11741: trunk 734dd8a67cd with HDFS-11741's fix reverted, its own hook generation. Maven repo `/bigtemp/vnr3ne/m2/hdfs-11741-r6` |
-| `/bigtemp/vnr3ne/wt/sg3j-trees/lucene-solr-checks` (worktree of `~/lucene-solr-8_11`) | `gc/solr-zktrace2` `12d23091d1` | `graphchecker/solr-checks` on the fork `JHSUYU/solr` (pushed 2026-10-16, unchanged since) | THE Solr tree of every `system/solr` case since SGF8 (SGF8, SGF9; REPRODUCE §6 clones it); the Solr rows below are its history |
-| `/bigtemp/vnr3ne/wt/lucene-solr-storing` | `gc/solr-unified-storing` `04f8489` | none | solr-18406, solr-18413 (`main`) |
-| `/bigtemp/vnr3ne/wt/lucene-solr-checks` | `gc/solr-checks` `3bcca50` | history (the fork's `graphchecker/solr-checks` is now `gc/solr-zktrace2`, above); never an apache remote | the Solr group's one tree, every `system/solr` case: `gc/solr-bugs` `f65aaf7` (`gc/solr-unified-storing2` + the reindex marker) + the 12 study markers, the five new bug markers, the six bug workloads, the full-distributed tests' hook, the routed-alias tests' configset, the reindex latch's bound (STATUS "Per-system surface") |
-| `/bigtemp/vnr3ne/wt/lucene-solr-body` | `gc/solr-body` `7e51565080` | (part of the final `graphchecker/solr-checks`) | the Solr body's tree hooks: the HTTP send in `executeMethod`, `CausynthRandom` (node order, seeded draws), `CausynthPorts`, `CausynthBounds` (SocketProxy, SolrConfigHandler), the store READ turn's SolrZkClient read hooks; agent M's rounds |
-| `/bigtemp/vnr3ne/wt/lucene-solr-zk2`, `-zk3` | `gc/solr-zk-next` `53d81b09b1` | (part of the final tree) | Z1's hooks (`gc/solr-zk`: `decoded`, the queue-head tick, consumed items, the compared version on `stored`) + `gc/solr-body` 3bcf5616c2 |
-| `/bigtemp/vnr3ne/wt/lucene-solr-zkdoors` | `gc/solr-zk-doors` `92c234a5d1` | (part of the final tree) | `gc/solr-zk-next` + `gc/solr-body` + the ZooKeeper READ doors' hooks (`causynthReading`, `causynthReplied` with the lost reply's local unwatch); built (agent RD's runs: `GC_TREES=/bigtemp/vnr3ne/wt/zkdoors-trees`) |
-| `/bigtemp/vnr3ne/wt/pno-trees/lucene-solr-checks` | `gc/solr-zk2` `914e56311a` | (part of the final tree) | Z2's codec capture (`Utils.toJSON`/`fromJSON`) on `gc/solr-zk-next`; built |
-| `/bigtemp/vnr3ne/wt/sg2b-trees/lucene-solr-checks` | detached `88425b0` | none | the tree of rounds SG2b/SG2c and agent F2's runs |
-| `/bigtemp/vnr3ne/wt/lucene-solr-bugs` | `gc/solr-bugs` `f65aaf7` | none | `gc/solr-checks`' base; `solr-bug-reindex`'s rounds |
-| `/u/vnr3ne/hbase` | `gc/hbase-checks` `b5d5cc6a20` | `graphchecker/hbase-checks` on the fork `JHSUYU/hbase` | THE HBase tree of every `system/hbase` case (REPRODUCE §7 clones it; §H) |
-| `/u/vnr3ne/zookeeper` | `gc/zk-checks` `51b213562` | `graphchecker/zookeeper-checks` on the fork `JHSUYU/zookeeper` | the ZooKeeper tree of every `system/zookeeper` case (that branch's STATE §Z and REPRODUCE §8) |
-| `/bigtemp/vnr3ne/wt/zookeeper-unified`, `zookeeper-hb` | `gc/zk-unified` `8f18cf3a4`, `gc/zk-unified-hb` `47ddc8b36` | none (never push: apache remote) | the zk-bugs cases (`main`) |
-| `/bigtemp/vnr3ne/wt/hbase-unified` | `gc/hbase-unified` `1051825287` | none (never push: apache remote) | HBase cases; must drop `CausynthRpc.java:61-62`'s `, call.param` before any run on the new body |
-
-The fork's 16 older `gc/*` branches (the per-bug trees, `gc/hdfs-unified`, `gc/hdfs-unified-dtx`, `gc/hdfs-bugs`,
-`gc/hdfs-study-r5`/`r6`, `gc/hdfs-11741`/`-r5`) were deleted, bundled first in
-`/bigtemp/vnr3ne/handover/2026-10-08/hadoop-gc-branches.bundle`; `main`'s cases read `gc/hdfs-unified-dtx`
-(`/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx`, local). Any other Hadoop worktree under `/bigtemp/vnr3ne/wt/` is superseded.
-
-VM image `/bigtemp/vnr3ne/vm-hg5/j2sdk-image` serves both HDFS branches (sources `hdfs-vm-hg5` 742f13363, the same in
-both branches' `third_party/`; `tools/vm/build-image.sh` rebuilds it from either);
-`vm-model-guards2` serves `main`. No VM change was made since. The VM's dead natives (VM.md §8) and
-`exportLeaf`/`mintLeaf` can go in the next VM build.
-
-Snapshots in `~/gc-run/` (frozen; `tools/rounds/snapshot-gc.sh` refuses one in use): `hl1` (`system/hdfs`'s locking
-round) and `rp5` (`system/hdfs1`'s code of the EX1 series; its jar is the offline gate's baseline for this body).
-
-## 4. Rounds and evidence
-
-Outputs under `/bigtemp/vnr3ne/gc-out/<dir>/accept-<round>-<n>/` (`sweep-<round>-cases.tsv` maps n to the case).
-
-| round | body | what it closed |
+| tree | branch | used by |
 | --- | --- | --- |
-| HL1 + reruns (HL1R-19, HL1R-pathC) | `system/hdfs` d6737d26b, `hdfs-study` | the 39 cases of `system/hdfs` |
-| HF1 | `system/hdfs1` c3e10284f, `hdfs-study` | 29 30 40 (39 ran RUN_DEFECT there: CHECKING trap 18) |
-| HF2 | the same, 14400 s | 11741 PASS (CLOCK_SKEW, 5168 s) |
-| W21 | `hdfs1-21-workaround`, `hdfs-21w` | 21 (time family, residue named) |
-| CC8-07 | `hdfs1-07-wa`, `hdfs-codec-capture` | none: stopped in COMPOSE after its fixed point |
-| HF3 | `system/hdfs1` afd8db1b5, `hdfs-study`, 10800 s | none: 07 RUN_DEFECT (FIXED_POINT, z3 unsat, no BOUNDED/UNBOUND; 38 self-contradictory paths, an unstated file read, 69 unfinished obligations; STATUS 61-63) |
-| EX1 (2026-10-07) | exclusive series, one case at a time on the ten lifts, `/bigtemp/vnr3ne/gc-out/hdfs-excl`; driver `/bigtemp/vnr3ne/analysis/excl-2026-10-07/excl-driver.sh` | 07 (EX1-adhoc-07e, system/hdfs1 8c446418b: UNSAT), and every case's time breakdown and closure size (PERFORMANCE §6) |
-| OK3, OK4, OK5 | `hdfs1-open-arm-keys` fd0b0cd8a, `hdfs1-open-arm-keys` | 39 twice (UNSAT, clean), 40 (UNSAT) |
-| agents' gates | own `GC_OUT`s | OA2-OA5 (open arms), WD1-WD3 (wait deadline; WD3: 17897 PASS), CC1-CC8 (codec capture), PS1-PS2 (prefix span), P1A-P3C (time family probes) |
+| `/u/vnr3ne/hbase` (local branch `gc/hbase-checks` `b5d5cc6a20`) | `graphchecker/hbase-checks` on the fork `JHSUYU/hbase` | THE HBase tree of every `system/hbase` case (REPRODUCE §7 clones it; §H); the final tree set `/bigtemp/vnr3ne/wt/hb-int-trees-6/hbase-checks` (Maven repository `/bigtemp/vnr3ne/m2/hbase-int6`) |
+| `graphchecker/hbase-bug-{15039,20642,28533}` on the same fork | one old HBase bug put back on `graphchecker/hbase-checks` each | `system/hbase-buggy-detect`'s cases |
+| the HDFS, Solr and ZooKeeper trees | the forks' `graphchecker/*` branches (README) | their systems' branches; each branch's STATE §3 and `experiments/<sys>/trees.tsv` |
 
-Per check: [../STATUS.md](../STATUS.md) "HDFS checks" (verdict and the hand reading) and
-[../checks/README.md](../checks/README.md) (state per row). How each is checked: [CHECKING.md](CHECKING.md).
-New bugs: none. The 10 named bugs pass by mandate (11741 CLOCK_SKEW; the others MARKER_FLIPPED by an IPC door fault,
-17960 by its configuration, slowdisk-zero by STATE re-pairing).
+VM images: `/bigtemp/vnr3ne/vm-force12/j2sdk-image` (built from this branch's VM sources; HBase and `system/hdfs-liftlab`),
+`vm-force10` (`system/solr`), `vm-force13` (`system/zookeeper`), `vm-hg5` (the former HDFS bodies `system/hdfs`,
+`system/hdfs1`), `vm-model-guards2` (`main`); each with its `SOURCE.txt` and `smoke.log`. The VM's dead natives
+(VM.md §8) and `exportLeaf`/`mintLeaf` can go in the next VM build.
 
-## 5. Where the analyses and evidence live
+Snapshots in `~/gc-run/` (frozen; `tools/rounds/snapshot-gc.sh` refuses one in use): HBase's final series ran on
+`hb-int-16` (319428f7d) and `hb-int-17` (e53c3c882); `bd-hbase-1` is `system/hbase-buggy-detect`'s.
+
+## 4. Where the analyses and evidence live
 
 - `docs/checks/` (in the repo): the selection, the per-system point tables, the verified bugs.
-- `/bigtemp/vnr3ne/analysis/study-2026-10-06b/`: the 2026-10-06 session's agent briefs (`brief-*.md`), the `.smt` readings draft
-  (`status-readings.md`), `anchor-check.py` (whether each case's seed reached its declared occurrence) and notes
-  (`smt-checks.md`).
-- Agents' evidence: `/bigtemp/vnr3ne/gc-out/hdfs-open-arms/` (S), `hdfs-wait-deadline/` and `hdfs-time-r6/` (T: probes,
-  `probe-table.py`), `hdfs-codec-capture/` (C), `hdfs-rule1/` (R: key gates, probes), `hdfs-21w/` (W21),
-  `hdfs1-open-arm-keys/` (T's 39 runs).
-- `/bigtemp/vnr3ne/analysis/excl-2026-10-07/` (the EX1 driver), `cleanup-2026-10-08/` (the cleanup's briefs).
-- `/bigtemp/vnr3ne/handover/`: bundles of deleted branches (`2026-10-08/`: the remote branches of §2 and §3; older
-  dated bundles), WIP patches of stopped agents, the 10-06 scratch.
-- Older: `/bigtemp/vnr3ne/analysis/study-2026-10-04/`, `study-2026-10-05/`, `/bigtemp/vnr3ne/specs/` (proposals cited
-  by code comments), `~/bug_study/`.
+- HBase: `/bigtemp/vnr3ne/analysis/hbase-2026-10-19/` (the first session's briefs, gates and offline tools) and
+  `hbase-2026-10-20/` (the second session's and the final series', §H "Where things are"); run outputs
+  `/bigtemp/vnr3ne/gc-out/hbase-final` and `hbase-fresh` (the fresh-clone check).
+- `/bigtemp/vnr3ne/handover/`: bundles of deleted branches (`2026-10-08/`: the remote branches of §2 and the Hadoop
+  fork's older `gc/*` branches, `hadoop-gc-branches.bundle`; older dated bundles), WIP patches of stopped agents.
+- Older: `/bigtemp/vnr3ne/analysis/study-2026-10-04/`, `study-2026-10-05/`, `study-2026-10-06b/`, `excl-2026-10-07/`,
+  `cleanup-2026-10-08/`, `/bigtemp/vnr3ne/specs/` (proposals cited by code comments), `~/bug_study/`.
