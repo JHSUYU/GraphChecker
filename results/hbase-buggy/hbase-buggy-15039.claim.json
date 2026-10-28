@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "kind": "CLAIM",
+  "anchor": "auto0/client0#epoch0/region/REGION.5f745bf3-665d-3cc2-9ebd-a839446f5935/ctx:Root:CLIENT/test#1/idx:\u003corg.apache.hadoop.hbase.security.token.AuthenticationTokenSecretManager: byte[] retrievePassword(org.apache.hadoop.hbase.security.token.AuthenticationTokenIdentifier)\u003e@0",
+  "claim": {
+    "kind": "STATE_PAIRING_FLIPPED",
+    "valuationOrdinal": 0,
+    "movedRoots": {},
+    "polarityDecides": true,
+    "gaps": []
+  },
+  "solverRuns": 9,
+  "seedSessionId": "seed-result-2dc40648",
+  "valuations": [
+    {
+      "ordinal": 0,
+      "status": "sat",
+      "assignment": {},
+      "moved": {},
+      "selectedPathId": "8346ff6b4878f452",
+      "selectedSessionId": "b5344ff0f98abc72-1b0a0cd5",
+      "fatalObserved": false,
+      "selectedArms": [
+        {
+          "selector": "writer_arm__0__98d0604888d2",
+          "family": "writer_family__0__98d0604888d2",
+          "groupId": "INITIAL|MAP/11#-3",
+          "attachEndpointIds": [],
+          "sessionId": "b5344ff0f98abc72-1b0a0cd5",
+          "sessionIds": [
+            "b5344ff0f98abc72-1b0a0cd5"
+          ],
+          "producerPathId": "",
+          "interactionIds": [
+            "566c7bdf7b6d9b72"
+          ],
+          "expressionRefs": [
+            "EXPR.ab96e03923975fba"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "writer_arm__0__98d0604888d2"
+      ],
+      "unsatCore": []
+    }
+  ],
+  "gaps": []
+}

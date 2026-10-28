@@ -1,0 +1,3 @@
+case	run	claim	smt	claim_json
+hbase-buggy-20642	buggy-detect/accept-B1-hbase-buggy-20642	SAT_CANDIDATE	hbase-buggy-20642.smt2.gz	hbase-buggy-20642.claim.json
+hbase-buggy-15039	buggy-detect/accept-B1-hbase-buggy-15039	SAT_CANDIDATE	hbase-buggy-15039.smt2.gz	hbase-buggy-15039.claim.json
