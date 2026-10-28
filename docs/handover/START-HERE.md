@@ -3,12 +3,12 @@
 You are the next lead (a coding agent that may run up to 5 coding agents). This file is self-contained: where HBase
 stands, what to read, what is left, how to run a case, and where everything is. Repo: `/u/vnr3ne/GraphChecker`, GitHub
 `git@github.com:JHSUYU/GraphChecker.git`. HBase's code is the branch `system/hbase`
-(pushed 2026-10-22). Its integration worktree is `/bigtemp/vnr3ne/wt/gc-hbase-merge`, on `hbase-int`
-(= `system/hbase`); the plain worktree is `/bigtemp/vnr3ne/wt/gc-hbase`. The HBase tree is the fork's
+(pushed 2026-10-22; worktree `/bigtemp/vnr3ne/wt/gc-hbase`). The HBase tree is the fork's
 `graphchecker/hbase-checks` (`https://github.com/JHSUYU/hbase.git`, pushed; local `/u/vnr3ne/hbase` branch
 `gc/hbase-checks`): the adapter. **From GitHub:** clone the two and check out those branches;
-[../REPRODUCE.md](../REPRODUCE.md) §7 builds the VM image and the tree and runs every case. Solr and HDFS are
-finished: STATE §S and §0, on their own branches.
+[../REPRODUCE.md](../REPRODUCE.md) §7 builds the VM image and the tree and runs every case. The old HBase bugs put back
+on today's tree are `system/hbase-buggy-detect` (its START-HERE). HDFS, ZooKeeper and Solr are finished on their own
+branches (README "Branches").
 
 ## 1. Where HBase stands (final series, 2026-10-20/21)
 
@@ -44,21 +44,19 @@ fork's `graphchecker/hbase-checks` (`GC_TREES=<dir> HBASE_MAVEN_REPO=<repo> expe
 pass the variables inside the command when you use `tools/onlift.sh`, which forwards no environment), then
 `CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force12/j2sdk-image GC_TREES=<tree set> tools/rounds/launch-run.sh <snapshot> <case> <tag>`
 on a head that reaches every worker (never lift02/03, which cannot reach lift15), or every case with
-`tools/rounds/run-series.sh`. OPERATIONS.md §10 has the details.
+`tools/rounds/run-series.sh`; the workers are lift02-15 but lift07 (unreachable since 2026-10-23) and lift11 (the control
+host): give `LIFTS` the other twelve. OPERATIONS.md §10 has the details.
 
 ## 2. Read, in this order
 
 1. This file.
 2. [STATE.md](STATE.md) §H: what is on `system/hbase` and the tree, the results table, and where everything is.
-3. [TODO.md](TODO.md) "HBase": item 1, the owner's final series, is done; the other items are the open engine problems,
-   each with its evidence, parked.
+3. [TODO.md](TODO.md) "HBase": the open engine problems, each with its evidence, parked.
 4. [LESSONS.md](LESSONS.md), all of it, especially §9 HBase.
 5. `docs/checks/HBASE.md` §E: every case's target, workload, selector, scope, runs and state.
 6. [RULES.md](RULES.md) (the owner's rulings, including the HBase ones), [CHECKING.md](CHECKING.md) (trap 24: vacuous UNSAT),
    [OPERATIONS.md](OPERATIONS.md) §10 (HBase runs), [AGENTS.md](AGENTS.md), [PARALLEL.md](PARALLEL.md).
-7. The agents' handover notes in [hbase-agents/](hbase-agents/): `H1-H5.md` (first session) and `second-session-H*.md`
-   (exact run dirs, snapshots, tree sets, commits, traps and leftovers).
-8. `docs/design/PIPELINE.md` for the stage you touch; `docs/REPRODUCE.md` §7 to run HBase from a fresh clone.
+7. `docs/design/PIPELINE.md` for the stage you touch; `docs/REPRODUCE.md` §7 to run HBase from a fresh clone.
 
 ## 3. Running a case
 
@@ -66,7 +64,7 @@ on a head that reaches every worker (never lift02/03, which cannot reach lift15)
 repository; launch detached with the head on its own host, image `vm-force12`, every host a worker; watch; afterwards
 `tools/analysis/vacuity.py` on every UNSAT, the reading, HBASE.md §E and the STATUS row). The second session's helpers:
 `/bigtemp/vnr3ne/analysis/hbase-2026-10-20/launch.sh <topic> <snapshot> <case> <TAG> [budget]`, `wait-run.sh`, `watchdog.sh`.
-Shared builds at the handover: see STATE §H ("Where things are").
+The final series' snapshots, tree set and image: STATE §H ("Where things are").
 
 A case is done as follows:
 - **Bug check:** SAT, CONFIRMED in the VM, REPRODUCED natively, with the bug's causal chain.
@@ -95,10 +93,9 @@ A case is done as follows:
 
 ## 5. What is left
 
-1. **The owner's exclusive series** (TODO HBase 1): every case once alone on all 14 hosts, for its final verdict and its time
-   breakdown, as HDFS's EX1. 07 needs about 5-10 h alone (heavy replays plus a serial claim loop): give it a 12 h budget.
-2. **07**: no verdict yet; its HBASE.md §E row says what NP20-07 reached; the exclusive run decides it.
-3. **Engine items with the most return** (TODO HBase): 15 (the client thread's happens-before as JOIN rows, 2-3 days: it would
-   close 08, 12, 14, 15 and shorten 07's and nsrg's claim loops), 10 (what remains of a znode's absence as state: 37's failover workload, INITIAL absence, expiries), 19 (what keeps 13 vacuous:
-   its second merge's `hasMergeRegions` read states no version), 9 (data through a region's store).
-4. **Push `system/hbase`** to GitHub once the owner agrees.
+Nothing is owed for HBase: every case has its final verdict (`results/hbase/`), `system/hbase` and the fork's
+`graphchecker/hbase-checks` are on GitHub, and REPRODUCE §7's fresh-clone check passed (2026-10-22). Optional engine work,
+most return first (TODO "HBase"): 15 (the client thread's happens-before as JOIN rows, 2-3 days: it would close 08, 12,
+14, 15 and shorten 07's and nsrg's claim loops; parked as `archive/local/hbase-e15`), 10 (what remains of a znode's
+absence as state: 37's failover workload, INITIAL absence, expiries), 19 (what keeps 13 vacuous: its second merge's
+`hasMergeRegions` read states no version), 9 (data through a region's store).

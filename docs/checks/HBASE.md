@@ -244,12 +244,12 @@ reads and whose code writes what it reads (owner 2026-10-19: "范围弄小点").
     AbstractStateMachineNamespaceProcedure, CreateTableProcedure, MasterProcedureUtil, TableNamespaceManager,
     ClusterSchemaServiceImpl. Fit B: the risk is re-pairing a container iteration (`cache.values().stream()`).
 
-## E. State per check (2026-10-19, at the owner's stop 23:10)
+## E. State per check (every run up to the final series; each final verdict: `results/hbase/`)
 
 Tree: the fork's `graphchecker/hbase-checks` = local `gc/hbase-checks` `985a0dfe91` (sites first re-located on
 `c72b1d7e80`; every site of §D was re-located there: none moved). Engine: `system/hbase` (STATE §H). Summary at the
 stop: 1 PASS (backup-lock-reply-lost), 1 SAT confirmed in the VM awaiting REPRODUCE (04 = HBASE-30484, PASS since 2026-10-20: NR3-04), 5 UNSAT all
-vacuous (08, 13, 31-old, 34, 37), the rest stopped mid-run or not run; the next runs are TODO HBase 1. Each target is marked `throw new @CausynthExceptionTarget("<case>") E(..)`. Native: each workload alone,
+vacuous (08, 13, 31-old, 34, 37), the rest stopped mid-run or not run. Every case then ran once more in the owner's final series (2026-10-20/21, `results/hbase/README.md`: the five bugs PASS; 34 and 24 SAT confirmed; 21 UNSAT; 19 20 28 35 37 31 UNSAT vacuous; 07 08 10 11 12 14 15 named bounds; 13 RUN_DEFECT, vacuous). Each target is marked `throw new @CausynthExceptionTarget("<case>") E(..)`. Native: each workload alone,
 JDK 8, the automatic cluster on the local filesystem (no DataNode or NameNode), the test's own time from its surefire
 report (`/bigtemp/vnr3ne/analysis/hbase-2026-10-19/checks/native.tsv`). The row's scope is the case's classes
 (`root=:class`, the class and its nested classes): the target's class, the class whose field its guard reads, and

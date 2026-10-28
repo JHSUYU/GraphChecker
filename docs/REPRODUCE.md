@@ -1,145 +1,101 @@
-# Reproducing the checks from GitHub: the 46 HDFS cases (§0-§5), Solr (§6), HBase (§7)
+# Reproducing the checks from GitHub: HBase (§7) and Solr (§6); HDFS and ZooKeeper on their own branches
 
 Everything a run needs is on GitHub: GraphChecker's branch of the system (the engine, the case settings, the VM
 sources) and the system's fork, whose `graphchecker/*` branch is the tree under test (the adapter, the target markers,
-the workloads). Clone the two, check out those branches, and the section of the system runs its cases (ZooKeeper's,
-§8, is on its own branch `system/zookeeper`). Nothing on the cluster's disks is assumed besides the operating system
-packages below (§0).
+the workloads). Clone the two, check out those branches, and the section of the system runs its cases. Nothing on the
+cluster's disks is assumed besides the operating system packages below (§0).
 
 | repository | branch | what it holds |
 | --- | --- | --- |
-| `git@github.com:JHSUYU/GraphChecker.git` (private) | `system/hdfs` | the locked body: the engine that closed 39 cases (the named bugs but 11741, and 30 study checks) |
-| | `system/hdfs1` | the newest body: the other 7 cases (07 11741 21 29 30 39 40), these tools, the VM sources |
-| | `system/solr` | the 20 Solr cases (§6) |
-| | `system/hbase` | the 22 HBase cases (§7), `results/hbase/` |
+| `git@github.com:JHSUYU/GraphChecker.git` (private) | `system/hbase` | the 22 HBase cases (§7), `results/hbase/` |
+| | `system/solr` | the 20 Solr cases (§6), `results/solr/` |
+| | `system/hdfs-liftlab` | the HDFS cases (its own REPRODUCE §0-§5), `results/hdfs/` |
 | | `system/zookeeper` | the 16 ZooKeeper cases (its own REPRODUCE §8), `results/zookeeper/` |
-| `https://github.com/JHSUYU/hadoop.git` (public fork) | `graphchecker/hdfs-checks` | the HDFS tree of 43 cases (tree `hadoop-hdfs-study-r7`) |
-| | `graphchecker/hdfs-checks-adhoc07` | hdfs-adhoc-07's tree (`hadoop-hdfs-study-r8`) |
-| | `graphchecker/hdfs-checks-adhoc21` | hdfs-adhoc-21's tree (`hadoop-hdfs-21`) |
-| | `graphchecker/hdfs-11741` | hdfs-11741's tree (`hadoop-hdfs-11741-r6`): trunk with HDFS-11741's fix reverted |
-| `https://github.com/JHSUYU/solr.git` (public fork) | `graphchecker/solr-checks` | the Solr tree (`lucene-solr-checks`) |
+| | `system/<x>-buggy-detect` (x = hdfs, hbase, zookeeper, solr) | `system/<x>` (HDFS: `system/hdfs-liftlab`) plus the old bugs put back on today's tree, each a case `experiments/<sys>/<sys>-buggy-<jira>/` (that branch's REPRODUCE) |
 | `https://github.com/JHSUYU/hbase.git` (public fork) | `graphchecker/hbase-checks` | the HBase tree (`hbase-checks`) |
-| `https://github.com/JHSUYU/zookeeper.git` (public fork) | `graphchecker/zookeeper-checks` | the ZooKeeper tree (`zookeeper-checks`) |
+| | `graphchecker/hbase-bug-<jira>` | `graphchecker/hbase-checks` with one old bug put back (`system/hbase-buggy-detect`) |
+| `https://github.com/JHSUYU/solr.git` (public fork) | `graphchecker/solr-checks` | the Solr tree (`lucene-solr-checks`) |
+| `https://github.com/JHSUYU/hadoop.git`, `zookeeper.git` (public forks) | `graphchecker/*` | the HDFS and ZooKeeper trees (their branches' REPRODUCE) |
 
-Which branch runs which case, with the case's budget and what series EX1 ended with, is
-[`experiments/hadoop/hdfs-cases.tsv`](../experiments/hadoop/hdfs-cases.tsv); which fork branch each tree is,
-[`experiments/hadoop/trees.tsv`](../experiments/hadoop/trees.tsv). The VM sources
-(`third_party/OpenJDK-Concolic-Execution-Engine`) are the same on both GraphChecker branches, so one image serves both.
+`system/hdfs` and `system/hdfs1`, the former HDFS bodies on which series EX1 ran the 46 cases, stay on the remote as
+history; `system/hdfs-liftlab` replaces them. The CloudLab runs of 2026-10-24..28 are kept only as the tags
+`archive/system/<x>-cloudlab`.
 
 ## 0. The machines
 
-- Linux x86_64 hosts (Ubuntu 22.04 here: ten hosts `lift06`-`lift15`, 48 cores and 30 GB each). One host works; a case
-  then takes several times longer (PERFORMANCE §6 was measured on ten).
+- Linux x86_64 hosts (Ubuntu 22.04 here: liftlab, `lift02`-`lift15`, 48 cores and 30 GB each; `lift11` is the control
+  host where the sessions run, out of the workers; `lift07` does not answer since 2026-10-23, so a run's workers are the
+  other twelve: `LIFTS="lift02 lift03 lift04 lift05 lift06 lift08 lift09 lift10 lift12 lift13 lift14 lift15"`; lift02
+  and lift03 cannot reach lift15 over ssh, so a run they head with lift15 among its workers is refused in PREFLIGHT:
+  `launch-round.sh` heads cases on any host of `LIFTS` but lift11, so give it `LIFTS` without lift15, or without lift02
+  and lift03). One host works; a case then takes several times longer.
 - One filesystem mounted at the same path on every host (`GC_BULK`, here `/bigtemp/vnr3ne`), the home directory shared
   too, passwordless `ssh -o BatchMode=yes` between the hosts, and a local scratch directory `/localtmp/$USER` on each.
 - Packages: `openjdk-8-jdk` (at `/usr/lib/jvm/java-8-openjdk-amd64`), `maven` (`/usr/lib/maven/bin`), `git`,
-  `python3`, `rsync`. For the VM build, on one host: `gcc-6`/`g++-6` and `libffi-dev libfreetype6-dev libcups2-dev
-  libasound2-dev libx11-dev libxext-dev libxt-dev libxrender-dev libxtst-dev zip unzip` (or Docker: step 2).
+  `python3`, `rsync`; Apache Ant for the Solr tree (§6). For the VM build, on one host: `gcc-6`/`g++-6` and
+  `libffi-dev libfreetype6-dev libcups2-dev libasound2-dev libx11-dev libxext-dev libxt-dev libxrender-dev libxtst-dev
+  zip unzip` (or Docker: §2).
 - z3 4.14.1: unpack `https://github.com/Z3Prover/z3/releases/download/z3-4.14.1/z3-4.14.1-x64-glibc-2.35.zip` and put
   `bin/z3` at `~/.local/bin/z3` (or name it as `Z3_BIN`).
 
 Where things go is stated once, in [`tools/lib/gc-env.sh`](../tools/lib/gc-env.sh): `GC_BULK` (the shared storage),
 `GC_OUT` (run outputs), `GC_TREES` (the system trees), `GC_M2` (their Maven repositories), `Z3_BIN`, `LIFTS` (the
-hosts) and `CAUSYNTH_HOST_MAX_USED_PCT` (70: no start may leave a host fuller). On another cluster, edit those
-defaults in that file on both checkouts. A value exported in the shell that starts a run also works: every hop of the
-run passes them on (`gc_env_words`); `tools/onlift.sh` does not, so give it `env NAME=value` in its command. The
-commands from step 2 on use these variables: `source ~/GraphChecker-hdfs1/tools/lib/gc-env.sh` in the shell first.
+hosts; its default lists all of lift02-15, so export the workers) and `CAUSYNTH_HOST_MAX_USED_PCT` (70: no start may
+leave a host fuller). On another cluster, edit those defaults in that file on the checkout. A value exported in the
+shell that starts a run also works: every hop of the run passes them on (`gc_env_words`); `tools/onlift.sh` does not,
+so give it `env NAME=value` in its command. The commands from §2 on use these variables: `source
+<checkout>/tools/lib/gc-env.sh` in the shell first.
 
-## 1. GraphChecker, both branches
+## 1. GraphChecker
 
-```bash
-for b in hdfs1 hdfs; do
-  git clone -q --no-checkout -b system/$b git@github.com:JHSUYU/GraphChecker.git ~/GraphChecker-$b
-  git -C ~/GraphChecker-$b sparse-checkout set --no-cone '/*' '!/third_party/'
-  git -C ~/GraphChecker-$b checkout -q system/$b
-  (cd ~/GraphChecker-$b && ~/GraphChecker-hdfs1/tools/onlift.sh -g 6 mvn -q package -DskipTests)
-done
-```
-
-The checkouts leave out `third_party/` (the VM's 47,000 source files, which no build or run reads; step 2 clones them
-apart). `tools/onlift.sh` runs a command in the current directory on the host of `LIFTS` with the most room, with
-Java 8 and Maven on its path; use it for every build. The first build downloads the dependencies into `~/.m2`. The jars
-(`target/GraphChecker-1.0-SNAPSHOT{,-jar-with-dependencies}.jar`; on `system/hdfs` also `-hadoop-shim`) are what a run reads; leave a checkout
-alone while a run uses it.
+A sparse clone of the system's branch (§6.1, §7.1 give the commands): the checkout leaves out `third_party/` (the VM's
+47,000 source files, which no build or run reads; §2 clones them apart). `tools/onlift.sh` runs a command in the
+current directory on the host of `LIFTS` with the most room, with Java 8 and Maven on its path; use it for every build.
+The first build downloads the dependencies into `~/.m2`. The jars (`target/GraphChecker-1.0-SNAPSHOT{,-jar-with-dependencies}.jar`)
+are what a run reads; leave a checkout alone while a run uses it.
 
 ## 2. The concolic VM image
 
-On a host with gcc-6, a full clone on its local disk:
-
-```bash
-ssh <host> 'git clone -q -b system/hdfs1 git@github.com:JHSUYU/GraphChecker.git /localtmp/$USER/gc-vm &&
-  /localtmp/$USER/gc-vm/tools/vm/build-image.sh <GC_BULK>/vm/hdfs'
-```
-
-A full OpenJDK 8 (Zero, release, `-DENABLE_CONCOLIC`) built on the host's local disk, then the causynth smoke suite
-on it: `$GC_BULK/vm/hdfs/j2sdk-image` is the image (`CAUSYNTH_CUSTOM_JDK_HOME`), `SOURCE.txt` the commit it was built
-from, `smoke.log` the suite (`SMOKE_EXIT=0`, 24 `OK` lines). About 3 minutes at `JOBS=40` (lift15, 2026-10-08). A
-host without gcc-6:
+On a host with gcc-6, a full clone of the branch on its local disk (§6.2, §7.2 give the commands):
+`tools/vm/build-image.sh <GC_BULK>/vm/<system>` builds a full OpenJDK 8 (Zero, release, `-DENABLE_CONCOLIC`) on the
+host's local disk, then the causynth smoke suite on it: `$GC_BULK/vm/<system>/j2sdk-image` is the image
+(`CAUSYNTH_CUSTOM_JDK_HOME`), `SOURCE.txt` the commit it was built from, `smoke.log` the suite (`SMOKE_EXIT=0`, 24 `OK`
+lines). About 3 minutes at `JOBS=40`. A host without gcc-6:
 `FULL_JDK=true third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_build_in_docker.sh` (Ubuntu 18.04
 container), then copy its `build/linux-x86_64-normal-zero-release/images/j2sdk-image`.
 
-## 3. The four HDFS trees
+## 3. The HDFS cases
 
-```bash
-cd ~/GraphChecker-hdfs1
-for t in hadoop-hdfs-study-r7 hadoop-hdfs-study-r8 hadoop-hdfs-21 hadoop-hdfs-11741-r6; do
-  tools/onlift.sh -g 8 experiments/hadoop/prepare-trees.sh $t > $GC_BULK/prepare-$t.log 2>&1 &
-done; wait
-```
-
-Each tree is cloned from the fork at `$GC_TREES/<name>` on its branch, built against `system/hdfs1`'s jar with a
-Maven repository of its own (`$GC_M2/<name>`; hadoop-hdfs and every module it needs, Java 8), and then runs the
-workload of every case that names it once natively: a case's classpath is read off its workload's surefire report, so
-a case whose workload never ran in its tree fails validate ("missing test report"). The log ends with one line per
-workload, `PASSED` or `FAILED` (a native failure still leaves the report the case needs) or `MISSING` (the script
-fails). A native `FAILED` seen once: `TestDFSStartupVersions#testVersions` in the long combined run (a DataNode's
-storage lock still held by the previous one in the same JVM); it passed when run again alone. Both GraphChecker
-branches read these trees: a run puts its own jar ahead of the tree's classpath. 10-25 minutes a tree (clone over
-NFS, build, workloads; r7 with its 43 workloads the longest; 2026-10-08), the four in parallel.
+On `system/hdfs-liftlab` with the Hadoop fork's `graphchecker/hdfs-checks` (and `-adhoc21`, `hdfs-11741`): that branch's
+REPRODUCE §0-§5 builds its trees and runs them (`experiments/hadoop/hdfs-cases.tsv` there).
 
 ## 4. Running the cases
 
-One case, from the checkout of its branch (the table's `branch` and `budget_s` columns):
+One case, from a checkout of its branch: `tools/rounds/launch-run.sh <checkout> <case> <tag>` with `GC_OUT` and
+`CAUSYNTH_CUSTOM_JDK_HOME` exported and `CASE_TIMEOUT_SECONDS` the case's budget (its system's `*-cases.tsv`). The run
+is a session of its own (`setsid`) and holds the shell until the case ends (start it as `(setsid nohup ... > <log> 2>&1
+< /dev/null &)` to leave it running); it writes `$GC_OUT/accept-<tag>/` and ends with the second line of its
+`summary.tsv`. Its obligations go to every host of `LIFTS`. `tools/rounds/stop-run.sh <tag>` (with the same `GC_OUT`)
+stops it.
 
-```bash
-cd ~/GraphChecker-hdfs1
-export GC_OUT=$GC_BULK/gc-out/repro CAUSYNTH_CUSTOM_JDK_HOME=$GC_BULK/vm/hdfs/j2sdk-image
-CASE_TIMEOUT_SECONDS=21600 tools/rounds/launch-run.sh ~/GraphChecker-hdfs1 hdfs-adhoc-29 R1-adhoc-29
-```
-
-The run is a session of its own (`setsid`) and holds the shell until the case ends (start it as `(setsid nohup ... >
-<log> 2>&1 < /dev/null &)` to leave it running); it writes `$GC_OUT/accept-R1-adhoc-29/` and ends with the second
-line of its `summary.tsv`. Its
-obligations go to every host of `LIFTS`. `tools/rounds/stop-run.sh R1-adhoc-29` (with the same `GC_OUT`) stops it.
-
-All 46, each alone on the cluster, as series EX1 ran them:
-
-```bash
-cd ~/GraphChecker-hdfs1
-(setsid nohup tools/rounds/run-series.sh R1 experiments/hadoop/hdfs-cases.tsv system/hdfs=$HOME/GraphChecker-hdfs \
-  system/hdfs1=$HOME/GraphChecker-hdfs1 > $GC_OUT/series-R1.out 2>&1 < /dev/null &)
-```
-
-Each case runs from the checkout of its branch with its budget; naming case ids after the checkouts runs only
-those. The series took 15.2 h on the ten hosts (most cases 10-40 min, 11741 ~45 min, 07 ~3 h); a stopped series
-resumes by the same command (finished cases are skipped); `touch $GC_OUT/series-R1.STOP` ends it before its next
-case. Many cases at once instead: `tools/adhoc/sweep.sh` ([handover/OPERATIONS.md](handover/OPERATIONS.md) §4).
+Every case of a system, each alone on the cluster: `tools/rounds/run-series.sh <ROUND> <cases.tsv> <branch>=<checkout>`
+runs each case from the checkout of its branch with its budget; naming case ids after the checkouts runs only those. A
+stopped series resumes by the same command (finished cases are skipped); `touch $GC_OUT/series-<ROUND>.STOP` ends it
+before its next case. Many cases at once instead: `tools/adhoc/sweep.sh` or `tools/rounds/launch-round.sh`
+([handover/OPERATIONS.md](handover/OPERATIONS.md) §4).
 
 ## 5. Reading the results
 
 ```bash
-tools/rounds/round-verify.sh R1      # how each EXPLORE ended, z3 on the file, gaps, roots
-tools/rounds/series-stats.py R1      # claim, time breakdown, closure regions per case
+tools/rounds/round-verify.sh <ROUND>      # how each EXPLORE ended, z3 on the file, gaps, roots
+tools/rounds/series-stats.py <ROUND>      # claim, time breakdown, closure regions per case
 ```
 
-A case reproduces when its claim is the table's `ex1_claim`: SAT (`SAT_CANDIDATE`: confirmed by a replay, reproduced
-natively) for the ten named bugs and hdfs-adhoc-10 and -12; UNSAT (`UNSAT_CLOSED`: z3 on the exported
-`final/candidate.smt2` says unsat, EXPLORE at its fixed point) for the rest; hdfs-adhoc-21 `RUN_DEFECT` (its accepted
-residue). The report's `PASS` also checks a named bug's declared mechanism; a study check declares none, so its report
-says `FAIL` whatever its claim: the claim and round-verify decide, as [handover/CHECKING.md](handover/CHECKING.md) §1
-says. What each `.smt` must contain (its causal chain, symbols and propagation, read by hand against the HDFS code)
-is each case's row in [STATUS.md](STATUS.md) "HDFS checks"; `tools/analysis/smt-legend.py <run>/out/<case>` names every symbol of a formula.
-Wall times vary run to run (replays race); the EX1 rows are in [design/PERFORMANCE.md](design/PERFORMANCE.md) §6.
+The report's `PASS` checks a named bug's declared mechanism (`experiments/accept/report.py` `EXPECTED_MECHANISM`); a
+study check declares none, so its report says `FAIL` whatever its claim: the claim and round-verify decide, as
+[handover/CHECKING.md](handover/CHECKING.md) §1 says. `tools/analysis/smt-legend.py <run>/out/<case>` names every symbol
+of a formula; `tools/analysis/vacuity.py --latest --detail <run>` says whether an UNSAT is vacuous. Wall times vary run
+to run (replays race), and a native reproduction is a count.
 
 ## 6. The Solr cases
 
@@ -149,7 +105,7 @@ on GraphChecker's `system/solr` and one Solr 8.11 tree, the branch `graphchecker
 [`experiments/solr/trees.tsv`](../experiments/solr/trees.tsv)): Apache Lucene/Solr `branch_8_11` (8.11.4, `faca81b`)
 with the adapter, every case's target marker and the bug checks' workloads.
 
-1. **GraphChecker.** As §1, on the branch `system/solr`:
+1. **GraphChecker.** On the branch `system/solr` (§1):
 
    ```bash
    git clone -q --no-checkout -b system/solr git@github.com:JHSUYU/GraphChecker.git ~/GraphChecker-solr
@@ -172,7 +128,7 @@ with the adapter, every case's target marker and the bug checks' workloads.
 
    `$GC_BULK/vm/solr/j2sdk-image` is `CAUSYNTH_CUSTOM_JDK_HOME` for every Solr run.
 
-3. **The tree.** Besides §0's packages it needs Apache Ant with Ivy (`ant ivy-bootstrap` once per host; Ant resolves
+3. **The tree.** Besides Maven it needs Apache Ant with Ivy (`ant ivy-bootstrap` once per host; Ant resolves
    the tree's libraries into `~/.ivy2`, the first build downloads them):
 
    ```bash
@@ -229,7 +185,7 @@ and one HBase tree, the branch `graphchecker/hbase-checks` of the public fork `h
 `1790942bb2` backported to Java 8, with the adapter, every case's target marker and the workloads of the tree's own.
 Every HBase case explores at world depth 0 (`CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0` in both `case.sh` files), as Solr's
 final round did: a flip is asked from the recording's paths only (the engine's default, 3, re-asks the same arms in
-every world: STATE §S of the Solr round, TODO "Solr: after SGF9" item 5). A case that needs k counterfactuals gets
+every world: Solr's final round SGF9 measured it). A case that needs k counterfactuals gets
 depth k on its own `case.sh` line (RULES: several counterfactuals are fine): hbase-adhoc-34 runs at depth 1.
 No HDFS: every workload's mini cluster runs on the local filesystem (STATUS "Per-system surface", HBase, "tree:
 cluster and bounds").

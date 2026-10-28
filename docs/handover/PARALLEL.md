@@ -1,9 +1,10 @@
-# Parallel development: keep ten lifts full (long-term)
+# Parallel development: keep every lift full (long-term)
 
 Part of every agent's long-term memory ([RULES.md](RULES.md)). The owner, 2026-10-05: "一定要最大化利用10个server。这10个
 server配有nfs,你只要做好代码隔离等。可以大大加速的。这是你的长期记忆", "我们一个case内oblication当然可以分配到多机。你也可以合理
 利用nfs文件，只是做好隔离和共享", "我们不必强行要求独占", "我们的开发速度我觉得可以*10". The goal is the checks' right `.smt`;
-the way there is that no work waits in series for anything but a real dependency.
+the way there is that no work waits in series for anything but a real dependency. Today the workers are `lift02`-`lift15`
+but `lift11` (the control host) and `lift07` (unreachable since 2026-10-23): twelve (OPERATIONS §1).
 
 ## 1. Three levels of parallelism
 
@@ -121,7 +122,7 @@ jam (fixed) and budget cuts (rerun at 3 h).
 ## 6. The recipe as run on 2026-10-12 (Solr): copy it
 
 What one lead and four coding agents did to keep ten lifts busy without NFS or the control host becoming the
-bottleneck. Every command here is current; the numbers are measured.
+bottleneck. The commands are current with today's workers (OPERATIONS §1); the numbers are measured.
 
 **1. The control host (lift11) stays light.** Claude Code sessions -- the lead and every agent -- run on lift11, and
 every tool call starts a shell there.
@@ -149,13 +150,14 @@ every tool call starts a shell there.
 verdict; OPTIMIZATIONS 1.32):
 ```bash
 cd ~/gc-run/<snap> && env -u BASH_ENV \
-  LIFTS="lift06 lift07 lift08 lift09 lift10 lift12 lift13 lift14 lift15" \
-  CASES="solr-18406 solr-18413" CASE_TIMEOUT_SECONDS=10800 PRUNE=0 GC_OUT=/bigtemp/vnr3ne/gc-out/<agent or round> \
-  CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force8/j2sdk-image tools/rounds/launch-round.sh ~/gc-run/<snap> <ROUND>
+  LIFTS="lift04 lift05 lift06 lift08 lift09 lift10 lift12 lift13 lift14 lift15" \
+  CASES="hbase-adhoc-04 hbase-adhoc-22" CASE_TIMEOUT_SECONDS=10800 PRUNE=0 GC_OUT=/bigtemp/vnr3ne/gc-out/<agent or round> \
+  CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force12/j2sdk-image tools/rounds/launch-round.sh ~/gc-run/<snap> <ROUND>
 ```
 `CASE_TIMEOUT_SECONDS`, `PRUNE` and `CAUSYNTH_CAMPAIGN_STOP_AFTER` reach the heads on the command line (ssh carries no
-environment). A case that needs another Solr tree: its `case.sh` `repo=` lines edited in the snapshot only, or a
-`GC_TREES` directory whose `lucene-solr-checks` links to the tree (`sg3-trees`, `ib-trees`).
+environment). `LIFTS` here leaves out lift02 and lift03, which cannot reach lift15 and so cannot head a run that
+names it (OPERATIONS §1); add them back as workers by dropping lift15 instead. A case that needs another tree: a
+`GC_TREES` directory whose tree directory (`hbase-checks`, `lucene-solr-checks`) is that tree (OPERATIONS §5).
 
 The head's own chain is short (OPTIMIZATIONS 1.33): an answer lands as it is collected, a session is gated where its
 worker staged it before it lands and the gate reads only the sessions it gates (the ones before by their records), and
@@ -214,7 +216,7 @@ may be idle).
 
 - The head's memory is no longer the limit: compaction (OPTIMIZATIONS 1.26, 1.28-1.30) and the holding composer (1.27)
   keep the planner at ~3.5 GB and the composer at ~1.9 GB on 05 r5 / 07, so session sharding of the planner is shelved
-  (branches solr-parplan 3df494a3a, solr-shard d3b663462 kept, not merged).
+  (tags `archive/local/solr-parplan` 3df494a3a, `solr-shard` d3b663462, not merged).
 - Measured on 07 (idle-pool/): the pool idles because of the head's serial chain (landing, the import gate, GROW in
   the head's hands, one solver at a time) and a dispatch cursor that piles replays on one host -- not capacity; the
   scheduler rewrite (branch solr-stream2) addresses each. During a final round, agents keep off the pool.
