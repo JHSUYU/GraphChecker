@@ -17,18 +17,22 @@ A SAT comes with a claim naming the roots that moved (`claim.json`) and one repl
 the program agrees (`confirm.json`). What the rows do not state is named, never silently
 defaulted.
 
-## This branch: the 46 HDFS cases on HBase's engine, on CloudLab
+## This branch: THE HDFS branch, on liftlab (`system/hdfs-liftlab`, 2026-10-27)
 
-`system/hdfs-cloudlab` (2026-10-24) runs every HDFS case of `system/hdfs` and `system/hdfs1` on `system/hbase`'s engine,
-on a CloudLab cluster of five nodes, `node0`-`node4` (40 logical cores and 251 GB each, `/bulk` shared over NFS): the Hadoop
-shim restored, the host ledger charging cores as well as memory, DECIDE's own-run claims, HBase's process for every
-case (world depth 0, `results/hdfs/`), and the Hadoop fork's `graphchecker/hdfs-checks` adapted. Result
-(`results/hdfs/README.md`): 12 SAT confirmed in the VM (every named bug's mandated mechanism; 11 reproduced 10/10
-natively, hdfs-11741 0/10), 33 UNSAT at the fixed point with z3 unsat on the file, hdfs-adhoc-52 a RUN_DEFECT row over an
-unsat file; no new bug. **Start at
-[docs/handover/START-HERE.md](docs/handover/START-HERE.md)**; the cluster is [docs/handover/OPERATIONS.md](docs/handover/OPERATIONS.md)
-§11, a fresh clone [docs/REPRODUCE.md](docs/REPRODUCE.md) §9. The rest of this README is the shared index; where it names
-`lift*` hosts and `/bigtemp`, read node0-4 and `/bulk` on this branch.
+`system/hdfs-liftlab` runs every HDFS case on `system/hbase`'s engine on liftlab (lift02-15, 48 cores and 30 GB each;
+lift11 the control host) and replaces `system/hdfs` and `system/hdfs1` (the owner, 2026-10-26: "最终system/hdfs-liftlab
+一个分支就能彻底取代原先的system/hdfs和system/hdfs1了哈"). It is `system/hdfs-cloudlab` 3411a49f8 (`system/hbase` 26910df2a = 5b4b6bae9's code, plus
+the HDFS port: the Hadoop shim and its door entry points restored, DECIDE's own-run claims, REPRODUCE's plant of a pure
+re-pairing, HBase's process in every case declaration, the Hadoop fork's `graphchecker/hdfs-checks` adapted,
+`results/hdfs/`) with CloudLab's scheduling reverted: the host ledger charges memory (70 %) and every choice among hosts
+takes the most memory room, as on `system/hbase` and `system/solr`, and `tools/lib/gc-env.sh` names liftlab. The final
+series H1 (from 2026-10-26 23:55) runs the 45 cases but hdfs-11741 one at a time, each alone on 12 lifts, for its verdict
+and time breakdown (seeding, exploration, compose + solver): H1 (results/hdfs: 45 cases alone, 62555 s = 17.4 h; seeding 42 %, exploration 53 %, compose+solver 4 %; every verdict as CloudLab's). The same code's CloudLab rounds F1-F8
+(12 SAT confirmed in the VM, 33 UNSAT at the fixed point, hdfs-adhoc-52 RUN_DEFECT over an unsat file; no new bug) are
+the other cluster's record (STATUS "HDFS checks on CloudLab"). **Start at
+[docs/handover/START-HERE.md](docs/handover/START-HERE.md)**; a fresh clone: [docs/REPRODUCE.md](docs/REPRODUCE.md) §0-§5.
+CloudLab (branch `system/hdfs-cloudlab`, which keeps the core charges): [docs/handover/OPERATIONS.md](docs/handover/OPERATIONS.md)
+§11, [docs/REPRODUCE.md](docs/REPRODUCE.md) §9.
 
 ## Use all ten servers, in parallel -- mandatory for whoever takes over
 
@@ -67,21 +71,23 @@ The owner (long-term, 2026-10-05): "一定要最大化利用10个server。这10�
 checks"; 07, the last, closed on 2026-10-07), and every case then ran alone on the ten lifts for its time breakdown
 (series EX1, [docs/design/PERFORMANCE.md](docs/design/PERFORMANCE.md) §6). The work ends as two branches, by the owner's
 ruling: `system/hdfs` (the locked body, 39 cases) and `system/hdfs1` (the newest body, the other 7 and every later
-engine change); nothing goes to `main`. The remote keeps `main`, one branch per system (`system/hdfs`, `system/hdfs1`,
-`system/solr`, `system/hbase`, `system/zookeeper`); each system's fork keeps the trees its cases read (`graphchecker/*`,
-STATE §3). Everything a run of the 46 cases needs is on those
-branches: [docs/REPRODUCE.md](docs/REPRODUCE.md) rebuilds it from a fresh clone (the VM image, the four trees, both
-checkouts) and runs the series. **Solr is finished for now** (2026-10-19): the engine's rewrite and the final round
+engine change); nothing goes to `main`. **Since 2026-10-27 one branch replaces both: `system/hdfs-liftlab`** (this
+branch, above; STATE §L), every HDFS case on HBase's engine, its trees the fork's `graphchecker/hdfs-checks`,
+`-adhoc21` and `hdfs-11741`; `system/hdfs`, `system/hdfs1` and `system/hdfs-cloudlab` stay for history. One branch per
+system: `system/hdfs-liftlab`, `system/solr`, `system/hbase`, `system/zookeeper` (with `main`, the remote branches are
+STATE §2); each system's fork keeps the trees its cases read (`graphchecker/*`, STATE §3). Everything a run of the HDFS
+cases needs is on `system/hdfs-liftlab` and the fork: [docs/REPRODUCE.md](docs/REPRODUCE.md) §0-§5 rebuilds it from a
+fresh clone (the checkout, the VM image, the trees) and runs the series. **Solr is finished for now** (2026-10-19): the engine's rewrite and the final round
 SGF9 are on `system/solr` (pushed; from `system/hdfs1`), the tree is the Solr fork's `graphchecker/solr-checks`, and
 [docs/REPRODUCE.md](docs/REPRODUCE.md) §6 runs the 20 cases from a fresh clone.
 [docs/handover/STATE.md](docs/handover/STATE.md) §S says where it stands, [docs/handover/TODO.md](docs/handover/TODO.md)
-"Solr: after SGF9" what is left; STATUS "Solr checks" each case's result. **HBase is finished** (2026-10-21; this branch):
+"Solr: after SGF9" what is left; STATUS "Solr checks" each case's result. **HBase is finished** (2026-10-21):
 the code is `system/hbase` (built from `system/solr`; `results/hbase/` holds each case's final `.smt`, claim and time
 table), the adapter the HBase fork's `graphchecker/hbase-checks` (`https://github.com/JHSUYU/hbase.git`);
 [docs/REPRODUCE.md](docs/REPRODUCE.md) §7 runs the 22 cases from a fresh clone of the two.
 [docs/handover/hbase-START-HERE.md](docs/handover/hbase-START-HERE.md) is HBase's takeover file, STATE §H what `system/hbase` holds
 and each case's result, TODO "HBase" what is parked, LESSONS §9 what HBase taught us. **ZooKeeper is finished**
-(2026-10-22) on its own branch, `system/zookeeper` (built from this one), with the fork's `graphchecker/zookeeper-checks`;
+(2026-10-22) on its own branch, `system/zookeeper` (built from `system/hbase`), with the fork's `graphchecker/zookeeper-checks`;
 that branch's START-HERE and REPRODUCE §8 run it.
 
 The README is an index. The handover documents hold the state, the plan and the rules. Every agent
@@ -91,15 +97,15 @@ that works on this project takes [RULES.md](docs/handover/RULES.md),
 
 | # | document | what it holds |
 | --- | --- | --- |
-| 0 | [docs/handover/START-HERE.md](docs/handover/START-HERE.md) | A new lead starts here: the 46 HDFS cases on HBase's engine on CloudLab (this branch, 2026-10-24): what changed, the results (`results/hdfs/`), what to read, how to run a case and the series, the rules |
+| 0 | [docs/handover/START-HERE.md](docs/handover/START-HERE.md) | A new lead starts here: THE HDFS branch on liftlab (`system/hdfs-liftlab`, 2026-10-27): what it holds, the cluster, the trees, the results (series H1, `results/hdfs/`), what to read, how to run a case and the series, the rules |
 | 0b | [docs/handover/hbase-START-HERE.md](docs/handover/hbase-START-HERE.md) | HBase's takeover file (finished 2026-10-21, `system/hbase`) |
-| 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands: HBase finished (§H: what `system/hbase` and the HBase fork's tree hold, each case's result, where everything is); Solr after its final round SGF9 (2026-10-19, §S: what `system/solr` holds, the fork's tree, each study check's result and time); the end of the HDFS group (2026-10-08): the two HDFS branches and what each holds; the goals (verbatim); the remote and the parked local branches; every system tree (Hadoop, Solr, ZooKeeper, HBase) with its branch and, for HDFS, the fork's branch it is; VM images and snapshots; the rounds that closed each case; where the evidence lives. |
-| 2 | [docs/handover/TODO.md](docs/handover/TODO.md) | The plan, per system in the owner's order (HDFS, Solr, HBase, ZooKeeper): for HDFS the follow-ups (the two-phase final acceptance run, the general fixes the workarounds stand in for, the defects found, speed, cleanup); then each next system's steps. |
+| 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands: HDFS on liftlab (§L: `system/hdfs-liftlab`, the snapshot, tree set, image and drivers of series H1); HDFS on CloudLab (§C, the other cluster's record); HBase finished (§H: what `system/hbase` and the HBase fork's tree hold, each case's result, where everything is); Solr after its final round SGF9 (2026-10-19, §S: what `system/solr` holds, the fork's tree, each study check's result and time); the end of the HDFS group (2026-10-08): the two former HDFS branches and what each holds (§0, superseded by §L); the goals (verbatim); the remote and the parked local branches; every system tree (Hadoop, Solr, ZooKeeper, HBase) with its branch and, for HDFS, the fork's branch it is; VM images and snapshots; the rounds that closed each case; where the evidence lives. |
+| 2 | [docs/handover/TODO.md](docs/handover/TODO.md) | The plan, per system in the owner's order (HDFS, Solr, HBase, ZooKeeper): for HDFS the series H1 on liftlab and what the port left open ("HDFS on liftlab"), then the follow-ups (the two-phase final acceptance run, the general fixes the workarounds stand in for, the defects found, speed, cleanup); then each next system's steps. |
 | 3 | [docs/handover/RULES.md](docs/handover/RULES.md) | The owner's standing rules, long-term, quoted: what a finished check is (only SAT or UNSAT, a right `.smt`), symbolic scope first, general fixes only, no fallback code, a large closure converges (a bound is a rare last resort), workarounds with measure, system by system, git and safety. |
 | 3b | [docs/handover/CHECKING.md](docs/handover/CHECKING.md) | How every verdict and `.smt` is checked before it counts (round-verify's columns, the hand check with the legend) and the twenty-one traps the leads fell into (cut searches, unbound handoffs, bounded rounds, constant fatal arms, unreached arms, one-value domains, HELD values, the let-binding trap, NO-SYMBOL, a sweep's default budget, run-to-run open arms, read-order divergence, residue that cannot move a constant phi, ...). |
 | 4 | [docs/handover/AGENTS.md](docs/handover/AGENTS.md) | How to work with agents: at most 5 coding agents, reviews at key complex places, briefs, design gates, worktrees, merges, stopping; how each lead ran them and the lessons. |
-| 5 | [docs/handover/OPERATIONS.md](docs/handover/OPERATIONS.md) | Servers (ten lifts, the 70 % memory ledger), storage, trees, VM images, helper commands and round tools, build and test, rounds, sweeps and exclusive runs, the offline gate, reading and debugging a campaign, traps. |
-| 6 | [docs/handover/PARALLEL.md](docs/handover/PARALLEL.md) | How development keeps all ten lifts full: the three levels of parallelism (inside a case, across cases, across agents), isolation and sharing over NFS, the loop in which nothing waits in series, what does not parallelize and how it gets faster. |
+| 5 | [docs/handover/OPERATIONS.md](docs/handover/OPERATIONS.md) | Servers (ten lifts, the 70 % memory ledger), storage, trees, VM images, helper commands and round tools, build and test, rounds, sweeps and exclusive runs, the offline gate, reading and debugging a campaign, traps; §11 CloudLab, the other cluster (`system/hdfs-cloudlab`). |
+| 6 | [docs/handover/PARALLEL.md](docs/handover/PARALLEL.md) | How development keeps all ten lifts full: the three levels of parallelism (inside a case, across cases, across agents), isolation and sharing over NFS, the loop in which nothing waits in series, what does not parallelize and how it gets faster; §8 CloudLab's core-bound strategy (`system/hdfs-cloudlab` only, not this branch's code). |
 | 6b | [docs/handover/OPTIMIZATIONS.md](docs/handover/OPTIMIZATIONS.md) | Every optimization so far -- parallelism and memory, the schedule, exploration rules, ZooKeeper -- with its measured effect and commit, and the ones designed but not done, ranked: the HBase port's refactor list (owner 2026-10-16). |
 | 6c | [docs/handover/LESSONS.md](docs/handover/LESSONS.md) | The traps we fell into and how we work around them: shell, zombie processes, NFS, heaps, Java 8 concurrency; how to measure performance and how to debug and verify |
 | 6d | [docs/handover/REFACTOR-PLAN.md](docs/handover/REFACTOR-PLAN.md) | The owner-approved 2026-10-18 rewrite: rules, workstreams A-H with evidence and acceptance, the order; acceptance = all 20 Solr cases rerun |
@@ -107,7 +113,7 @@ that works on this project takes [RULES.md](docs/handover/RULES.md),
 | 8 | [docs/design/README.md](docs/design/README.md) | The design at a glance, stage by stage, and the index of the design specs (PIPELINE, SYMBOL-SCOPE, IDENTITY, CONTRACT-SPEC, VM, PERFORMANCE). |
 | 9 | [docs/design/PERFORMANCE.md](docs/design/PERFORMANCE.md) | Where a campaign's time goes, how ten lifts run many campaigns at once, why cases were slow, how to debug a slow case, the open speed items. |
 | 10 | [docs/STATUS.md](docs/STATUS.md) | Every capability: done / partial / not done, with code pointers and the per-system surface (adapters, workarounds); every HDFS case's verdict and its `.smt` read by hand ("HDFS checks"); the open defects. |
-| 11 | [docs/REPRODUCE.md](docs/REPRODUCE.md) | From the GitHub branches alone: the machines, the GraphChecker checkout of each system, its VM image, its fork's trees, running one case or all of them, reading the results: HDFS (§0-§5), Solr (§6), HBase (§7; ZooKeeper: §8 on `system/zookeeper`). |
+| 11 | [docs/REPRODUCE.md](docs/REPRODUCE.md) | From the GitHub branches alone: the machines, the GraphChecker checkout of each system, its VM image, its fork's trees, running one case or all of them, reading the results: HDFS on `system/hdfs-liftlab` (§0-§5), Solr (§6), HBase (§7; ZooKeeper: §8 on `system/zookeeper`), HDFS on CloudLab (§9, `system/hdfs-cloudlab`). |
 
 The sections below are the user-level reference: the pipeline, running one case, running the bug
 checks, outputs, and the repository map.
@@ -175,7 +181,7 @@ parts are in `experiments/<system>/{system.sh,build.sh,classpath.py}`.
 
 ```bash
 experiments/lib/run.sh experiments/hadoop/hdfs-17960 "" build      # build the tree, run the workload once
-export CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-hg5/j2sdk-image     # system/hdfs's image
+export CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force12/j2sdk-image # this branch's image (system/hbase's VM sources)
 CASES=hdfs-17960 bash experiments/accept/accept.sh                  # campaign + probe + report
 ```
 
@@ -189,14 +195,14 @@ is written.
 
 `tools/lib/gc-env.sh` states, once for every tool and for `run_engine.sh`, the output root
 `GC_OUT` (default `/bigtemp/vnr3ne/gc-out`), the host ledger `CAUSYNTH_HOST_LEDGER` (default
-`/bigtemp/vnr3ne/gc-out/hosts`, one for the cluster whatever `GC_OUT` a run writes) and the hosts
-`LIFTS` (lift06–15).
+`/bigtemp/vnr3ne/gc-out/hosts`, one for the cluster whatever `GC_OUT` a run writes), the hosts
+`LIFTS` (lift02–15 but lift11) and the control host `GC_CONTROL_HOST` (lift11, never a head or worker by default).
 
 Obligations of a campaign (each a solve, then its replay when the solver answers SAT, two starts),
 and GROW's re-runs, fan out over the hosts in
-`CAUSYNTH_CAMPAIGN_WORKER_HOSTS`, each to the host with the most room (the most free cores, then the most memory room),
-as many on a host as its ledger admits. A head's own steps go to its host when it has room, else to the pool's host
-with the most room (`campaign_head_charged`, run there through `run_engine.sh --run-placed`). Every start on a
+`CAUSYNTH_CAMPAIGN_WORKER_HOSTS`, each to the host with the most room, as many on a host as its ledger admits, up to its
+cores. A head's own steps go to its host when it has room, else to the pool's host with the most
+room (`campaign_head_charged`, run there through `run_engine.sh --run-placed`). Every start on a
 host is charged to the ledger first, at its measured need, for as long as it runs: the seed replay
 (twice the recording's measured peak at its start, its heap sized for seven times it, growing while its host has room), an obligation's solve (what a solver starts at), then
 every obligation's, re-run's and CONFIRM's replay
@@ -211,11 +217,7 @@ heap) and a `fanout.sh` job (its `NEED_MB`). A sweep's cases share the hosts
 replay charge (PIPELINE §7.7). A start goes only when both the host's live charges and its real use
 (`MemTotal` less `MemAvailable`), each with the start and a head's held room (its engine JVMs'
 measured peak times 1.25, the largest idle head's of the host), stay within
-`CAUSYNTH_HOST_MAX_USED_PCT` (70) percent of `MemTotal`, and the cores its live charges keep busy, with
-the start's own (a replay its campaign's measured cores, a solve two, an engine JVM, a REPRODUCE run or a
-`fanout.sh` job one), stay within `CAUSYNTH_HOST_MAX_CORES_PCT` (100) percent of its `nproc` (a host whose
-charges keep no core busy takes any one start): memory binds on liftlab, cores on CloudLab. A charge,
-`<mb>.<cores x 100>.<host>.<pid>.<time>.<rand>`, lives by a lease its holder renews
+`CAUSYNTH_HOST_MAX_USED_PCT` (70) percent of `MemTotal`; a charge lives by a lease its holder renews
 (`$CAUSYNTH_HOST_LEDGER/<host>/charges/`, 120 s), so a killed run's charges lapse, and is released
 the moment what it ran returns. A running workload JVM that outgrows its
 charge is granted the excess, charged on the ledger, unless the host's real use (`MemTotal` less
@@ -237,7 +239,7 @@ stays the cluster's one):
 ```bash
 cd ~/gc-run/p<N>        # a built snapshot (OPERATIONS.md §4; a case on another tree, §5)
 out=/bigtemp/vnr3ne/gc-out/checks-<round>
-GC_OUT=${out} VM_IMAGE=/bigtemp/vnr3ne/vm-hg5/j2sdk-image setsid nohup \
+GC_OUT=${out} VM_IMAGE=/bigtemp/vnr3ne/vm-force12/j2sdk-image setsid nohup \
   bash tools/adhoc/sweep.sh ~/gc-run/p<N> <round> <cases-file> 1 > ${out}-sweep.log 2>&1 < /dev/null &
 GC_OUT=${out} tools/rounds/round-monitor.sh '<round>-*' | grep --line-buffered 'DONE '
 GC_OUT=${out} python3 tools/adhoc/triage.py <round>         # class, stage, reason per case

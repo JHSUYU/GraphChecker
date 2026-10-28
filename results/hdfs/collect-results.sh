@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
-out=${GC_OUT:-/bulk/gc-out/hdfs-final}
+out=${GC_OUT:-/bigtemp/vnr3ne/gc-out/hdfs-final}
 order=${1:?usage: collect-results.sh <rounds, most final first, comma-separated> [cases.tsv]}
 cases=${2:-${here}/../../experiments/hadoop/hdfs-cases.tsv}
 IFS=, read -r -a rounds <<<"${order}"

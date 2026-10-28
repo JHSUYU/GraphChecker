@@ -34,8 +34,7 @@ release_hold() {
 }
 trap release_hold EXIT
 hold_room() {
-  local need=$1 host best="" dir
-  local -a open=() roomy=()
+  local need=$1 host room best="" best_room="" dir
   if [[ -n "${campaign_head_hold}" && "${hold_job}" == "${next}" ]]; then
     touch -- "${campaign_head_hold}"
     return 0
@@ -45,10 +44,10 @@ hold_room() {
     (( running[$host] < slots )) || continue
     dir="${campaign_host_gate_root}/$(campaign_host_key "${host}")/heads"
     ! compgen -G "${dir}/fanout.*.hold" >/dev/null || continue
-    open+=("${host}")
+    room=$(campaign_host_room "${host}") || continue
+    [[ -z "${best_room}" ]] || (( room > best_room )) || continue
+    best=${host}; best_room=${room}
   done
-  mapfile -t roomy < <(campaign_hosts_by_room "" "${open[@]}")
-  best=${roomy[0]:-}
   [[ -n "${best}" ]] || return 0
   dir="${campaign_host_gate_root}/$(campaign_host_key "${best}")/heads"
   mkdir -p "${dir}"
@@ -84,8 +83,7 @@ while (( next < ${#commands[@]} )) || (( ${#pid_host[@]} > 0 )); do
         need=${BASH_REMATCH[2]}
         command=${BASH_REMATCH[3]}
       fi
-      campaign_host_try_start "${host}" "${need}" \
-        "${campaign_fanout_job_cores}" || break
+      campaign_host_try_start "${host}" "${need}" || break
       charge=${campaign_host_charge_id}
       if (( admit )); then
         campaign_host_release "${host}" "${charge}"

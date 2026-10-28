@@ -1,8 +1,10 @@
-# TODO: HDFS on HBase's engine on CloudLab (system/hdfs-cloudlab, 2026-10-24); HDFS, Solr, HBase finished
+# TODO: HDFS on liftlab (system/hdfs-liftlab, THE HDFS branch, 2026-10-27); HDFS, Solr, HBase finished
 
 Order:
-1. HDFS is finished (STATE §0): its follow-up items below are optional engine work, done when a later system needs
-   them or before a clean final acceptance run.
+0. HDFS on liftlab (section "HDFS on liftlab"): the series H1 of the 45 cases but hdfs-11741 on `system/hdfs-liftlab`,
+   which replaces `system/hdfs` and `system/hdfs1` (STATE §L); then the HDFS port's open items.
+1. HDFS on its former bodies is finished (STATE §0): its follow-up items below are optional engine work, done when a
+   later system needs them or before a clean final acceptance run.
 2. Solr: the rewrite and its final round SGF9 are done (2026-10-19, section "Solr: after SGF9"); what is left there is
    optional: the cases owed a run on the fixed engine, and the speed items with their evidence.
 3. HBase is finished (section "HBase": item 1, the final series, is done; the rest are parked engine items). The code
@@ -15,9 +17,22 @@ passes. Branch, tree and path details are in [STATE.md](STATE.md); every check w
 [../checks/README.md](../checks/README.md) and its reading in [../STATUS.md](../STATUS.md); commands in
 [OPERATIONS.md](OPERATIONS.md); speed and the cluster in [../design/PERFORMANCE.md](../design/PERFORMANCE.md).
 
-## HDFS on CloudLab (`system/hdfs-cloudlab`, 2026-10-24)
+## HDFS on liftlab (`system/hdfs-liftlab`, 2026-10-27)
 
-What the port left open, each with its evidence (STATE §C has where things are; `results/hdfs/README.md` each case):
+1. **The series H1 is running** (from 2026-10-26 23:55; STATE §L): the 45 cases of `experiments/hadoop/hdfs-cases.tsv` but
+   hdfs-11741, one at a time, each alone on the 12 reachable lifts, snapshot `/u/vnr3ne/gc-run/hl-1` (e2a6aebf9), tree
+   set `/bigtemp/vnr3ne/wt/hl-trees-1`, image `vm-force12`; driver
+   `/bigtemp/vnr3ne/analysis/hdfs-2026-10-26/lead/final/series.sh`, log `final/series-H1.log`, runs
+   `/bigtemp/vnr3ne/gc-out/hdfs-final/accept-H1-*`. Each case's verdict and its time breakdown (seeding, exploration,
+   compose + solver), the owner's ask: done, H1 (results/hdfs: 45 cases alone, 62555 s = 17.4 h; seeding 42 %, exploration 53 %, compose+solver 4 %; every verdict as CloudLab's). Every SAT read with `smt-legend.py`, every UNSAT with
+   `vacuity.py` (CHECKING §1); a case that ends differently from its CloudLab row is read before it counts.
+2. **After H1:** `results/hdfs/` holds H1's rows and readings (the CloudLab rows stay as the other cluster's record);
+   STATUS "HDFS checks on CloudLab" points at them; with the owner's OK, push `system/hdfs-liftlab` and check REPRODUCE
+   §0-§5 from a fresh clone, as REPRODUCE §7 did for HBase.
+
+What the port left open (found on CloudLab, `system/hdfs-cloudlab`, 2026-10-24), each with its evidence (STATE §C has
+where things are; `results/hdfs/README.md` each case). The numbers are those STATUS and `results/hdfs` cite as "TODO HDFS
+on CloudLab <n>"; every item applies on this branch too but 4 and 5, which are CloudLab's alone:
 1. **hdfs-17897's replay race** (F1 confirmed it, 10/10; the race remains). The fatal of dn0's heartbeat-fault world is observed in some replays and not others:
    C3-17897 observed it (session 344f), DD1 (`/bulk/gc-out/agent-decide/accept-DD1-17897`) did not (the test passed), and
    then the composed formula holds the fault valuations UNSAT and DECIDE has only the faultless pairing claims, each
@@ -29,11 +44,10 @@ What the port left open, each with its evidence (STATE §C has where things are;
 3. **DECIDE's nested own arms** (agent D): the order dependence when a nested family is first closed under another
    session's scope (PIPELINE §9, measured zero on C1 and C3); the plant-writer seed (`recordedAtPlants`) and view-version
    families are not owned (reviewer's follow-ups).
-4. **The core ledger** charges a replay `campaign_replay_cores` whole cores (the p90 rounded up, 2 for HDFS replays that keep
-   0.8-1.4 busy), so a host whose 40 charged cores are full runs at a load of 25-35; finer units (tenths) would fill it.
-   Processes outside the ledger (another build, another user) are invisible to it: real load is not read.
-5. **CloudLab's CPUs are slower than liftlab's** (Xeon E5-2660 v2): seed replays take 2-4x EX1's; the time family's seed
-   replays need `seed_replay_time_factor=130` and 6 h budgets.
+4. (CloudLab only, not this branch's code) **The core ledger** of `system/hdfs-cloudlab`: done there by charges in
+   hundredths and the load (PARALLEL §8); `system/hdfs-liftlab` charges memory alone, as liftlab needs.
+5. (CloudLab only) **CloudLab's CPUs are slower than liftlab's** (Xeon E5-2660 v2): seed replays took 2-4x EX1's; the time
+   family's `seed_replay_time_factor=130` and 6 h budgets stay declared here (bounds: a faster run never reaches them).
 6. **The own-witness pass and equal planted skews** on consecutive cells of one clock (the second jump is 0 and drops out of
    movedRoots): the own claim is lost, never wrong (PIPELINE §9).
 7. **The canonical witness** (agent D, branch `hdfs-decide` 1d70822bd, built and unit-tested, not reviewed, not merged):
@@ -41,7 +55,7 @@ What the port left open, each with its evidence (STATE §C has where things are;
    eight claims each with 10-13 jumps, each refused by CONFIRM for those parts); `ClaimPolicy#canonical` holds a
    witness to its least clocks and its fewest re-pairings within a sixth of the decide budget. Not needed by the final
    rounds (17897 F1: MARKER_FLIPPED, confirmed, 10/10); its offline evidence (DD1, D5-1 0000, C3 0000) was never run.
-8. **`replay_timeout_s` on CloudLab** is liftlab's 2400 s; hdfs-adhoc-24/26/37 declare 7200 (their focused replays run
+8. **`replay_timeout_s`** is 2400 s, calibrated on liftlab; hdfs-adhoc-24/26/37 declare 7200 since CloudLab (their focused replays run
    the whole upgrade test). A general rule would bound a focused replay by the seed replay's own measured time.
 9. **A consumer named by arrival paired with another handle-paired send** (hdfs-adhoc-11 F1, investigator 2026-10-24):
    dn0's SASL consumer is the k-th accepted connection, so a race that adds or drops a client retry before it pairs it
@@ -57,7 +71,7 @@ What the port left open, each with its evidence (STATE §C has where things are;
    ~1390 s) and the composer's own whole one-shot ask ran out of memory at 292 s, while the exported file is unsat in 35 s
    under `tools/lib/z3-race.sh` (4 GB per engine). Why the composer's one-shot differs from the race (options, model
    symbols, its room) is open.
-12. **hdfs-11741's native plant** (F7, F8): every confirmed CLOCK_SKEW claim reproduced 0 of 10 natively; the five clocks
+12. **hdfs-11741's native plant** (F7, F8; 11741 is not in H1, owner): every confirmed CLOCK_SKEW claim reproduced 0 of 10 natively; the five clocks
    were planted, the two ORDER rows on dn1's `removeExpiredKeys` occurrence (653dbe1f..., before the balancer's
    6306493a...) never came (`reproduce/run-*/answer.json` `NOT_REACHED`). system/hdfs's 10/10 also applied the
    serial-number hook; here SERIAL_NO stays at its recording and is not planted. Read which native occurrence runs dn1's
@@ -70,7 +84,11 @@ What the port left open, each with its evidence (STATE §C has where things are;
    occurrence off the claim's cone should block a SAT (CHECKING §1).
 
 
-## HDFS (finished: `system/hdfs` 39 cases, `system/hdfs1` 7; trees r7, r7-21, r8, 11741-r6 = the fork's `graphchecker/*` branches; image `vm-hg5`)
+## HDFS (finished: `system/hdfs` 39 cases, `system/hdfs1` 7; trees r7, r7-21, r8, 11741-r6 = the fork's `graphchecker/*` branches; image `vm-hg5`) -- the former bodies, superseded by `system/hdfs-liftlab`
+
+The items below name the former bodies' code (2026-10-08); the engine has since been rewritten (`system/solr`,
+`system/hbase`). Read the current code before taking one; any change goes on `system/hdfs-liftlab` and is judged by its
+cases.
 
 46 of 46 cases closed with a hand-read `.smt` (STATUS "HDFS checks"); no new bug; every case ran alone on the ten
 lifts for its time breakdown (EX1, PERFORMANCE §6). What is left is the general work the
@@ -997,7 +1015,7 @@ which no ORDER holds". The cause is not CONFIRM's planning, as H3 read it from t
 
 ## ZooKeeper (finished 2026-10-22 on its own branch)
 
-ZooKeeper's checks ran on `system/zookeeper`, built from this branch (`system/hbase` 5b4b6bae9), with the fork's
+ZooKeeper's checks ran on `system/zookeeper`, built from `system/hbase` (5b4b6bae9), with the fork's
 `graphchecker/zookeeper-checks` as the tree; both are on GitHub. That branch's START-HERE, STATE §Z, TODO "ZooKeeper",
 REPRODUCE §8 and `results/zookeeper/` hold everything: 5 of its 6 bug checks PASS (ZOOKEEPER-5094 not detected) and
 every study check has its `.smt`.

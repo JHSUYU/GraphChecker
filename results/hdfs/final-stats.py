@@ -22,7 +22,7 @@ def ended(path):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--out', default='/bulk/gc-out/hdfs-final')
+    p.add_argument('--out', default='/bigtemp/vnr3ne/gc-out/hdfs-final')
     p.add_argument('--order', required=True, help='rounds, most final first, comma-separated')
     p.add_argument('--cases', required=True, help='experiments/hadoop/hdfs-cases.tsv')
     p.add_argument('--alone', default='', help='rounds that ran alone')

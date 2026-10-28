@@ -12,113 +12,113 @@
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "6b2ab4d0306dd9a4-21c3263d",
+        "subject": "cbc3f608583b50f6-999bdb07",
         "detail": "this session ran the occurrence and did not reach the anchor"
       },
       {
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "eacb39591cb3f9f0-cfa20947",
+        "subject": "f5f054cb6ea00b4d-d90a8606",
         "detail": "this session ran the occurrence and did not reach the anchor"
       },
       {
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "ebd61023eed5e0e5 of 37e6493c361cfaae-319a2e4f",
-        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17523), where the path throws: no producer for this path"
+        "subject": "f52e28301e5b3cbd of 45c3abdbd577eaf2-cfd7902c",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17518), where the path throws: no producer for this path"
       },
       {
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "17c6244e41e5ea5f of 37e6493c361cfaae-319a2e4f",
-        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17523), where the path throws: no producer for this path"
+        "subject": "815bf356e98f945a of 45c3abdbd577eaf2-cfd7902c",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17518), where the path throws: no producer for this path"
       },
       {
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "f52e28301e5b3cbd of 37e6493c361cfaae-319a2e4f",
-        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17523), where the path throws: no producer for this path"
+        "subject": "ebd61023eed5e0e5 of b7f2458588a9ddea-97d39ef7",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17516), where the path throws: no producer for this path"
       },
       {
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "815bf356e98f945a of 37e6493c361cfaae-319a2e4f",
-        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17523), where the path throws: no producer for this path"
+        "subject": "17c6244e41e5ea5f of b7f2458588a9ddea-97d39ef7",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17516), where the path throws: no producer for this path"
       },
       {
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "f52e28301e5b3cbd of ea614f4b4be94ad8-3090733e",
-        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17520), where the path throws: no producer for this path"
+        "subject": "f52e28301e5b3cbd of b7f2458588a9ddea-97d39ef7",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17516), where the path throws: no producer for this path"
       },
       {
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "815bf356e98f945a of ea614f4b4be94ad8-3090733e",
-        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17520), where the path throws: no producer for this path"
+        "subject": "815bf356e98f945a of b7f2458588a9ddea-97d39ef7",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17516), where the path throws: no producer for this path"
       },
       {
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "ebd61023eed5e0e5 of ead5f0f6cedf086c-25578df7",
-        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17537), where the path throws: no producer for this path"
+        "subject": "ebd61023eed5e0e5 of e49e9edffb32cf30-2db5d2c4",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17510), where the path throws: no producer for this path"
       },
       {
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "17c6244e41e5ea5f of ead5f0f6cedf086c-25578df7",
-        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17537), where the path throws: no producer for this path"
+        "subject": "17c6244e41e5ea5f of e49e9edffb32cf30-2db5d2c4",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17510), where the path throws: no producer for this path"
       },
       {
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "f52e28301e5b3cbd of ead5f0f6cedf086c-25578df7",
-        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17537), where the path throws: no producer for this path"
+        "subject": "f52e28301e5b3cbd of e49e9edffb32cf30-2db5d2c4",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17510), where the path throws: no producer for this path"
       },
       {
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "815bf356e98f945a of ead5f0f6cedf086c-25578df7",
-        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17537), where the path throws: no producer for this path"
+        "subject": "815bf356e98f945a of e49e9edffb32cf30-2db5d2c4",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17510), where the path throws: no producer for this path"
       },
       {
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "ebd61023eed5e0e5 of seed-result-31ae1b84",
-        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17534), where the path throws: no producer for this path"
+        "subject": "ebd61023eed5e0e5 of seed-result-85b8a96e",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17494), where the path throws: no producer for this path"
       },
       {
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "17c6244e41e5ea5f of seed-result-31ae1b84",
-        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17534), where the path throws: no producer for this path"
+        "subject": "17c6244e41e5ea5f of seed-result-85b8a96e",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17494), where the path throws: no producer for this path"
       },
       {
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "f52e28301e5b3cbd of seed-result-31ae1b84",
-        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17534), where the path throws: no producer for this path"
+        "subject": "f52e28301e5b3cbd of seed-result-85b8a96e",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17494), where the path throws: no producer for this path"
       },
       {
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "815bf356e98f945a of seed-result-31ae1b84",
-        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17534), where the path throws: no producer for this path"
+        "subject": "815bf356e98f945a of seed-result-85b8a96e",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17494), where the path throws: no producer for this path"
       },
       {
         "sessionId": "composition",
@@ -264,21 +264,35 @@
         "sessionId": "composition",
         "kind": "DECLARATION_MISSING",
         "cls": "DIAGNOSTIC",
-        "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.ef29be64-86dd-3342-be35-267fde5d28ec",
+        "subject": "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.528442e8-9ebc-38f3-8e3b-ccab0742be31",
         "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
       },
       {
         "sessionId": "composition",
         "kind": "DECLARATION_MISSING",
         "cls": "DIAGNOSTIC",
-        "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4e75e27b-c326-353f-9a58-d0326af7bde4",
+        "subject": "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.93447dfa-ffa2-329b-8f59-aebbe7441398",
         "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
       },
       {
         "sessionId": "composition",
         "kind": "DECLARATION_MISSING",
         "cls": "DIAGNOSTIC",
-        "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.bcaa821b-4b16-3a08-80fd-60b64237c36b",
+        "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.c48074e5-502b-31b8-975c-850d0b92f83a",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.686e2a51-5551-3cf8-ba84-eed355c7734a",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.ddbaf7b7-1bf7-348f-bfbc-ccc134e58c85",
         "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
       },
       {
@@ -693,621 +707,124 @@
         "cls": "DIAGNOSTIC",
         "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.29583bbd-3680-36aa-aee9-c18fb1a9f653",
         "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "DECLARATION_MISSING",
-        "cls": "DIAGNOSTIC",
-        "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.494f8ad5-627b-3bb7-9689-c4d5825a3040",
-        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "DECLARATION_MISSING",
-        "cls": "DIAGNOSTIC",
-        "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.5a636f2e-0fd7-388a-a484-dc433b8508bf",
-        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "DECLARATION_MISSING",
-        "cls": "DIAGNOSTIC",
-        "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.b86c790c-b08b-331b-a82f-92db8931d9d6",
-        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
       }
     ]
   },
-  "solverRuns": 12,
-  "seedSessionId": "seed-result-31ae1b84",
-  "valuations": [
-    {
-      "ordinal": 0,
-      "status": "unsat",
-      "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "false"
-      },
-      "moved": {},
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 1,
-      "status": "unsat",
-      "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "true",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "false"
-      },
-      "moved": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 2,
-      "status": "unsat",
-      "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "false"
-      },
-      "moved": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 3,
-      "status": "unsat",
-      "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "false"
-      },
-      "moved": {
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 4,
-      "status": "unsat",
-      "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "false"
-      },
-      "moved": {
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 5,
-      "status": "unsat",
-      "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "true",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "false"
-      },
-      "moved": {
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 6,
-      "status": "unsat",
-      "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "true"
-      },
-      "moved": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 7,
-      "status": "unsat",
-      "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "true",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "false"
-      },
-      "moved": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "true",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 8,
-      "status": "unsat",
-      "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "true",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "false"
-      },
-      "moved": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 9,
-      "status": "unsat",
-      "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "true",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "false"
-      },
-      "moved": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 10,
-      "status": "unsat",
-      "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "true",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "true",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "false"
-      },
-      "moved": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 11,
-      "status": "unsat",
-      "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "true",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "true"
-      },
-      "moved": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "true",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 12,
-      "status": "unsat",
-      "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "false"
-      },
-      "moved": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 13,
-      "status": "unsat",
-      "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "false"
-      },
-      "moved": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 14,
-      "status": "unsat",
-      "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "true",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "false"
-      },
-      "moved": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 15,
-      "status": "unsat",
-      "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "true"
-      },
-      "moved": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "true",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 16,
-      "status": "unsat",
-      "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "false"
-      },
-      "moved": {
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 17,
-      "status": "unsat",
-      "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "true",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "false"
-      },
-      "moved": {
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 18,
-      "status": "unsat",
-      "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "true"
-      },
-      "moved": {
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "true",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 19,
-      "status": "unsat",
-      "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "true",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "false"
-      },
-      "moved": {
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 20,
-      "status": "unsat",
-      "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "true",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "true"
-      },
-      "moved": {
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "true",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 21,
-      "status": "unsat",
-      "assignment": {
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.9b6bec66-5b83-3638-816b-775cdbe6fccf": "false",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4edf7cde-735a-3ee8-96d2-cd70519ac792": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.cc52688d-6b42-3645-a7bb-e363c7bb6729": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.e1fcfc52-d2be-396d-9595-9057b4e2279b": "false",
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "true",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "true"
-      },
-      "moved": {
-        "REGION.565dee61-ab2c-39eb-bd06-4f74b187048d.in.84515d72-d6b1-37ab-a30a-35a6adb3d541": "true",
-        "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.06bdb183-08f1-394f-96e7-3b63a267e30e": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    }
-  ],
+  "solverRuns": 13,
+  "seedSessionId": "seed-result-85b8a96e",
+  "valuations": [],
   "gaps": [
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "6b2ab4d0306dd9a4-21c3263d",
+      "subject": "cbc3f608583b50f6-999bdb07",
       "detail": "this session ran the occurrence and did not reach the anchor"
     },
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "eacb39591cb3f9f0-cfa20947",
+      "subject": "f5f054cb6ea00b4d-d90a8606",
       "detail": "this session ran the occurrence and did not reach the anchor"
     },
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "ebd61023eed5e0e5 of 37e6493c361cfaae-319a2e4f",
-      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17523), where the path throws: no producer for this path"
+      "subject": "f52e28301e5b3cbd of 45c3abdbd577eaf2-cfd7902c",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17518), where the path throws: no producer for this path"
     },
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "17c6244e41e5ea5f of 37e6493c361cfaae-319a2e4f",
-      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17523), where the path throws: no producer for this path"
+      "subject": "815bf356e98f945a of 45c3abdbd577eaf2-cfd7902c",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17518), where the path throws: no producer for this path"
     },
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "f52e28301e5b3cbd of 37e6493c361cfaae-319a2e4f",
-      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17523), where the path throws: no producer for this path"
+      "subject": "ebd61023eed5e0e5 of b7f2458588a9ddea-97d39ef7",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17516), where the path throws: no producer for this path"
     },
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "815bf356e98f945a of 37e6493c361cfaae-319a2e4f",
-      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17523), where the path throws: no producer for this path"
+      "subject": "17c6244e41e5ea5f of b7f2458588a9ddea-97d39ef7",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17516), where the path throws: no producer for this path"
     },
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "f52e28301e5b3cbd of ea614f4b4be94ad8-3090733e",
-      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17520), where the path throws: no producer for this path"
+      "subject": "f52e28301e5b3cbd of b7f2458588a9ddea-97d39ef7",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17516), where the path throws: no producer for this path"
     },
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "815bf356e98f945a of ea614f4b4be94ad8-3090733e",
-      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17520), where the path throws: no producer for this path"
+      "subject": "815bf356e98f945a of b7f2458588a9ddea-97d39ef7",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17516), where the path throws: no producer for this path"
     },
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "ebd61023eed5e0e5 of ead5f0f6cedf086c-25578df7",
-      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17537), where the path throws: no producer for this path"
+      "subject": "ebd61023eed5e0e5 of e49e9edffb32cf30-2db5d2c4",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17510), where the path throws: no producer for this path"
     },
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "17c6244e41e5ea5f of ead5f0f6cedf086c-25578df7",
-      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17537), where the path throws: no producer for this path"
+      "subject": "17c6244e41e5ea5f of e49e9edffb32cf30-2db5d2c4",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17510), where the path throws: no producer for this path"
     },
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "f52e28301e5b3cbd of ead5f0f6cedf086c-25578df7",
-      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17537), where the path throws: no producer for this path"
+      "subject": "f52e28301e5b3cbd of e49e9edffb32cf30-2db5d2c4",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17510), where the path throws: no producer for this path"
     },
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "815bf356e98f945a of ead5f0f6cedf086c-25578df7",
-      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17537), where the path throws: no producer for this path"
+      "subject": "815bf356e98f945a of e49e9edffb32cf30-2db5d2c4",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17510), where the path throws: no producer for this path"
     },
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "ebd61023eed5e0e5 of seed-result-31ae1b84",
-      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17534), where the path throws: no producer for this path"
+      "subject": "ebd61023eed5e0e5 of seed-result-85b8a96e",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17494), where the path throws: no producer for this path"
     },
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "17c6244e41e5ea5f of seed-result-31ae1b84",
-      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17534), where the path throws: no producer for this path"
+      "subject": "17c6244e41e5ea5f of seed-result-85b8a96e",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17494), where the path throws: no producer for this path"
     },
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "f52e28301e5b3cbd of seed-result-31ae1b84",
-      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17534), where the path throws: no producer for this path"
+      "subject": "f52e28301e5b3cbd of seed-result-85b8a96e",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17494), where the path throws: no producer for this path"
     },
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "815bf356e98f945a of seed-result-31ae1b84",
-      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17534), where the path throws: no producer for this path"
+      "subject": "815bf356e98f945a of seed-result-85b8a96e",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 17494), where the path throws: no producer for this path"
     },
     {
       "sessionId": "composition",
@@ -1453,21 +970,35 @@
       "sessionId": "composition",
       "kind": "DECLARATION_MISSING",
       "cls": "DIAGNOSTIC",
-      "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.ef29be64-86dd-3342-be35-267fde5d28ec",
+      "subject": "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.528442e8-9ebc-38f3-8e3b-ccab0742be31",
       "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
     },
     {
       "sessionId": "composition",
       "kind": "DECLARATION_MISSING",
       "cls": "DIAGNOSTIC",
-      "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.4e75e27b-c326-353f-9a58-d0326af7bde4",
+      "subject": "REGION.763d087e-89f1-3a45-a53b-21f4012a2fe8.in.93447dfa-ffa2-329b-8f59-aebbe7441398",
       "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
     },
     {
       "sessionId": "composition",
       "kind": "DECLARATION_MISSING",
       "cls": "DIAGNOSTIC",
-      "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.bcaa821b-4b16-3a08-80fd-60b64237c36b",
+      "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.c48074e5-502b-31b8-975c-850d0b92f83a",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.686e2a51-5551-3cf8-ba84-eed355c7734a",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.ddbaf7b7-1bf7-348f-bfbc-ccc134e58c85",
       "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
     },
     {
@@ -1881,27 +1412,6 @@
       "kind": "DECLARATION_MISSING",
       "cls": "DIAGNOSTIC",
       "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.29583bbd-3680-36aa-aee9-c18fb1a9f653",
-      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "DECLARATION_MISSING",
-      "cls": "DIAGNOSTIC",
-      "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.494f8ad5-627b-3bb7-9689-c4d5825a3040",
-      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "DECLARATION_MISSING",
-      "cls": "DIAGNOSTIC",
-      "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.5a636f2e-0fd7-388a-a484-dc433b8508bf",
-      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "DECLARATION_MISSING",
-      "cls": "DIAGNOSTIC",
-      "subject": "REGION.9ffdee3d-bc78-31d0-9907-5ae4fbc6a9ad.in.b86c790c-b08b-331b-a82f-92db8931d9d6",
       "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
     }
   ]
