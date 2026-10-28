@@ -1,4 +1,4 @@
-# Parallel development: keep ten lifts full (long-term)
+# Parallel development: keep every lift full (long-term)
 
 Part of every agent's long-term memory ([RULES.md](RULES.md)). The owner, 2026-10-05: "一定要最大化利用10个server。这10个
 server配有nfs,你只要做好代码隔离等。可以大大加速的。这是你的长期记忆", "我们一个case内oblication当然可以分配到多机。你也可以合理
@@ -149,12 +149,13 @@ every tool call starts a shell there.
 verdict; OPTIMIZATIONS 1.32):
 ```bash
 cd ~/gc-run/<snap> && env -u BASH_ENV \
-  LIFTS="lift06 lift07 lift08 lift09 lift10 lift12 lift13 lift14 lift15" \
+  LIFTS="lift02 lift03 lift04 lift05 lift06 lift08 lift09 lift10 lift12 lift13 lift14 lift15" \
   CASES="solr-18406 solr-18413" CASE_TIMEOUT_SECONDS=10800 PRUNE=0 GC_OUT=/bigtemp/vnr3ne/gc-out/<agent or round> \
-  CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force8/j2sdk-image tools/rounds/launch-round.sh ~/gc-run/<snap> <ROUND>
+  CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force10/j2sdk-image tools/rounds/launch-round.sh ~/gc-run/<snap> <ROUND>
 ```
 `CASE_TIMEOUT_SECONDS`, `PRUNE` and `CAUSYNTH_CAMPAIGN_STOP_AFTER` reach the heads on the command line (ssh carries no
-environment). A case that needs another Solr tree: its `case.sh` `repo=` lines edited in the snapshot only, or a
+environment). `LIFTS` leaves out lift11 (the control host) and lift07 (unreachable since 2026-10-23); the image is
+the branch's (Solr vm-force10, HBase and HDFS vm-force12, ZooKeeper vm-force13). A case that needs another Solr tree: its `case.sh` `repo=` lines edited in the snapshot only, or a
 `GC_TREES` directory whose `lucene-solr-checks` links to the tree (`sg3-trees`, `ib-trees`).
 
 The head's own chain is short (OPTIMIZATIONS 1.33): an answer lands as it is collected, a session is gated where its

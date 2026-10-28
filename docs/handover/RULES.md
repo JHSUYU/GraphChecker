@@ -271,7 +271,7 @@ recommendation.
 - **Heavy replays are fine; the final verdicts come from an exclusive series** (2026-10-20: "没事，有的Replay太重也ok。最终我们会让
   每个case独占集群跑一遍，这种极致并行往往可以优化性能"): a case whose replays are heavy under a shared pool is not narrowed for
   it (no fault kinds or scope cut only to fit); every case runs once alone on the whole cluster for its final verdict and
-  time breakdown (TODO HBase 1).
+  time breakdown (done 2026-10-20/21: `results/hbase/`).
 
 **Engineering**
 - **General fixes only.** No per-case code, no fixes derived from a case's expected verdict, no

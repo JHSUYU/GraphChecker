@@ -80,8 +80,8 @@ The owner's goal: "基于我们solr现在这么好的代码基础，完成对hba
 The first session (2026-10-19, a lead and five coding agents) built the HBase platform on `system/solr`'s engine; the owner
 stopped it for a handover at 23:10. The second session (2026-10-19 23:40 to 2026-10-20, a new lead and five agents: H1
 platform, H2 ZooKeeper, H3 RPC, H4 checks, H5 engine analysis) took over from START-HERE and ran every case of
-`experiments/hbase/hbase-cases.tsv`. **All five of the owner's bugs PASS.** Read [START-HERE.md](START-HERE.md), then
-[TODO.md](TODO.md) "HBase" (item 1: the owner's exclusive series), then LESSONS §9.
+`experiments/hbase/hbase-cases.tsv`. **All five of the owner's bugs PASS.** Read `system/hbase`'s START-HERE (HBase's
+takeover file), then [TODO.md](TODO.md) "HBase", then LESSONS §9.
 
 **`system/hbase`** (the code; pushed to GitHub 2026-10-22, owner; = `hbase-int`; worktrees `/bigtemp/vnr3ne/wt/gc-hbase` and
 `/bigtemp/vnr3ne/wt/gc-hbase-merge`, the latter for merges and gates on lift11): `system/solr`'s engine plus the first
@@ -140,7 +140,7 @@ scheduler, the exploration core, replay and VM, serial fixed cost, NFS, cleanup)
 rewrite was merged into `system/solr` and the final round SGF9 ran the 12 study checks, each alone on lift02-10 +
 lift12-15, at world depth 0, on VM `vm-force10` and the tree set `sg3j-trees`. The owner ended it on 2026-10-19 and had
 everything gathered on `system/solr`, pushed with the fork's tree, and documented ("剩余的case我们不跑了，不要了"). Nothing
-runs on any lift. Read [START-HERE.md](START-HERE.md) first, then [TODO.md](TODO.md) "Solr: after SGF9".
+runs on any lift. Read `system/solr`'s START-HERE (Solr's takeover file) first, then [TODO.md](TODO.md) "Solr: after SGF9".
 
 **`system/solr`** (GitHub `JHSUYU/GraphChecker`, pushed 2026-10-19; = `solr-int`, worktrees
 `/bigtemp/vnr3ne/wt/gc-solr`, `/bigtemp/vnr3ne/wt/gc-solr-merge`) holds, gated: the compaction of the corpus and walk

@@ -3886,7 +3886,7 @@ with it is a `RUN_DEFECT`.
   replay runs the iteration's seed plan as every replay does, so such a writer is one the plan
   names under another address, or none. hbase-adhoc-10's `TransitRegionStateProcedure#confirmOpened`
   steps were the first: their addresses carried their workers' frames until a hand-off claim stood
-  apart (IDENTITY §3, TODO HBase 21)), `MARKER`
+  apart (IDENTITY §3)), `MARKER`
   per planted marker, `ANCHOR`. Endpoints and activations are named as every delivery of their
   stored message is (`Confirmation#id`, `OccurrenceAddress#anyDelivery`: a watcher's second
   delivery of one version, `KIND.n`, is the store's timing, so a run that took one delivery where
