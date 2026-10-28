@@ -28,7 +28,7 @@ document; lead/RUNS.txt is the full log of runs and decisions.
 
 **GraphChecker.**
 - `system/zookeeper` (pushed to GitHub 2026-10-22, owner; worktree `/bigtemp/vnr3ne/wt/gc-zookeeper`): the code. A fresh
-  clone of it and of the fork's `graphchecker/zookeeper-checks` (the adapter) runs every case (REPRODUCE §8). It is
+  clone of it and of the fork's tag `graphchecker/zookeeper-checks-liftlab` (the adapter) runs every case (REPRODUCE §8). It is
   `system/hbase` 5b4b6bae9 plus:
   - `experiments/zookeeper/` (HBase's layout; per-case settings in `zk-bugs/case.sh`, `zk-adhoc/checks.tsv` + `case.sh`,
     `workflow.properties`; `doors.jsonl` with the ZK_QUORUM and ZK_SNAPSHOT rows);
@@ -41,12 +41,13 @@ document; lead/RUNS.txt is the full log of runs and decisions.
 **The tree.** The fork https://github.com/JHSUYU/zookeeper.
 - Its master eab165995 is the buggy base; PR 2459's and PR 2454's fixes are its branches `fix-trunc-sync-shutdown-state`
   and `fix/observer-master-pending-proposals`.
-- `graphchecker/zookeeper-checks` = local `gc/zk-checks` (`/u/vnr3ne/zookeeper`), pushed after each integration: the
-  final series ran on 51b213562 (`gc/zk-hostseed`, the RO client's constant host seed for 04 and 13, on the final
-  `gc/zk-checks` 2b6e17bf8). It holds the adapter, the markers, the workloads and the tree workarounds (STATUS
-  "Per-system surface"). The fork's branch has since moved to 889f0e96 (2026-10-25: 7aa086bb `QuorumBase` starts its
-  peers from the highest id down, 07a2f0df/889f0e96 a workload's wait of `CONNECTION_TIMEOUT` or more for a server never
-  times out), the base of the buggy-detect trees `graphchecker/zk-bug-<jira>`; the local `gc/zk-checks` stays at 51b213562.
+- The tag `graphchecker/zookeeper-checks-liftlab` = 51b213562 = local `gc/zk-checks` (`/u/vnr3ne/zookeeper`): the final
+  series' tree (`gc/zk-hostseed`, the RO client's constant host seed for 04 and 13, on the final `gc/zk-checks`
+  2b6e17bf8), which `experiments/zookeeper/trees.tsv` names. It holds the adapter, the markers, the workloads and the
+  tree workarounds (STATUS "Per-system surface"). The fork's branch `graphchecker/zookeeper-checks` was pushed after each
+  integration and has since moved to 889f0e96 (2026-10-25: 7aa086bb `QuorumBase` starts its peers from the highest id
+  down, 07a2f0df/889f0e96 a workload's wait of `CONNECTION_TIMEOUT` or more for a server never times out), the base of
+  the buggy-detect trees `graphchecker/zk-bug-<jira>` (92c0f2b5 = 889f0e96 + workload ports below the ephemeral range).
 - The agents' tree branches are merged into it: `gc/zk-tree` (A), `gc/zk-tree-contfb` (A, container-reuse's fallback),
   `gc/zk-quorum-bugs` (B), `gc/zk-quorum` (C) and `gc/zk-learner` (D). `gc/zk-unified` and `gc/zk-unified-hb` are the
   old branch-3.9 trees.
@@ -271,7 +272,7 @@ The remote keeps two branches per system (README "The branches"):
 | `system/hdfs-liftlab` | every HDFS case on `system/hbase`'s engine (2026-10-27); replaces `system/hdfs` (the locked body, 39 cases, §0) and `system/hdfs1` (the other 7, §0), which stay on origin as history |
 | `system/solr` | the Solr group (§S; pushed 2026-10-19), from `system/hdfs1`; tree: the fork `JHSUYU/solr` `graphchecker/solr-checks` |
 | `system/hbase` | the HBase group (§H; pushed 2026-10-22), from `system/solr`; tree: the fork `JHSUYU/hbase` `graphchecker/hbase-checks` |
-| `system/zookeeper` | the ZooKeeper group (§Z; pushed 2026-10-22), from `system/hbase`; tree: the fork `JHSUYU/zookeeper` `graphchecker/zookeeper-checks` |
+| `system/zookeeper` | the ZooKeeper group (§Z; pushed 2026-10-22), from `system/hbase`; tree: the fork `JHSUYU/zookeeper`'s tag `graphchecker/zookeeper-checks-liftlab` |
 | `system/<x>-buggy-detect` (x = hdfs, hbase, zookeeper, solr) | `system/<x>` plus the old bugs put back on that system's tree, one case each, and their engine support (`docs/handover/BUGGY-DETECT.md` there); trees: the forks' `graphchecker/<x>-bug-<jira>` |
 
 The CloudLab branches `system/<x>-cloudlab` are deleted; their heads are the tags `archive/system/<x>-cloudlab`.
@@ -308,7 +309,7 @@ any of them anew from the fork ([../REPRODUCE.md](../REPRODUCE.md) §3):
 | `/bigtemp/vnr3ne/wt/sg3j-trees/lucene-solr-checks` (worktree of `~/lucene-solr-8_11`) | `gc/solr-zktrace2` `12d23091d1` | `graphchecker/solr-checks` on the fork `JHSUYU/solr` (pushed 2026-10-16, unchanged since) | THE Solr tree of every `system/solr` case since SGF8 (SGF8, SGF9; REPRODUCE §6 clones it); its history is the local branches `gc/solr-checks`, `gc/solr-bugs`, `gc/solr-body`, `gc/solr-zk-next`, `gc/solr-zk-doors`, `gc/solr-zk2` of `~/lucene-solr-8_11` (their worktrees are deleted) |
 | `/bigtemp/vnr3ne/wt/lucene-solr-storing` | `gc/solr-unified-storing` `04f8489` | none | solr-18406, solr-18413 (`main`) |
 | `/u/vnr3ne/hbase` | `gc/hbase-checks` `b5d5cc6a20` | `graphchecker/hbase-checks` on the fork `JHSUYU/hbase` | THE HBase tree of every `system/hbase` case (REPRODUCE §7 clones it; STATE §H) |
-| `/u/vnr3ne/zookeeper` | `gc/zk-checks` `51b213562` | `graphchecker/zookeeper-checks` on the fork `JHSUYU/zookeeper` | THE ZooKeeper tree of every `system/zookeeper` case (REPRODUCE §8 clones it; STATE §Z; the final series' tree sets `/bigtemp/vnr3ne/wt/zk-int-trees-11`, `-12`) |
+| `/u/vnr3ne/zookeeper` | `gc/zk-checks` `51b213562` | the tag `graphchecker/zookeeper-checks-liftlab` on the fork `JHSUYU/zookeeper` (the branch `graphchecker/zookeeper-checks` is at 889f0e96 since) | THE ZooKeeper tree of every `system/zookeeper` case (REPRODUCE §8 clones it; STATE §Z; the final series' tree sets `/bigtemp/vnr3ne/wt/zk-int-trees-11`, `-12`) |
 | `$GC_TREES/zookeeper-bug-710`, `zookeeper-bug-2886` (made by `prepare-trees.sh` on `system/zookeeper-buggy-detect`) | none (clones of the fork) | `graphchecker/zk-bug-710`, `graphchecker/zk-bug-2886` (and their `-control` branches, the fixed code) | the buggy-detect cases `zk-buggy-710`, `zk-buggy-2886` (that branch's `BUGGY-DETECT.md`) |
 | `/bigtemp/vnr3ne/wt/zookeeper-unified`, `zookeeper-hb` | `gc/zk-unified` `8f18cf3a4`, `gc/zk-unified-hb` `47ddc8b36` | none (never push: apache remote) | the zk-bugs cases (`main`) |
 

@@ -26,7 +26,8 @@ stage, round and job (streaming layout; the per-round solve/replay waits include
 
 ## 2. How ten lifts run many campaigns at once (the design)
 
-Ten lifts (`lift06`-`lift15`), 48 cores and 30 GB each, NFS-shared home and `/bigtemp`. Everything is placed by
+The lifts (`lift02`-`lift15`; ten, `lift06`-`lift15`, when the measurements below were taken; today twelve workers:
+`lift11` is the control host and `lift07` is down), 48 cores and 30 GB each, NFS-shared home and `/bigtemp`. Everything is placed by
 memory, through one ledger, so any number of campaigns, gates and agent runs can share the cluster without a host
 running out of memory, and a single case alone takes the whole cluster.
 
