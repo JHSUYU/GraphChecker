@@ -2,11 +2,12 @@
 
 You are the next lead (a coding agent that may run up to 5 coding agents). This file is self-contained: where Solr
 stands, what to read, what is left, how to run a case, and where everything is. Repo: `/u/vnr3ne/GraphChecker`, GitHub
-`git@github.com:JHSUYU/GraphChecker.git`; Solr's code is the branch `system/solr` (pushed; integration worktree
-`/bigtemp/vnr3ne/wt/gc-solr-merge` on `solr-int` = `system/solr`, worktree `/bigtemp/vnr3ne/wt/gc-solr`). The adapter
+`git@github.com:JHSUYU/GraphChecker.git`; Solr's code is the branch `system/solr` (pushed; worktree
+`/bigtemp/vnr3ne/wt/gc-solr`). The adapter
 (the Solr tree) is the fork's `graphchecker/solr-checks` (`https://github.com/JHSUYU/solr.git`, 12d23091d1). From GitHub:
-clone the two; [../REPRODUCE.md](../REPRODUCE.md) §6 builds the image and the tree and runs every case. Nothing runs on
-any lift.
+clone the two; [../REPRODUCE.md](../REPRODUCE.md) builds the image and the tree and runs every case. The old Solr bugs put
+back by hand (SOLR-9440, -6101, -6197) are the branch `system/solr-buggy-detect` (its own START-HERE); the other systems'
+branches are README "Branches".
 
 ## 1. Where Solr stands
 
@@ -31,19 +32,21 @@ at most 2 h (`explore_budget_s` 7200), 05 07 14 31 run without client faults and
 5. [LESSONS.md](LESSONS.md) -- the traps (shell, zombies and hung agents, NFS, heaps, Java 8 concurrency), how to
    measure, how to debug. Read all of it before running anything.
 6. [RULES.md](RULES.md), [AGENTS.md](AGENTS.md), [OPERATIONS.md](OPERATIONS.md), [PARALLEL.md](PARALLEL.md),
-   [CHECKING.md](CHECKING.md), [OPTIMIZATIONS.md](OPTIMIZATIONS.md) (every optimization, done, reverted and owed),
-   [REFACTOR-PLAN.md](REFACTOR-PLAN.md) (the rewrite's plan, done).
-7. `docs/design/PIPELINE.md` for the stage you touch; `docs/REPRODUCE.md` §6 to run the Solr cases from a fresh clone.
+   [CHECKING.md](CHECKING.md), [OPTIMIZATIONS.md](OPTIMIZATIONS.md) (every optimization, done, reverted and owed).
+7. `docs/design/PIPELINE.md` for the stage you touch; `docs/REPRODUCE.md` to run the Solr cases from a fresh clone.
 
 ## 3. Running a case
 
-From a fresh clone: [../REPRODUCE.md](../REPRODUCE.md) §6 (GraphChecker `system/solr`, the image built from the same
-branch -- the runtime refuses an older image by name --, the fork's tree, one case or the series). On this cluster:
+From a fresh clone: [../REPRODUCE.md](../REPRODUCE.md) (GraphChecker `system/solr`, the image built from the same
+branch -- the runtime refuses an older image by name --, the fork's tree, one case or the series). On liftlab (the
+workers are lift02-15 but lift11, the control host where the sessions run, and lift07, unreachable since 2026-10-23;
+Maven and Ant only on lift02-06 and lift08-10):
 
 1. A snapshot of the head: `tools/lib/worktree-add.sh /u/vnr3ne/gc-run/<name> <commit> --detach`, then
-   `mvn -q -o package -DskipTests` on a lift (`tools/onlift.sh -g 4`); never rebuild a snapshot a run reads.
+   `mvn -q -o package -DskipTests` on a lift with Maven (`LIFTS='lift04 lift05 lift06 lift08 lift09 lift10'
+   tools/onlift.sh -g 4`); never rebuild a snapshot a run reads.
 2. The cases, with the series driver of 2026-10-22: `SNAP=<snapshot> TREES=/bigtemp/vnr3ne/wt/sg3j-trees MAX_CLAIMS=3
-   WORKERS='<lifts, never lift11>' HEADS=lift10 /bigtemp/vnr3ne/analysis/solr-2026-10-22/lead/final/series2.sh <round>
+   WORKERS='<the workers>' HEADS=lift10 /bigtemp/vnr3ne/analysis/solr-2026-10-22/lead/final/series2.sh <round>
    <concurrency> <case>...` (each run detached on its head, `gc-out/solr-final/accept-<round>-<case>`; image
    `VM_IMAGE`, default vm-force10). Run Solr cases one at a time for their time, at most 3 at once otherwise: the 21.5 GB
    head steps starve beside more (R1-14's planner never started among 8). The last snapshot is `/u/vnr3ne/gc-run/sr-6`.
@@ -77,5 +80,5 @@ branch -- the runtime refuses an older image by name --, the fork's tree, one ca
   gen1, hold, ...).
 - Runs: `/bigtemp/vnr3ne/gc-out/solr/accept-<round>-<case>`: the SGF7 bug checks and SGF9 38 21 10 40 of record
   (the superseded runs were deleted in the 2026-10-22 cleanup).
-- Tools: final-stats.py, the driver and watchdog under final9/, GzCopy, HeapOwners, the offline COMPOSE recipe
-  `analysis/solr-2026-10-18/hold/compose-run.sh`.
+- Tools: `results/solr/final-stats.py`, the driver and watchdog under final9/, HeapOwners
+  (`analysis/solr-2026-10-18/redundancy/tool/`), the offline COMPOSE recipe `analysis/solr-2026-10-18/hold/compose-run.sh`.

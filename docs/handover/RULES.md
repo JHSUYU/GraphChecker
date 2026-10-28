@@ -138,6 +138,7 @@ recommendation.
   change (codec capture, open arms, rule 1, the retried-call identity) and every case still open is worked on
   `system/hdfs1`, branched from the locked body. The end state is these two branches (owner: "最终就是两个分支，system/hdfs和
   system/hdfs1"): nothing merges back into `system/hdfs` or `main`; STATUS names the branch that closed each case.
+  (Since 2026-10-27 `system/hdfs-liftlab` replaces both as the HDFS branch; they stay on the remote as history.)
 - **The last open cases close by workarounds** (owner 2026-10-06 ~20:00: "如果加点workaround，是不是小改动就能大大省去我们的很多
   复杂改动"; "我要求你加点workaround"): where a general fix would be an identity, PLAN or runtime change gated on many cases,
   a per-case workaround closes the case instead -- a case declaration (its own loop bounds, world depth), or one small
@@ -184,7 +185,8 @@ recommendation.
 - **A large rewrite is allowed, old code is gone for good** ("由于现在代码太过于臃肿，我已经允许你大改动了", "你可以大规模
   重写了，最后20个case重跑一遍debug就行", "旧的代码就要全部删除了。再也不用了"): one implementation per concept, no
   flag or fallback, nothing kept for comparison (references are old run outputs and old jars); acceptance of the rewrite =
-  all 20 Solr cases rerun and debugged. The plan is REFACTOR-PLAN.md.
+  all 20 Solr cases rerun and debugged. Carried out 2026-10-18/19 (workstreams A-H: OPTIMIZATIONS; the 20 cases:
+  `results/solr/`).
 - **Read what exists before building** ("总之你好好读读现在已有的代码机制和细节吧，不要重复造轮子了 ... 包括system/hdfs
   上的上一个版本的代码，包括vm"): an inventory of the engine, both branches and the VM precedes a new mechanism
   (analysis/solr-2026-10-18/capabilities/INVENTORY.md).
@@ -292,8 +294,8 @@ recommendation.
   per live round; stacking several big changes is what made rounds regress repeatedly
   (2026-10-01). **Superseded across systems by per-system branches** (owner 2026-10-08, long-term: "solr上现在是全新的开发了。
   引擎和vm可以一次多处修改。不必遵循一次修改一处"; "不止局限于hdfs, 以后，hdfs, solr, zookeeper, hbase都是自己的branch。回归只考虑在自己的
-  system内"): each system lives on its own branch (`system/hdfs` + `system/hdfs1`, `system/solr`, `system/zookeeper`,
-  `system/hbase`) and regression is judged only within that system (Solr: its 20 cases, solr-18406 and solr-18413
+  system内"): each system lives on its own branch (`system/hdfs-liftlab`, formerly `system/hdfs` + `system/hdfs1`;
+  `system/solr`, `system/zookeeper`, `system/hbase`; each system's old bugs on `system/<x>-buggy-detect`) and regression is judged only within that system (Solr: its 20 cases, solr-18406 and solr-18413
   first, a final round of all 20 with none regressed). Several engine and VM changes may land per round; another
   system's corpora may serve as offline-gate data, never as a blocker.
 
@@ -303,8 +305,8 @@ recommendation.
 - **Outcomes, not reports** (owner 2026-09-30/10-04): no report documents as deliverables; a check is done when
   its `.smt` is right. Agents report in a few lines.
 - **The servers: MAXIMIZE all ten** (owner 2026-09-28/30, restated 2026-10-05 long-term: "一定要最大化利用10个server。这10个
-  server配有nfs,你只要做好代码隔离等。可以大大加速的。这是你的长期记忆"): keep `lift06`–`lift15` (`lift11` included as a
-  worker) full at all times. Every case or probe that does not wait on a pending fix runs now; a landed fix is validated
+  server配有nfs,你只要做好代码隔离等。可以大大加速的。这是你的长期记忆"): keep the workers -- liftlab's `lift02`–`lift15`
+  but `lift11` (the control host) and `lift07` (unreachable since 2026-10-23) -- full at all times. Every case or probe that does not wait on a pending fix runs now; a landed fix is validated
   at once on the cases it touches, never waiting for a whole round; check utilization (memory and load on every lift)
   at every lull and fill it. NFS shares everything, so isolation is what makes this safe: every agent and run on its
   own worktree, frozen snapshot and `GC_OUT`, never a tree or snapshot someone reads. The only limit: no lift above
@@ -322,7 +324,7 @@ recommendation.
    mains `run_engine.sh` and `tools/` launch, the hook methods `CausynthPipeline` weaves by name, the system trees'
    calls into `MessageDoors` and the shim, reflection, VM natives), then a grep over `src/`, `run_engine.sh`, `tools/`,
    `experiments/` and every system tree (`/bigtemp/vnr3ne/wt/hadoop-*`, `lucene-solr-*`, `zookeeper-*`,
-   `hbase-unified`); config keys and environment variables no launcher sets; shell functions nothing calls; scripts no
+   `hbase-*`); config keys and environment variables no launcher sets; shell functions nothing calls; scripts no
    tool or doc names. The 2026-10-05 audit's tables: `/bigtemp/vnr3ne/analysis/study-2026-10-04/cleanup-audit/`.
 3. **One mechanism per concept**: two implementations of one idea (a second "does this move" walk, two pairing rules,
    nine "property else environment" lookups, JSON helpers beside `smt/JsonFields`, a forwarding layer that only

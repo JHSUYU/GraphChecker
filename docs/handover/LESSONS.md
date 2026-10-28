@@ -1,6 +1,6 @@
 # Lessons: the traps we fell into, how we measure, how we debug (2026-10-18)
 
-Read after RULES.md, AGENTS.md, OPERATIONS.md, PARALLEL.md, CHECKING.md and REFACTOR-PLAN.md. Every item below
+Read after RULES.md, AGENTS.md, OPERATIONS.md, PARALLEL.md and CHECKING.md. Every item below
 cost us time at least once; the date or the case it came from is named so it can be checked.
 
 ## 1. How we work (pointers; the rules themselves are in RULES.md)
@@ -67,8 +67,7 @@ cost us time at least once; the date or the case it came from is named so it can
 - /bigtemp is corezfs04, a shared department ZFS over NFS v3; every lift has 1 Gb/s (~115 MB/s). Under our own
   load a 164 MB read ran at 19 MB/s. Session rows are therefore `.jsonl.gz` (gzip level 6, sync-flushed appends,
   17-27x smaller), read through one opener (smt.ArtifactIO#input; shell `campaign_rows`). Old plain run dirs are
-  NOT readable by the new code: make a compressed copy with analysis/solr-2026-10-17/nfs/tool/GzCopy (it never
-  writes into its source).
+  NOT readable by the new code (the copier that gzipped them, GzCopy, went in a cleanup: they are evidence only).
 - NFS attribute caching: a file created on one host is seen on another ~29 s later; a stat of a missing file
   can stay cached "absent" for 30-60 s. So create files before any reader starts, open instead of stat
   (close-to-open consistency), and use an append-only journal instead of a directory listing for state other

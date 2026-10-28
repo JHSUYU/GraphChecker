@@ -1,212 +1,134 @@
-# Reproducing the 46 HDFS checks (and the Solr group, §6) from GitHub
+# Reproducing the Solr checks from GitHub (`system/solr`)
 
-Everything a run of the 46 HDFS cases needs is in two GitHub repositories (the Solr cases: §6). Nothing on the cluster's disks is assumed
-besides the operating system packages below.
+Everything a run of the 20 Solr cases needs is on GitHub: this branch (the engine, the case settings, the VM sources)
+and the Solr fork's `graphchecker/solr-checks` (the tree under test). Nothing on the cluster's disks is assumed besides
+the operating system packages below (§0).
 
 | repository | branch | what it holds |
 | --- | --- | --- |
-| `git@github.com:JHSUYU/GraphChecker.git` (private) | `system/hdfs` | the locked body: the engine that closed 39 cases (the named bugs but 11741, and 30 study checks) |
-| | `system/hdfs1` | the newest body: the other 7 cases (07 11741 21 29 30 39 40), these tools, the VM sources |
-| `https://github.com/JHSUYU/hadoop.git` (public fork) | `graphchecker/hdfs-checks` | the HDFS tree of 43 cases (tree `hadoop-hdfs-study-r7`) |
-| | `graphchecker/hdfs-checks-adhoc07` | hdfs-adhoc-07's tree (`hadoop-hdfs-study-r8`) |
-| | `graphchecker/hdfs-checks-adhoc21` | hdfs-adhoc-21's tree (`hadoop-hdfs-21`) |
-| | `graphchecker/hdfs-11741` | hdfs-11741's tree (`hadoop-hdfs-11741-r6`): trunk with HDFS-11741's fix reverted |
+| `git@github.com:JHSUYU/GraphChecker.git` (private) | `system/solr` | the engine, the 20 cases ([`experiments/solr/solr-cases.tsv`](../experiments/solr/solr-cases.tsv): case, branch, budget), the VM sources, every case's final `.smt` and time row ([`results/solr/`](../results/solr/README.md)) |
+| `https://github.com/JHSUYU/solr.git` (public fork) | `graphchecker/solr-checks` | the Solr 8.11 tree of every case (`lucene-solr-checks`, [`experiments/solr/trees.tsv`](../experiments/solr/trees.tsv)): Apache Lucene/Solr `branch_8_11` (8.11.4, `faca81b`) with the adapter, every case's target marker and the bug checks' workloads |
 
-Which branch runs which case, with the case's budget and what series EX1 ended with, is
-[`experiments/hadoop/hdfs-cases.tsv`](../experiments/hadoop/hdfs-cases.tsv); which fork branch each tree is,
-[`experiments/hadoop/trees.tsv`](../experiments/hadoop/trees.tsv). The VM sources
-(`third_party/OpenJDK-Concolic-Execution-Engine`) are the same on both GraphChecker branches, so one image serves both.
+The other systems reproduce from their own branches' `docs/REPRODUCE.md` (README "Branches"): HDFS from
+`system/hdfs-liftlab`, HBase from `system/hbase`, ZooKeeper from `system/zookeeper`, the old Solr bugs put back by hand
+from `system/solr-buggy-detect`. The HDFS cases this branch carries from `system/hdfs1` are reproduced by
+`system/hdfs-liftlab`.
 
 ## 0. The machines
 
-- Linux x86_64 hosts (Ubuntu 22.04 here: ten hosts `lift06`-`lift15`, 48 cores and 30 GB each). One host works; a case
-  then takes several times longer (PERFORMANCE §6 was measured on ten).
+- Linux x86_64 hosts (Ubuntu 22.04 here: liftlab, `lift02`-`lift15`, 48 cores and 30 GB each; lift11 is the control host
+  where the sessions run, never a worker; lift07 does not answer since 2026-10-23, so a run's workers are the other 12).
+  One host works; a case then takes several times longer.
 - One filesystem mounted at the same path on every host (`GC_BULK`, here `/bigtemp/vnr3ne`), the home directory shared
   too, passwordless `ssh -o BatchMode=yes` between the hosts, and a local scratch directory `/localtmp/$USER` on each.
-- Packages: `openjdk-8-jdk` (at `/usr/lib/jvm/java-8-openjdk-amd64`), `maven` (`/usr/lib/maven/bin`), `git`,
-  `python3`, `rsync`. For the VM build, on one host: `gcc-6`/`g++-6` and `libffi-dev libfreetype6-dev libcups2-dev
-  libasound2-dev libx11-dev libxext-dev libxt-dev libxrender-dev libxtst-dev zip unzip` (or Docker: step 2).
+- Packages: `openjdk-8-jdk` (at `/usr/lib/jvm/java-8-openjdk-amd64`), `maven` (`/usr/lib/maven/bin`), Apache Ant with Ivy
+  (`ant ivy-bootstrap` once per host), `git`, `python3`, `rsync` (Maven and Ant here only on lift02-06 and lift08-10:
+  build there). For the VM build, on one host: `gcc-6`/`g++-6` and `libffi-dev libfreetype6-dev libcups2-dev
+  libasound2-dev libx11-dev libxext-dev libxt-dev libxrender-dev libxtst-dev zip unzip` (here lift15; or Docker: §2).
 - z3 4.14.1: unpack `https://github.com/Z3Prover/z3/releases/download/z3-4.14.1/z3-4.14.1-x64-glibc-2.35.zip` and put
   `bin/z3` at `~/.local/bin/z3` (or name it as `Z3_BIN`).
 
 Where things go is stated once, in [`tools/lib/gc-env.sh`](../tools/lib/gc-env.sh): `GC_BULK` (the shared storage),
 `GC_OUT` (run outputs), `GC_TREES` (the system trees), `GC_M2` (their Maven repositories), `Z3_BIN`, `LIFTS` (the
-hosts) and `CAUSYNTH_HOST_MAX_USED_PCT` (70: no start may leave a host fuller). On another cluster, edit those
-defaults in that file on both checkouts. A value exported in the shell that starts a run also works: every hop of the
-run passes them on (`gc_env_words`); `tools/onlift.sh` does not, so give it `env NAME=value` in its command. The
-commands from step 2 on use these variables: `source ~/GraphChecker-hdfs1/tools/lib/gc-env.sh` in the shell first.
+hosts; its default names every lift) and `CAUSYNTH_HOST_MAX_USED_PCT` (70: no start may leave a host's memory fuller).
+On another cluster, edit those defaults in that file. A value exported in the shell that starts a run also works: every
+hop of the run passes them on (`gc_env_words`); `tools/onlift.sh` does not, so give it `env NAME=value` in its command.
+The commands from §2 on use these variables: `source ~/GraphChecker-solr/tools/lib/gc-env.sh` in the shell first, and
+export `LIFTS` without the control host and any host that does not answer (here: `export LIFTS="lift02 lift03 lift04
+lift05 lift06 lift08 lift09 lift10 lift12 lift13 lift14 lift15"`). `tools/onlift.sh` runs a command in the current
+directory on the host of `LIFTS` with the most room, with Java 8 and Maven on its path; give it the hosts with Maven and
+Ant (`LIFTS="lift04 lift05 lift06 lift08 lift09 lift10" tools/onlift.sh ...`) for every build.
 
-## 1. GraphChecker, both branches
+## 1. GraphChecker
 
 ```bash
-for b in hdfs1 hdfs; do
-  git clone -q --no-checkout -b system/$b git@github.com:JHSUYU/GraphChecker.git ~/GraphChecker-$b
-  git -C ~/GraphChecker-$b sparse-checkout set --no-cone '/*' '!/third_party/'
-  git -C ~/GraphChecker-$b checkout -q system/$b
-  (cd ~/GraphChecker-$b && ~/GraphChecker-hdfs1/tools/onlift.sh -g 6 mvn -q package -DskipTests)
-done
+git clone -q --no-checkout -b system/solr git@github.com:JHSUYU/GraphChecker.git ~/GraphChecker-solr
+git -C ~/GraphChecker-solr sparse-checkout set --no-cone '/*' '!/third_party/'
+git -C ~/GraphChecker-solr checkout -q system/solr
+(cd ~/GraphChecker-solr && tools/onlift.sh -g 6 mvn -q package -DskipTests)
+source ~/GraphChecker-solr/tools/lib/gc-env.sh
 ```
 
-The checkouts leave out `third_party/` (the VM's 47,000 source files, which no build or run reads; step 2 clones them
-apart). `tools/onlift.sh` runs a command in the current directory on the host of `LIFTS` with the most room, with
-Java 8 and Maven on its path; use it for every build. The first build downloads the dependencies into `~/.m2`. The jars
-(`target/GraphChecker-1.0-SNAPSHOT{,-jar-with-dependencies}.jar`; on `system/hdfs` also `-hadoop-shim`) are what a run reads; leave a checkout
-alone while a run uses it.
+The checkout leaves out `third_party/` (the VM's 47,000 source files, which no build or run reads; §2 clones them
+apart). The first build downloads the dependencies into `~/.m2`. The jars
+(`target/GraphChecker-1.0-SNAPSHOT{,-jar-with-dependencies}.jar`) are what a run reads; leave a checkout alone while a
+run uses it.
 
 ## 2. The concolic VM image
 
-On a host with gcc-6, a full clone on its local disk:
+The image is built from `system/solr`'s own VM sources, on a host with gcc-6, from a full clone on its local disk. They
+carry the forced replay's native, `System.forceNextConcolicBranch`, and the one-channel read-out,
+`System.readOutTrackedLocations`: the runtime refuses an image without it by name -- a seed replay ends "Concolic task
+plan requires current custom VM broker capabilities: [readOutTrackedLocations]". On liftlab the image is
+`/bigtemp/vnr3ne/vm-force10/j2sdk-image`, built from these sources.
 
 ```bash
-ssh <host> 'git clone -q -b system/hdfs1 git@github.com:JHSUYU/GraphChecker.git /localtmp/$USER/gc-vm &&
-  /localtmp/$USER/gc-vm/tools/vm/build-image.sh <GC_BULK>/vm/hdfs'
+ssh <host> 'git clone -q -b system/solr git@github.com:JHSUYU/GraphChecker.git /localtmp/$USER/gc-vm-solr &&
+  /localtmp/$USER/gc-vm-solr/tools/vm/build-image.sh <GC_BULK>/vm/solr'
 ```
 
-A full OpenJDK 8 (Zero, release, `-DENABLE_CONCOLIC`) built on the host's local disk, then the causynth smoke suite
-on it: `$GC_BULK/vm/hdfs/j2sdk-image` is the image (`CAUSYNTH_CUSTOM_JDK_HOME`), `SOURCE.txt` the commit it was built
-from, `smoke.log` the suite (`SMOKE_EXIT=0`, 24 `OK` lines). About 3 minutes at `JOBS=40` (lift15, 2026-10-08). A
-host without gcc-6:
-`FULL_JDK=true third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_build_in_docker.sh` (Ubuntu 18.04
-container), then copy its `build/linux-x86_64-normal-zero-release/images/j2sdk-image`.
+`$GC_BULK/vm/solr/j2sdk-image` is `CAUSYNTH_CUSTOM_JDK_HOME` for every Solr run: a full OpenJDK 8 (Zero, release, `-DENABLE_CONCOLIC`) built on the host's local disk, then the causynth smoke suite on
+it: `SOURCE.txt` beside the image is the commit it was built from, `smoke.log` the suite (`SMOKE_EXIT=0`, 24 `OK`
+lines); a few minutes. A host without gcc-6: `FULL_JDK=true
+third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_build_in_docker.sh` (Ubuntu 18.04 container), then copy
+its `build/linux-x86_64-normal-zero-release/images/j2sdk-image`.
 
-## 3. The four HDFS trees
+## 3. The Solr tree
+
+Ant resolves the tree's libraries into `~/.ivy2` (the first build downloads them):
 
 ```bash
-cd ~/GraphChecker-hdfs1
-for t in hadoop-hdfs-study-r7 hadoop-hdfs-study-r8 hadoop-hdfs-21 hadoop-hdfs-11741-r6; do
-  tools/onlift.sh -g 8 experiments/hadoop/prepare-trees.sh $t > $GC_BULK/prepare-$t.log 2>&1 &
-done; wait
+cd ~/GraphChecker-solr
+tools/onlift.sh -g 8 experiments/solr/prepare-trees.sh > $GC_BULK/prepare-solr.log 2>&1
 ```
 
-Each tree is cloned from the fork at `$GC_TREES/<name>` on its branch, built against `system/hdfs1`'s jar with a
-Maven repository of its own (`$GC_M2/<name>`; hadoop-hdfs and every module it needs, Java 8), and then runs the
-workload of every case that names it once natively: a case's classpath is read off its workload's surefire report, so
-a case whose workload never ran in its tree fails validate ("missing test report"). The log ends with one line per
-workload, `PASSED` or `FAILED` (a native failure still leaves the report the case needs) or `MISSING` (the script
-fails). A native `FAILED` seen once: `TestDFSStartupVersions#testVersions` in the long combined run (a DataNode's
-storage lock still held by the previous one in the same JVM); it passed when run again alone. Both GraphChecker
-branches read these trees: a run puts its own jar ahead of the tree's classpath. 10-25 minutes a tree (clone over
-NFS, build, workloads; r7 with its 43 workloads the longest; 2026-10-08), the four in parallel.
+`prepare-trees.sh` clones the fork's `graphchecker/solr-checks` into `$GC_TREES/lucene-solr-checks` (a directory
+already there is only built), builds solr-core and its tests (solrj, the test framework) with Ant on Java 8 against
+the checkout's jar (`experiments/solr/build.sh`), and runs every case's workload once natively under its seed
+(`experiments/solr/system.sh` `solr_seed`), one Ant run each: a case's classpath is read off its workload's junit4
+report. The log has one line per workload, `PASSED`, `FAILED` (natively; its report is still its classpath) or
+`MISSING` (the script fails). The tree's hooks call the engine's `MessageDoors` (the view publication:
+`publishing`, `refreshStarting`, `refreshEnded`) and `Sessions` (the expirer a planted
+SessionExpired calls, `CausynthSolrCluster#expire`), so it is built against, and runs on, the jar of the same
+`system/solr` checkout. On `gc/solr-zktrace2` (12d23091d1, 2026-10-16: `gc/solr-zktrace` 8fde6b812c -- final9 plus
+SolrZkClient's store-read door and the watcher's path and type -- plus the test client's live nodes in node order and
+an unbatched Overseer's queue removal in its message's own turn; engine system/solr 19ae623a7) all 17 workloads of the 20 cases passed (05 and 07
+share `AddReplicaTest#testAddMultipleReplicas`; 10, 39 and 40 `TimeRoutedAliasUpdateProcessorTest#test`), 3-62 s
+each, about 17 minutes for the workloads after the build, and `bash experiments/lib/run.sh
+experiments/solr/<case dir> <arg> validate` found every case's configuration valid. Checked again from a fresh clone on
+2026-10-19 (`system/solr` 980b76e80 from GitHub, the fork's branch into an empty `GC_TREES`;
+`/bigtemp/vnr3ne/analysis/solr-2026-10-18/final9/fork-check6.sh`, run through `tools/onlift.sh` -- a bare ssh shell
+has no `mvn` on its PATH): the build, 17 of 17 workloads PASSED, 20 of 20 cases valid, and solr-adhoc-38 ran from
+that clone through SEED, PLAN, INSTRUMENT, REPLAY and 64 rounds of EXPLORE (stopped after 45 min; its witness, a
+timing-dependent fatal, did not recur in that run). After a change to the tree, `SKIP_TREE_BUILD=1 experiments/solr/build.sh
+$GC_TREES/lucene-solr-checks F0993D5343E20BA4 '<Class>#<method>'` runs one workload; never build a tree a run
+reads.
 
 ## 4. Running the cases
 
-One case, from the checkout of its branch (the table's `branch` and `budget_s` columns):
+The 20 cases, each alone on the cluster with its budget (05, 07 and 14 take the longest; each case's time is its row in
+`results/solr/README.md`):
 
 ```bash
-cd ~/GraphChecker-hdfs1
-export GC_OUT=$GC_BULK/gc-out/repro CAUSYNTH_CUSTOM_JDK_HOME=$GC_BULK/vm/hdfs/j2sdk-image
-CASE_TIMEOUT_SECONDS=21600 tools/rounds/launch-run.sh ~/GraphChecker-hdfs1 hdfs-adhoc-29 R1-adhoc-29
+export GC_OUT=$GC_BULK/gc-out/repro-solr CAUSYNTH_CUSTOM_JDK_HOME=$GC_BULK/vm/solr/j2sdk-image
+(setsid nohup tools/rounds/run-series.sh S1 experiments/solr/solr-cases.tsv system/solr=$HOME/GraphChecker-solr \
+  > $GC_OUT/series-S1.out 2>&1 < /dev/null &)
 ```
 
-The run detaches; it writes `$GC_OUT/accept-R1-adhoc-29/` and ends with the second line of its `summary.tsv`. Its
-obligations go to every host of `LIFTS`. `tools/rounds/stop-run.sh R1-adhoc-29` (with the same `GC_OUT`) stops it.
-
-All 46, each alone on the cluster, as series EX1 ran them:
-
-```bash
-cd ~/GraphChecker-hdfs1
-(setsid nohup tools/rounds/run-series.sh R1 experiments/hadoop/hdfs-cases.tsv system/hdfs=$HOME/GraphChecker-hdfs \
-  system/hdfs1=$HOME/GraphChecker-hdfs1 > $GC_OUT/series-R1.out 2>&1 < /dev/null &)
-```
-
-Each case runs from the checkout of its branch with its budget; naming case ids after the checkouts runs only
-those. The series took 15.2 h on the ten hosts (most cases 10-40 min, 11741 ~45 min, 07 ~3 h); a stopped series
-resumes by the same command (finished cases are skipped); `touch $GC_OUT/series-R1.STOP` ends it before its next
-case. Many cases at once instead: `tools/adhoc/sweep.sh` ([handover/OPERATIONS.md](handover/OPERATIONS.md) §4).
+One case alone: `CASE_TIMEOUT_SECONDS=14400 tools/rounds/launch-run.sh ~/GraphChecker-solr solr-18406 S1-18406`
+(the same `GC_OUT` and image; it holds the shell until the case ends, writes `$GC_OUT/accept-S1-18406/` and ends with
+the second line of its `summary.tsv`; `tools/rounds/stop-run.sh S1-18406` stops it). A stopped series resumes by the same
+command (finished cases are skipped); `touch $GC_OUT/series-S1.STOP` ends it before its next case. Run Solr cases one at
+a time for their time, at most 3 at once otherwise: a head step wants ~23 GB, and eight at once starved them (STATE §S).
+Many at once: `tools/adhoc/sweep.sh` with `CASE_TIMEOUT_SECONDS=21600` ([handover/OPERATIONS.md](handover/OPERATIONS.md)
+§4).
 
 ## 5. Reading the results
 
-```bash
-tools/rounds/round-verify.sh R1      # how each EXPLORE ended, z3 on the file, gaps, roots
-tools/rounds/series-stats.py R1      # claim, time breakdown, closure regions per case
-```
-
-A case reproduces when its claim is the table's `ex1_claim`: SAT (`SAT_CANDIDATE`: confirmed by a replay, reproduced
-natively) for the ten named bugs and hdfs-adhoc-10 and -12; UNSAT (`UNSAT_CLOSED`: z3 on the exported
-`final/candidate.smt2` says unsat, EXPLORE at its fixed point) for the rest; hdfs-adhoc-21 `RUN_DEFECT` (its accepted
-residue). The report's `PASS` also checks a named bug's declared mechanism; a study check declares none, so its report
-says `FAIL` whatever its claim: the claim and round-verify decide, as [handover/CHECKING.md](handover/CHECKING.md) §1
-says. What each `.smt` must contain (its causal chain, symbols and propagation, read by hand against the HDFS code)
-is each case's row in [STATUS.md](STATUS.md) "HDFS checks"; `tools/analysis/smt-legend.py <run>/out/<case>` names every symbol of a formula.
-Wall times vary run to run (replays race); the EX1 rows are in [design/PERFORMANCE.md](design/PERFORMANCE.md) §6.
-
-## 6. The Solr cases
-
-The 20 Solr cases ([`experiments/solr/solr-cases.tsv`](../experiments/solr/solr-cases.tsv): case, branch, budget) run
-on GraphChecker's `system/solr` and one Solr 8.11 tree, the branch `graphchecker/solr-checks` of the public fork
-`https://github.com/JHSUYU/solr.git` (tree `lucene-solr-checks`,
-[`experiments/solr/trees.tsv`](../experiments/solr/trees.tsv)): Apache Lucene/Solr `branch_8_11` (8.11.4, `faca81b`)
-with the adapter, every case's target marker and the bug checks' workloads.
-
-1. **GraphChecker.** As §1, on the branch `system/solr`:
-
-   ```bash
-   git clone -q --no-checkout -b system/solr git@github.com:JHSUYU/GraphChecker.git ~/GraphChecker-solr
-   git -C ~/GraphChecker-solr sparse-checkout set --no-cone '/*' '!/third_party/'
-   git -C ~/GraphChecker-solr checkout -q system/solr
-   (cd ~/GraphChecker-solr && tools/onlift.sh -g 6 mvn -q package -DskipTests)
-   source ~/GraphChecker-solr/tools/lib/gc-env.sh
-   ```
-
-2. **The image.** As §2, from `system/solr` (its VM sources carry the forced replay's native,
-   `System.forceNextConcolicBranch`, which the HDFS image lacks, and the one-channel read-out,
-   `System.readOutTrackedLocations`: the runtime refuses an image without it by name -- a seed replay ends "Concolic task
-   plan requires current custom VM broker capabilities: [readOutTrackedLocations]"; on the cluster the image is
-   `/bigtemp/vnr3ne/vm-force10/j2sdk-image`, built from these sources):
-
-   ```bash
-   ssh <host> 'git clone -q -b system/solr git@github.com:JHSUYU/GraphChecker.git /localtmp/$USER/gc-vm-solr &&
-     /localtmp/$USER/gc-vm-solr/tools/vm/build-image.sh <GC_BULK>/vm/solr'
-   ```
-
-   `$GC_BULK/vm/solr/j2sdk-image` is `CAUSYNTH_CUSTOM_JDK_HOME` for every Solr run.
-
-3. **The tree.** Besides §0's packages it needs Apache Ant with Ivy (`ant ivy-bootstrap` once per host; Ant resolves
-   the tree's libraries into `~/.ivy2`, the first build downloads them):
-
-   ```bash
-   cd ~/GraphChecker-solr
-   tools/onlift.sh -g 8 experiments/solr/prepare-trees.sh > $GC_BULK/prepare-solr.log 2>&1
-   ```
-
-   `prepare-trees.sh` clones the fork's `graphchecker/solr-checks` into `$GC_TREES/lucene-solr-checks` (a directory
-   already there is only built), builds solr-core and its tests (solrj, the test framework) with Ant on Java 8 against
-   the checkout's jar (`experiments/solr/build.sh`), and runs every case's workload once natively under its seed
-   (`experiments/solr/system.sh` `solr_seed`), one Ant run each: a case's classpath is read off its workload's junit4
-   report. The log has one line per workload, `PASSED`, `FAILED` (natively; its report is still its classpath) or
-   `MISSING` (the script fails). The tree's hooks call the engine's `MessageDoors` (the view publication:
-   `publishing`, `refreshStarting`, `refreshEnded`) and `Sessions` (the expirer a planted
-   SessionExpired calls, `CausynthSolrCluster#expire`), so it is built against, and runs on, the jar of the same
-   `system/solr` checkout. On `gc/solr-zktrace2` (12d23091d1, 2026-10-16: `gc/solr-zktrace` 8fde6b812c -- final9 plus
-   SolrZkClient's store-read door and the watcher's path and type -- plus the test client's live nodes in node order and
-   an unbatched Overseer's queue removal in its message's own turn; engine system/solr 19ae623a7) all 17 workloads of the 20 cases passed (05 and 07
-   share `AddReplicaTest#testAddMultipleReplicas`; 10, 39 and 40 `TimeRoutedAliasUpdateProcessorTest#test`), 3-62 s
-   each, about 17 minutes for the workloads after the build, and `bash experiments/lib/run.sh
-   experiments/solr/<case dir> <arg> validate` found every case's configuration valid. Checked again from a fresh clone on
-   2026-10-19 (`system/solr` 980b76e80 from GitHub, the fork's branch into an empty `GC_TREES`;
-   `/bigtemp/vnr3ne/analysis/solr-2026-10-18/final9/fork-check6.sh`, run through `tools/onlift.sh` -- a bare ssh shell
-   has no `mvn` on its PATH): the build, 17 of 17 workloads PASSED, 20 of 20 cases valid, and solr-adhoc-38 ran from
-   that clone through SEED, PLAN, INSTRUMENT, REPLAY and 64 rounds of EXPLORE (stopped after 45 min; its witness, a
-   timing-dependent fatal, did not recur in that run). After a change to the tree, `SKIP_TREE_BUILD=1 experiments/solr/build.sh
-   $GC_TREES/lucene-solr-checks F0993D5343E20BA4 '<Class>#<method>'` runs one workload; never build a tree a run
-   reads.
-
-4. **The 20 cases**, each alone on the cluster with its budget (05, 07 and 14 take the longest; the times of the last
-   rounds are STATUS "Solr checks"):
-
-   ```bash
-   export GC_OUT=$GC_BULK/gc-out/repro-solr CAUSYNTH_CUSTOM_JDK_HOME=$GC_BULK/vm/solr/j2sdk-image
-   (setsid nohup tools/rounds/run-series.sh S1 experiments/solr/solr-cases.tsv system/solr=$HOME/GraphChecker-solr \
-     > $GC_OUT/series-S1.out 2>&1 < /dev/null &)
-   ```
-
-   One case alone: `CASE_TIMEOUT_SECONDS=14400 tools/rounds/launch-run.sh ~/GraphChecker-solr solr-18406 S1-18406`
-   (the same `GC_OUT` and image). Many at once: `tools/adhoc/sweep.sh` with `CASE_TIMEOUT_SECONDS=21600`
-   ([handover/OPERATIONS.md](handover/OPERATIONS.md) §4).
-
-5. **Reading them**, as §5: `tools/rounds/round-verify.sh S1`; each case's final verdict, `.smt`, time and regions to
-   compare with are [`results/solr/`](../results/solr/README.md) (each UNSAT read with
-   `tools/analysis/vacuity.py --latest --detail <run>`). A bug check reproduces when it ends `SAT_CANDIDATE`
-   (confirmed by a replay, reproduced natively: `final/reproduce.json`); a study check when its `.smt` is right, SAT
-   confirmed or UNSAT at its fixed point with no `BOUNDED`/`UNBOUND` (each case's row: [STATUS.md](STATUS.md) "Solr
-   checks"; the checking method and its traps: [handover/CHECKING.md](handover/CHECKING.md)).
+`tools/rounds/round-verify.sh S1` (how each EXPLORE ended, z3 on the file, gaps, roots) and
+`tools/rounds/series-stats.py S1` (claim, time breakdown, closure regions per case); each case's final verdict, `.smt`,
+time and regions to compare with are [`results/solr/`](../results/solr/README.md) (each UNSAT read with
+`tools/analysis/vacuity.py --latest --detail <run>`). A bug check reproduces when it ends `SAT_CANDIDATE`
+(confirmed by a replay, reproduced natively: `final/reproduce.json`); a study check when its `.smt` is right, SAT
+confirmed or UNSAT at its fixed point with no `BOUNDED`/`UNBOUND` (each case's row: [STATUS.md](STATUS.md) "Solr
+checks"; the checking method and its traps: [handover/CHECKING.md](handover/CHECKING.md)).

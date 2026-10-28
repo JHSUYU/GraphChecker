@@ -3928,7 +3928,7 @@ row's reason), `UNSAT` when it is
 `defects[]` is the reason). A case without one is `STOPPED` when its summary row
 exists (the stage and reason its logs state: the campaign's own failure, the case timeout, a
 failed trace aggregation, a stage's Java main, the engine's `die`, a full disk or quota),
-`PENDING` when never started, else `RUNNING` while some lift (`LIFTS`, default lift06–15) still
+`PENDING` when never started, else `RUNNING` while some lift (`LIFTS`, default lift02–15) still
 runs a process naming its directory, `DEAD` when none does.
 
 `tools/regress/offline-ab.sh --round <round>... <baseline-jar> <candidate-jar> [case...]` is the

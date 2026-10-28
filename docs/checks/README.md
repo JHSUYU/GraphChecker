@@ -27,7 +27,7 @@ are their turn's first TODO).
 
 Counts: the final selection (owner 2026-10-21, `docs/checks/SELECTION.md`): HDFS 38 selected / 36 with an integration test / 46 executions, Solr 21 / 13 / 20, HBase 25 / 19 / 22, ZooKeeper 19 / 16 / 16 (points selected / with an integration test we run / causym executions).
 
-## HDFS (the current system): 36 study checks
+## HDFS: 36 study checks (as the former HDFS branches closed them; the HDFS record is `system/hdfs-liftlab`)
 
 State at the end of the HDFS group (2026-10-07): every check has an exported `.smt`
 read by hand against the code, one row each in [../STATUS.md](../STATUS.md) "HDFS checks" (the branch that closed it -- `system/hdfs`, locked, or
@@ -92,13 +92,13 @@ Per-case workarounds: 21 (tree r7-21, its loop bounds), 07 (tree r8, world depth
 | hdfs-bugs-slowdisk-zero | bug_study HDFS #15: max slow disks 0 leaves a stale exclusion list | STATE re-pairing | PASS (system/hdfs, HL1; STATE re-pairing) |
 | hdfs-11741 | a stale block key after expiry (its own tree gc/hdfs-11741-r6) | CLOCK_SKEW | PASS (system/hdfs1, HF2, 5168 s; CLOCK_SKEW moving nn0's and dn1's `removeExpiredKeys` clocks; validated by CONFIRM, no native clock plant) |
 
-## Solr, HBase, ZooKeeper: the study checks (their turn comes after HDFS)
+## Solr, HBase, ZooKeeper: the study checks
 
 Solr's 12 are marked on `gc/solr-checks` (2026-10-08; solr-adhoc-22 is solr-18406's throw), each declared in
 `experiments/solr/solr-adhoc/checks.tsv` and its workload run natively there. Their live state (rounds, verdicts, what is
-left) is [../STATUS.md](../STATUS.md) "Solr checks" and [../handover/TODO.md](../handover/TODO.md) "Solr" (handover 2026-10-09); the
-"state" column below is the marking state only. No HBase
-or ZooKeeper study point is marked yet.
+left) is [../STATUS.md](../STATUS.md) "Solr checks" and [`results/solr/`](../../results/solr/README.md); the
+"state" column below is the marking state only. The HBase and ZooKeeper points below are the 2026-10-04 reading; they
+were marked and run on `system/hbase` and `system/zookeeper` (each branch's own docs/checks).
 
 ### solr
 | check | site (our tree) | guard | workload (test) | state |
@@ -153,6 +153,9 @@ or ZooKeeper study point is marked yet.
 | zk-adhoc-13 | quorum/ReadOnlyZooKeeperServer.java:126 | `isGlobalSession(sessionId)` at a session renewal on an RO peer | ReadOnlyModeTest#testGlobalSessionInRO (exists); prefer #testConnec... | not marked yet (the system's turn: TODO) |
 
 ## Solr, HBase, ZooKeeper: the bug checks
+
+The state column is as of 2026-10-08. The eight Solr bug checks all PASS since SGF7 (SAT, confirmed, native 10/10;
+`results/solr/`); the HBase and ZooKeeper rows' state is their branches' (`system/hbase`, `system/zookeeper`).
 
 | case | bug | mechanism | state |
 | --- | --- | --- | --- |

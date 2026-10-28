@@ -13,7 +13,7 @@ code disagree, the code is right and the document is fixed.
 | [IDENTITY.md](IDENTITY.md) | How an event is named the same way in every run. |
 | [CONTRACT-SPEC.md](CONTRACT-SPEC.md) | The rows a replay publishes and the rules they obey. |
 | [VM.md](VM.md) | The concolic JVM (OpenJDK 8 Zero) under `third_party/OpenJDK-Concolic-Execution-Engine`. |
-| [PERFORMANCE.md](PERFORMANCE.md) | Where a campaign's time goes, how ten lifts run many campaigns at once (the ledger, measured charges, the shared pool, head steps), why cases were slow, how to debug a slow case. |
+| [PERFORMANCE.md](PERFORMANCE.md) | Where a campaign's time goes, how the lifts run many campaigns at once (the ledger, measured charges, the shared pool, head steps), why cases were slow, how to debug a slow case. |
 
 The checks themselves (every point of the four systems, with its live state) are in [../checks/README.md](../checks/README.md).
 
