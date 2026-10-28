@@ -29,7 +29,7 @@ CONFIRM holding the reader after the passed write's activation exits; IDENTITY �
 `graphchecker/hdfs-bug-<jira>` (`experiments/hadoop/trees.tsv`). Its scheduling and cluster are `system/hdfs-liftlab`'s
 (liftlab, the memory ledger). The results table of the old bugs of all four systems is
 [docs/handover/BUGGY-DETECT.md](docs/handover/BUGGY-DETECT.md): on CloudLab (2026-10-26) six of the seven HDFS bugs were
-detected and HDFS-14311 is a capability limit; the liftlab round B1: B1 (lead fills in). **Start at
+detected and HDFS-14311 is a capability limit; the liftlab round B1: the six detected cases SAT again, CONFIRM, native 10/10, control 0/10, report.py PASS (results/hdfs-buggy/); HDFS-14311 not detected again (UNSAT_CLOSED, substantive: 9 paths, 8 free; 2333 s). **Start at
 [docs/handover/START-HERE.md](docs/handover/START-HERE.md) §0**; a fresh clone: [docs/REPRODUCE.md](docs/REPRODUCE.md) §7.
 
 ## THE HDFS branch underneath (`system/hdfs-liftlab`)

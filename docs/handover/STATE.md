@@ -43,7 +43,7 @@ system's `prepare-trees.sh`; Maven repositories `/bigtemp/vnr3ne/m2/bd-1`; build
 `/u/vnr3ne/gc-run/bd-hdfs-1` (c9aece5af), image `/bigtemp/vnr3ne/vm-force12/j2sdk-image`; round B1, all seven at once
 through `tools/rounds/launch-round.sh` on 11 workers (lift15 left out: lift02 and lift03 cannot reach it) (driver `launch-b1.sh`, log `RUNS.txt`, both in
 `/bigtemp/vnr3ne/analysis/buggy-detect-liftlab-2026-10-28/`), runs `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-buggy-<jira>`:
-B1 (lead fills in). The CloudLab runs' names (B11741b, B17383a, ...) stay in each case's README as the record.
+B1: the six detected cases SAT again, CONFIRM, native 10/10, control 0/10, report.py PASS (results/hdfs-buggy/); HDFS-14311 not detected again (UNSAT_CLOSED, substantive: 9 paths, 8 free; 2333 s). The CloudLab runs' names (B11741b, B17383a, ...) stay in each case's README as the record.
 
 ## L. HDFS on liftlab (system/hdfs-liftlab, 2026-10-26/27) -- read this first if you take over HDFS
 

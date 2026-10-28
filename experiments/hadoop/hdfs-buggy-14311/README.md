@@ -95,7 +95,7 @@ Rationale, tests and the review: `/bulk/analysis/buggy-detect-2026-10-26/14311-n
 ## Result
 
 On liftlab, round B1 (2026-10-28, `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-buggy-14311`, snapshot
-`/u/vnr3ne/gc-run/bd-hdfs-1`, tree set `/bigtemp/vnr3ne/wt/bd-trees-1`): B1 (lead fills in). The rounds below ran on
+`/u/vnr3ne/gc-run/bd-hdfs-1`, tree set `/bigtemp/vnr3ne/wt/bd-trees-1`): B1: not detected again (UNSAT_CLOSED, substantive: 9 paths, 8 free; 2333 s). The rounds below ran on
 CloudLab (their `/bulk` paths are that cluster's, no longer used); they stay as the record.
 
 **Not detected; recorded as a capability limit** (the owner, 2026-10-26: a check truly beyond GraphChecker is not

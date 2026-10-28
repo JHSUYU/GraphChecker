@@ -17,13 +17,13 @@ merged in (c9aece5af): liftlab's scheduling, the engine support for HDFS-14311 k
 
 | case (`experiments/hadoop/`) | bug | point | tree = the fork `JHSUYU/hadoop` branch | CloudLab, 2026-10-26 | B1 (liftlab) |
 | --- | --- | --- | --- | --- | --- |
-| `hdfs-buggy-11741` | HDFS-11741 | hdfs-adhoc-11 | `graphchecker/hdfs-bug-11741` c0af4cbcfe5 | SAT, CLOCK_SKEW, native 10/10 | B1 (lead fills in) |
-| `hdfs-buggy-17383` | HDFS-17383 | hdfs-adhoc-12 | `graphchecker/hdfs-bug-17383` 1e519fa598a | SAT, lost heartbeat reply, 10/10 | B1 (lead fills in) |
-| `hdfs-buggy-12931` | HDFS-12931 | hdfs-adhoc-11 | `graphchecker/hdfs-bug-12931` d9fde9f9480 | SAT, lost key-update reply, 10/10 (caveat) | B1 (lead fills in) |
-| `hdfs-buggy-5766` | HDFS-5766 | hdfs-adhoc-11 | `graphchecker/hdfs-bug-5766` a8f16edc154 | SAT, lost key-update request, 10/10 (caveat) | B1 (lead fills in) |
-| `hdfs-buggy-10609` | HDFS-10609 | hdfs-adhoc-11 | `graphchecker/hdfs-bug-10609` bec4a7e0e52 | SAT, lost key-update request, 10/10 (caveat) | B1 (lead fills in) |
-| `hdfs-buggy-14075` | HDFS-14075 | hdfs-adhoc-45 | `graphchecker/hdfs-bug-14075` 7e8681a724d | SAT, LOCAL_IO fault, 10/10 | B1 (lead fills in) |
-| `hdfs-buggy-14311` | HDFS-14311 | hdfs-adhoc-24 | `graphchecker/hdfs-bug-14311` be29cd3c074 | not detected: a capability limit | B1 (lead fills in) |
+| `hdfs-buggy-11741` | HDFS-11741 | hdfs-adhoc-11 | `graphchecker/hdfs-bug-11741` c0af4cbcfe5 | SAT, CLOCK_SKEW, native 10/10 | B1: SAT, CONFIRM, native 10/10, control 0/10, report.py PASS, 884 s (B1-buggy-11741) |
+| `hdfs-buggy-17383` | HDFS-17383 | hdfs-adhoc-12 | `graphchecker/hdfs-bug-17383` 1e519fa598a | SAT, lost heartbeat reply, 10/10 | B1: SAT, CONFIRM, native 10/10, control 0/10, report.py PASS, 572 s (B1-buggy-17383) |
+| `hdfs-buggy-12931` | HDFS-12931 | hdfs-adhoc-11 | `graphchecker/hdfs-bug-12931` d9fde9f9480 | SAT, lost key-update reply, 10/10 (caveat) | B1: SAT, CONFIRM, native 10/10, control 0/10, report.py PASS, 368 s (B1-buggy-12931) |
+| `hdfs-buggy-5766` | HDFS-5766 | hdfs-adhoc-11 | `graphchecker/hdfs-bug-5766` a8f16edc154 | SAT, lost key-update request, 10/10 (caveat) | B1: SAT, CONFIRM, native 10/10, control 0/10, report.py PASS, 516 s (B1-buggy-5766) |
+| `hdfs-buggy-10609` | HDFS-10609 | hdfs-adhoc-11 | `graphchecker/hdfs-bug-10609` bec4a7e0e52 | SAT, lost key-update request, 10/10 (caveat) | B1: SAT, CONFIRM, native 10/10, control 0/10, report.py PASS, 506 s (B1-buggy-10609) |
+| `hdfs-buggy-14075` | HDFS-14075 | hdfs-adhoc-45 | `graphchecker/hdfs-bug-14075` 7e8681a724d | SAT, LOCAL_IO fault, 10/10 | B1: SAT, CONFIRM, native 10/10, control 0/10, report.py PASS, 463 s (B1-buggy-14075) |
+| `hdfs-buggy-14311` | HDFS-14311 | hdfs-adhoc-24 | `graphchecker/hdfs-bug-14311` be29cd3c074 | not detected: a capability limit | B1: not detected again (UNSAT_CLOSED, substantive: 9 paths, 8 free; 2333 s) |
 
 Each tree is `graphchecker/hdfs-checks` 899c200cc8e with one bug put back (its own commit) and a workload for it; the
 tree name is `hadoop-hdfs-bug-<jira>` (`experiments/hadoop/trees.tsv`), the list of cases

@@ -1,0 +1,256 @@
+{
+  "schemaVersion": 1,
+  "kind": "CLAIM",
+  "anchor": "roll/client0#epoch0/region/REGION.08181728-581c-34d3-a3b3-c56c8c745343/ctx:Root:CLIENT/roll-2#1/idx:\u003corg.apache.hadoop.hdfs.server.namenode.FSEditLog: long rollEditLog(int)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSEditLog: void endCurrentLogSegment(boolean)\u003e@0",
+  "claim": {
+    "kind": "MARKER_FLIPPED",
+    "valuationOrdinal": 1,
+    "movedRoots": {
+      "REGION.da7b10a5-52cf-30a4-b138-aa4202114a13.in.2304262e-8430-330c-b33b-c9850364d3de": "true"
+    },
+    "polarityDecides": true,
+    "gaps": [
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.da7b10a5-52cf-30a4-b138-aa4202114a13.in.6db4c051-ed40-3535-92f0-42ddea63f425",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      }
+    ]
+  },
+  "solverRuns": 23,
+  "seedSessionId": "seed-result-cc753071",
+  "valuations": [
+    {
+      "ordinal": 0,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:dfs.namenode.edits.noeditlogchannelflush": "false",
+        "REGION.da7b10a5-52cf-30a4-b138-aa4202114a13.in.2304262e-8430-330c-b33b-c9850364d3de": "false",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.16018a81-f560-3d62-ae09-4c5f436b3c07": "false",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.cfe9a6bf-a175-3e5a-b091-1da91764e12a": "false"
+      },
+      "moved": {},
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": [
+        "path_fatal__0",
+        "path_fatal__1",
+        "path_fatal__2",
+        "path_fatal__3",
+        "path_fatal__4",
+        "fatal_target",
+        "valuation__M_Z_field_REGION_da7b10a5_52cf_30a4_b138_aa4202114a13_in_2304262e_8430_330c_b33b_c9850364d3de_occ_ddd7deac0a2cc3a08ebf43a191e884c7f971eec3e63d30609a353ba1c74b10d1_java_lang_Boolean"
+      ]
+    },
+    {
+      "ordinal": 1,
+      "status": "sat",
+      "assignment": {
+        "CONFIG:dfs.namenode.edits.noeditlogchannelflush": "false",
+        "REGION.da7b10a5-52cf-30a4-b138-aa4202114a13.in.2304262e-8430-330c-b33b-c9850364d3de": "true",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.16018a81-f560-3d62-ae09-4c5f436b3c07": "false",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.cfe9a6bf-a175-3e5a-b091-1da91764e12a": "false"
+      },
+      "moved": {
+        "REGION.da7b10a5-52cf-30a4-b138-aa4202114a13.in.2304262e-8430-330c-b33b-c9850364d3de": "true"
+      },
+      "selectedPathId": "caf77c211d8497a4",
+      "selectedSessionId": "e1bcef8f8fb99839-9b8a9a63",
+      "fatalObserved": true,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 2,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:dfs.namenode.edits.noeditlogchannelflush": "false",
+        "REGION.da7b10a5-52cf-30a4-b138-aa4202114a13.in.2304262e-8430-330c-b33b-c9850364d3de": "false",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.16018a81-f560-3d62-ae09-4c5f436b3c07": "true",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.cfe9a6bf-a175-3e5a-b091-1da91764e12a": "false"
+      },
+      "moved": {
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.16018a81-f560-3d62-ae09-4c5f436b3c07": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 3,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:dfs.namenode.edits.noeditlogchannelflush": "false",
+        "REGION.da7b10a5-52cf-30a4-b138-aa4202114a13.in.2304262e-8430-330c-b33b-c9850364d3de": "false",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.16018a81-f560-3d62-ae09-4c5f436b3c07": "false",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.cfe9a6bf-a175-3e5a-b091-1da91764e12a": "true"
+      },
+      "moved": {
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.cfe9a6bf-a175-3e5a-b091-1da91764e12a": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 4,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:dfs.namenode.edits.noeditlogchannelflush": "true",
+        "REGION.da7b10a5-52cf-30a4-b138-aa4202114a13.in.2304262e-8430-330c-b33b-c9850364d3de": "false",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.16018a81-f560-3d62-ae09-4c5f436b3c07": "false",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.cfe9a6bf-a175-3e5a-b091-1da91764e12a": "false"
+      },
+      "moved": {
+        "CONFIG:dfs.namenode.edits.noeditlogchannelflush": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 5,
+      "status": "sat",
+      "assignment": {
+        "CONFIG:dfs.namenode.edits.noeditlogchannelflush": "false",
+        "REGION.da7b10a5-52cf-30a4-b138-aa4202114a13.in.2304262e-8430-330c-b33b-c9850364d3de": "true",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.16018a81-f560-3d62-ae09-4c5f436b3c07": "true",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.cfe9a6bf-a175-3e5a-b091-1da91764e12a": "false"
+      },
+      "moved": {
+        "REGION.da7b10a5-52cf-30a4-b138-aa4202114a13.in.2304262e-8430-330c-b33b-c9850364d3de": "true",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.16018a81-f560-3d62-ae09-4c5f436b3c07": "true"
+      },
+      "selectedPathId": "caf77c211d8497a4",
+      "selectedSessionId": "e1bcef8f8fb99839-9b8a9a63",
+      "fatalObserved": true,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 6,
+      "status": "sat",
+      "assignment": {
+        "CONFIG:dfs.namenode.edits.noeditlogchannelflush": "false",
+        "REGION.da7b10a5-52cf-30a4-b138-aa4202114a13.in.2304262e-8430-330c-b33b-c9850364d3de": "true",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.16018a81-f560-3d62-ae09-4c5f436b3c07": "false",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.cfe9a6bf-a175-3e5a-b091-1da91764e12a": "true"
+      },
+      "moved": {
+        "REGION.da7b10a5-52cf-30a4-b138-aa4202114a13.in.2304262e-8430-330c-b33b-c9850364d3de": "true",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.cfe9a6bf-a175-3e5a-b091-1da91764e12a": "true"
+      },
+      "selectedPathId": "caf77c211d8497a4",
+      "selectedSessionId": "e1bcef8f8fb99839-9b8a9a63",
+      "fatalObserved": true,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 7,
+      "status": "sat",
+      "assignment": {
+        "CONFIG:dfs.namenode.edits.noeditlogchannelflush": "true",
+        "REGION.da7b10a5-52cf-30a4-b138-aa4202114a13.in.2304262e-8430-330c-b33b-c9850364d3de": "true",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.16018a81-f560-3d62-ae09-4c5f436b3c07": "false",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.cfe9a6bf-a175-3e5a-b091-1da91764e12a": "false"
+      },
+      "moved": {
+        "REGION.da7b10a5-52cf-30a4-b138-aa4202114a13.in.2304262e-8430-330c-b33b-c9850364d3de": "true",
+        "CONFIG:dfs.namenode.edits.noeditlogchannelflush": "true"
+      },
+      "selectedPathId": "caf77c211d8497a4",
+      "selectedSessionId": "e1bcef8f8fb99839-9b8a9a63",
+      "fatalObserved": true,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 8,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:dfs.namenode.edits.noeditlogchannelflush": "false",
+        "REGION.da7b10a5-52cf-30a4-b138-aa4202114a13.in.2304262e-8430-330c-b33b-c9850364d3de": "false",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.16018a81-f560-3d62-ae09-4c5f436b3c07": "true",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.cfe9a6bf-a175-3e5a-b091-1da91764e12a": "true"
+      },
+      "moved": {
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.16018a81-f560-3d62-ae09-4c5f436b3c07": "true",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.cfe9a6bf-a175-3e5a-b091-1da91764e12a": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 9,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:dfs.namenode.edits.noeditlogchannelflush": "true",
+        "REGION.da7b10a5-52cf-30a4-b138-aa4202114a13.in.2304262e-8430-330c-b33b-c9850364d3de": "false",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.16018a81-f560-3d62-ae09-4c5f436b3c07": "true",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.cfe9a6bf-a175-3e5a-b091-1da91764e12a": "false"
+      },
+      "moved": {
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.16018a81-f560-3d62-ae09-4c5f436b3c07": "true",
+        "CONFIG:dfs.namenode.edits.noeditlogchannelflush": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 10,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:dfs.namenode.edits.noeditlogchannelflush": "true",
+        "REGION.da7b10a5-52cf-30a4-b138-aa4202114a13.in.2304262e-8430-330c-b33b-c9850364d3de": "false",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.16018a81-f560-3d62-ae09-4c5f436b3c07": "false",
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.cfe9a6bf-a175-3e5a-b091-1da91764e12a": "true"
+      },
+      "moved": {
+        "REGION.08181728-581c-34d3-a3b3-c56c8c745343.in.cfe9a6bf-a175-3e5a-b091-1da91764e12a": "true",
+        "CONFIG:dfs.namenode.edits.noeditlogchannelflush": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    }
+  ],
+  "gaps": [
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.da7b10a5-52cf-30a4-b138-aa4202114a13.in.6db4c051-ed40-3535-92f0-42ddea63f425",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    }
+  ]
+}

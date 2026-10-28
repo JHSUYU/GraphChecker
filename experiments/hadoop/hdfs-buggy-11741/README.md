@@ -91,7 +91,7 @@ The run's budget is `hdfs-buggy-cases.tsv`'s 21600 s.
 ## Result: SAT, CLOCK_SKEW on two nodes, confirmed and reproduced 10/10 (B11741b, PASS)
 
 On liftlab, round B1 (2026-10-28, `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-buggy-11741`, snapshot
-`/u/vnr3ne/gc-run/bd-hdfs-1`, tree set `/bigtemp/vnr3ne/wt/bd-trees-1`): B1 (lead fills in). The rounds below ran on
+`/u/vnr3ne/gc-run/bd-hdfs-1`, tree set `/bigtemp/vnr3ne/wt/bd-trees-1`): B1: SAT, CONFIRM, native 10/10, control 0/10, report.py PASS, 884 s (B1-buggy-11741). The rounds below ran on
 CloudLab (their `/bulk` paths are that cluster's, no longer used); they stay as the record.
 
 Round B11741b (2026-10-26, snapshot `/bulk/gc-run/hb11741-2` = GraphChecker f79b607b1, tree set

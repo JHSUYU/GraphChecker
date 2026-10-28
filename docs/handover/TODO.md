@@ -22,7 +22,7 @@ reading in [../STATUS.md](../STATUS.md); commands in [OPERATIONS.md](OPERATIONS.
 
 STATE §B and START-HERE §0 have where everything is; [BUGGY-DETECT.md](BUGGY-DETECT.md) the table and the owner's
 decisions. The other systems' old-bug items are on their own `system/<x>-buggy-detect` branches.
-1. **Round B1** (liftlab, from 2026-10-28 00:07: the seven cases at once, `accept-B1-buggy-<jira>`): B1 (lead fills in).
+1. **Round B1** (liftlab, from 2026-10-28 00:07: the seven cases at once, `accept-B1-buggy-<jira>`): B1: the six detected cases SAT again, CONFIRM, native 10/10, control 0/10, report.py PASS (results/hdfs-buggy/); HDFS-14311 not detected again (UNSAT_CLOSED, substantive: 9 paths, 8 free; 2333 s).
    Read each by BUGGY-DETECT's standard (CONFIRM in the VM, native k/N with control 0/N, report.py PASS, the chain against
    the case README's), then fill BUGGY-DETECT's B1 column and each case README's result; a verdict that differs from the
    CloudLab row is read before it counts.
