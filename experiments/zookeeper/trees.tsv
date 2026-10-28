@@ -1,6 +1,8 @@
 # The ZooKeeper trees the cases run (each case.sh's repo=, under GC_TREES): the directory name and the branch of the
-# ZooKeeper fork (ZOOKEEPER_FORK, prepare-trees.sh) it is checked out at.  It stands on the fork's master eab165995 (Apache
+# ZooKeeper fork (ZOOKEEPER_FORK, prepare-trees.sh) it is checked out at (a branch or a tag).  It stands on the fork's master eab165995 (Apache
 # ZooKeeper master, Java 8: maven.compiler.release 8; both ZOOKEEPER-5094 and ZOOKEEPER-5088 present), with the adapter,
-# the cases' target markers and workloads.
+# the cases' target markers and workloads. zookeeper-checks is the fork's tag graphchecker/zookeeper-checks-liftlab
+# (51b213562), the tree results/zookeeper was made on; the branch graphchecker/zookeeper-checks has since gained
+# CloudLab's three workload workarounds (889f0e961), which the buggy-detect trees carry.
 # name	fork branch	what it is
-zookeeper-checks	graphchecker/zookeeper-checks	every ZooKeeper case: the automatic ClientBase cluster (CausynthZkCluster), client requests and replies as messages (CausynthZk), the cases' target markers and workloads
+zookeeper-checks	graphchecker/zookeeper-checks-liftlab	every ZooKeeper case: the automatic ClientBase cluster (CausynthZkCluster), client requests and replies as messages (CausynthZk), the cases' target markers and workloads
