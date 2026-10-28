@@ -1,4 +1,4 @@
-# Reproducing the checks from GitHub: the 46 HDFS cases (§0-§5), Solr (§6), HBase (§7), ZooKeeper (§8)
+# Reproducing the checks from GitHub: the 46 HDFS cases (§0-§5), Solr (§6), HBase (§7), ZooKeeper (§8), ZooKeeper's old bugs (§9)
 
 Everything a run needs is on GitHub: GraphChecker's branch of the system (the engine, the case settings, the VM
 sources) and the system's fork, whose `graphchecker/*` branch is the tree under test (the adapter, the target markers,
@@ -7,11 +7,13 @@ cluster's disks is assumed besides the operating system packages below (§0).
 
 | repository | branch | what it holds |
 | --- | --- | --- |
-| `git@github.com:JHSUYU/GraphChecker.git` (private) | `system/hdfs` | the locked body: the engine that closed 39 cases (the named bugs but 11741, and 30 study checks) |
-| | `system/hdfs1` | the newest body: the other 7 cases (07 11741 21 29 30 39 40), these tools, the VM sources |
+| `git@github.com:JHSUYU/GraphChecker.git` (private) | `system/hdfs-liftlab` | THE HDFS branch since 2026-10-27: every HDFS case on `system/hbase`'s engine; its own REPRODUCE runs them |
+| | `system/hdfs` | history: the locked body that closed 39 cases (the named bugs but 11741, and 30 study checks); §1-§5 below |
+| | `system/hdfs1` | history: the body of the other 7 cases (07 11741 21 29 30 39 40); §1-§5 below |
 | | `system/solr` | the 20 Solr cases (§6) |
 | | `system/hbase` | the 22 HBase cases (§7), `results/hbase/` |
 | | `system/zookeeper` | the 16 ZooKeeper cases (§8), `results/zookeeper/` |
+| | `system/<x>-buggy-detect` (x = hdfs, hbase, zookeeper, solr) | the old bugs put back, one case each; its own REPRODUCE and START-HERE run them |
 | `https://github.com/JHSUYU/hadoop.git` (public fork) | `graphchecker/hdfs-checks` | the HDFS tree of 43 cases (tree `hadoop-hdfs-study-r7`) |
 | | `graphchecker/hdfs-checks-adhoc07` | hdfs-adhoc-07's tree (`hadoop-hdfs-study-r8`) |
 | | `graphchecker/hdfs-checks-adhoc21` | hdfs-adhoc-21's tree (`hadoop-hdfs-21`) |
@@ -19,6 +21,7 @@ cluster's disks is assumed besides the operating system packages below (§0).
 | `https://github.com/JHSUYU/solr.git` (public fork) | `graphchecker/solr-checks` | the Solr tree (`lucene-solr-checks`) |
 | `https://github.com/JHSUYU/hbase.git` (public fork) | `graphchecker/hbase-checks` | the HBase tree (`hbase-checks`) |
 | `https://github.com/JHSUYU/zookeeper.git` (public fork) | `graphchecker/zookeeper-checks` | the ZooKeeper tree (`zookeeper-checks`) |
+| each fork | `graphchecker/<x>-bug-<jira>` | one old bug put back on the system's tree (the buggy-detect branches' cases) |
 
 Which branch runs which case, with the case's budget and what series EX1 ended with, is
 [`experiments/hadoop/hdfs-cases.tsv`](../experiments/hadoop/hdfs-cases.tsv); which fork branch each tree is,
@@ -27,7 +30,8 @@ Which branch runs which case, with the case's budget and what series EX1 ended w
 
 ## 0. The machines
 
-- Linux x86_64 hosts (Ubuntu 22.04 here: ten hosts `lift06`-`lift15`, 48 cores and 30 GB each). One host works; a case
+- Linux x86_64 hosts (Ubuntu 22.04 here: `lift02`-`lift15`, 48 cores and 30 GB each; `lift11` the control host,
+  `lift07` unreachable since 2026-10-23, Maven only on `lift02`-`lift06` and `lift08`-`lift10`). One host works; a case
   then takes several times longer (PERFORMANCE §6 was measured on ten).
 - One filesystem mounted at the same path on every host (`GC_BULK`, here `/bigtemp/vnr3ne`), the home directory shared
   too, passwordless `ssh -o BatchMode=yes` between the hosts, and a local scratch directory `/localtmp/$USER` on each.
@@ -39,13 +43,15 @@ Which branch runs which case, with the case's budget and what series EX1 ended w
 
 Where things go is stated once, in [`tools/lib/gc-env.sh`](../tools/lib/gc-env.sh): `GC_BULK` (the shared storage),
 `GC_OUT` (run outputs), `GC_TREES` (the system trees), `GC_M2` (their Maven repositories), `Z3_BIN`, `LIFTS` (the
-hosts), `CAUSYNTH_HOST_MAX_USED_PCT` (70: no start may leave a host fuller) and `CAUSYNTH_HOST_MAX_CORES_PCT` (100: the
-percent of a host's cores its live charges may keep busy). On another cluster, edit those
+hosts) and `CAUSYNTH_HOST_MAX_USED_PCT` (70: no start may leave a host fuller). On another cluster, edit those
 defaults in that file on both checkouts. A value exported in the shell that starts a run also works: every hop of the
 run passes them on (`gc_env_words`); `tools/onlift.sh` does not, so give it `env NAME=value` in its command. The
 commands from step 2 on use these variables: `source ~/GraphChecker-hdfs1/tools/lib/gc-env.sh` in the shell first.
 
 ## 1. GraphChecker, both branches
+
+§1-§5 rebuild the HDFS record on its two history branches as it was closed; `system/hdfs-liftlab` is the HDFS branch
+now, and its own REPRODUCE runs every HDFS case on today's engine.
 
 ```bash
 for b in hdfs1 hdfs; do
@@ -322,6 +328,13 @@ final series' `.smt`, claims and time table: [`results/zookeeper/`](../results/z
    tools/onlift.sh -g 8 experiments/zookeeper/prepare-trees.sh > $GC_BULK/prepare-zookeeper.log 2>&1
    ```
 
+   The fork's branch has moved past the final series' tree: it is at 889f0e96 since 2026-10-25 (`QuorumBase` starts its
+   peers from the highest id down; a workload's wait of `CONNECTION_TIMEOUT` or more for a server never times out: the
+   base of the buggy-detect trees), the final series ran on 51b213562 (2b6e17bf8 for every case but 04 and 13, which
+   differ only there). To rebuild that tree exactly, clone it before the script and check the commit out:
+   `git clone -q -b graphchecker/zookeeper-checks https://github.com/JHSUYU/zookeeper.git $GC_TREES/zookeeper-checks &&
+   git -C $GC_TREES/zookeeper-checks checkout -q 51b213562`.
+
    `prepare-trees.sh` clones the fork's `graphchecker/zookeeper-checks` into `$GC_TREES/zookeeper-checks` (a directory
    already there is only built), installs the checkout's jar into the tree's Maven repository (`ZOOKEEPER_MAVEN_REPO`,
    by default `$GC_M2/zookeeper<the tree's path, / as _>`; `tools/onlift.sh` passes no environment, so give it inside
@@ -364,25 +377,27 @@ final series' `.smt`, claims and time table: [`results/zookeeper/`](../results/z
    `tools/analysis/smt-legend.py <run>/out/<case>` names every symbol. Replays race, so wall times vary run to run, and
    a native reproduction is a count (observer-master and 03 reproduced 4 of 10 natively, the others 10 of 10).
 
-6. **On CloudLab** (branch `system/zookeeper-cloudlab`, five nodes, OPERATIONS §11). Make the cluster with
-   `BULK_SUBNET=10.10.1.0/24 tools/cloudlab/setup-nodes.sh` (packages, disks, NFS `/bulk`, JDK 8, `~/.m2`, z3), then:
+## 9. The ZooKeeper buggy-detect cases (this branch)
 
-   ```bash
-   git clone -q git@github.com:JHSUYU/GraphChecker.git /bulk/GraphChecker
-   git -C /bulk/GraphChecker worktree add /bulk/wt/gc-zk-cloudlab system/zookeeper-cloudlab   # full: the VM sources
-   (cd /bulk/wt/gc-zk-cloudlab && mvn -q package -DskipTests)
-   ssh node4 'cd /bulk/wt/gc-zk-cloudlab && tools/vm/build-image-docker.sh /bulk/vm/zookeeper'   # ~4 min, smoke suite
-   git clone -q -b graphchecker/zookeeper-checks git@github.com:JHSUYU/zookeeper.git /bulk/zookeeper
-   git -C /bulk/zookeeper worktree add --detach /bulk/trees/zk3/zookeeper-checks graphchecker/zookeeper-checks
-   ssh node2 'cd /bulk/wt/gc-zk-cloudlab && env PATH=/usr/lib/maven/bin:$PATH GC_TREES=/bulk/trees/zk3 \
-     ZOOKEEPER_MAVEN_REPO=/bulk/m2/zk3/zookeeper-checks bash experiments/zookeeper/prepare-trees.sh'   # 16 PASSED
-   bash /bulk/wt/gc-zk-cloudlab/tools/lib/worktree-add.sh /bulk/gc-run/zk $(git -C /bulk/wt/gc-zk-cloudlab rev-parse HEAD) --detach
-   ssh node1 'cd /bulk/gc-run/zk && mvn -q -o package -DskipTests'
-   cd /bulk/gc-run/zk && (setsid nohup env GC_OUT=/bulk/gc-out/zk GC_TREES=/bulk/trees/zk3 \
-     CAUSYNTH_CUSTOM_JDK_HOME=/bulk/vm/zookeeper/j2sdk-image PRUNE=0 tools/rounds/run-pool.sh Z1 \
-     experiments/zookeeper/zookeeper-cases.tsv system/zookeeper=/bulk/gc-run/zk > /bulk/gc-out/zk-pool.out 2>&1 < /dev/null &)
-   ```
+`system/zookeeper-buggy-detect` is `system/zookeeper` plus two old bugs put back (ZOOKEEPER-710, -2886), one case each
+(`experiments/zookeeper/zookeeper-buggy-cases.tsv`; each `zk-buggy-<jira>/README.md` names the bug, what was put back,
+the workload and every run), on liftlab. It needs one more thing from GitHub: the fork's tree branches
+`graphchecker/zk-bug-710` and `graphchecker/zk-bug-2886` (`trees.tsv` rows `zookeeper-bug-<jira>`, on the fork commit
+92c0f2b5 = `graphchecker/zookeeper-checks` 889f0e96 plus workload ports below the ephemeral range), and for the
+fixed-code controls `graphchecker/zk-bug-<jira>-control`. On this branch `trees.tsv`'s `zookeeper-checks` row is the
+fork's branch `graphchecker/zookeeper-checks` (889f0e96), not `system/zookeeper`'s tag.
 
-   `run-pool.sh` runs every case at once over the five nodes as their cores allow (PARALLEL §8); read the round with
-   `results/zookeeper/final-stats.py --order Z1 --cases experiments/zookeeper/zookeeper-cases.tsv --out /bulk/gc-out/zk`.
-   The final CloudLab rounds and their table are `results/zookeeper/README.md`.
+1. **GraphChecker and the image**, as §8.1-§8.2 on the branch `system/zookeeper-buggy-detect` (its VM sources are
+   `system/zookeeper`'s; on the cluster `/bigtemp/vnr3ne/vm-force13/j2sdk-image`).
+2. **The trees**, from that checkout on a Maven host (the script builds the checkout's jar first):
+   `tools/onlift.sh -g 8 env GC_TREES=$GC_TREES GC_M2=$GC_M2 bash experiments/zookeeper/prepare-trees.sh
+   zookeeper-bug-710 zookeeper-bug-2886` -- one `PASSED` line per case (about 3 minutes each). A control: clone
+   `graphchecker/zk-bug-<jira>-control` into another directory's `zookeeper-bug-<jira>` and run the script with that
+   `GC_TREES`.
+3. **The cases**, together: `CASES="zk-buggy-710 zk-buggy-2886" CASE_TIMEOUT_SECONDS=21600 PRUNE=0
+   CAUSYNTH_CUSTOM_JDK_HOME=$GC_BULK/vm/zookeeper/j2sdk-image tools/rounds/launch-round.sh <checkout> <ROUND>` (each
+   writes `$GC_OUT/accept-<ROUND>-<case>`); our B1 run is START-HERE §3.
+4. **Reading them**, as §8.5; a case is detected when it ends `SAT_CANDIDATE`, confirmed, reproduced natively
+   (`final/reproduce.json`) with its control 0/N, and `experiments/accept/report.py` passes its mechanism
+   (`STATE_PAIRING_FLIPPED`). The verdicts: [handover/BUGGY-DETECT.md](handover/BUGGY-DETECT.md) (CloudLab 2026-10-26
+   SAT 10/10 each; liftlab B1 (lead fills in)).

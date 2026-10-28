@@ -20,7 +20,8 @@ Point zk-adhoc-02 is that throw: `SessionTrackerImpl.checkSession`'s `session.ow
 
 ## What was put back, on graphchecker/zk-bug-710
 
-`graphchecker/zk-bug-710` = gc/zk-cloudlab 92c0f2b5 (the tree every ZooKeeper check runs) plus:
+`graphchecker/zk-bug-710` = the fork commit 92c0f2b5 (`graphchecker/zookeeper-checks` 889f0e96, the tree every
+ZooKeeper check runs, plus workload ports below the ephemeral range) plus:
 
 - **The bug, by hand** (e3659a88): `FinalRequestProcessor.processServed` no longer catches
   `SessionMovedException` to call `cnxn.sendCloseSession()`. A non-multi `SessionMoved` out of Prep now
@@ -81,8 +82,10 @@ Budget 21600 s (`zookeeper-buggy-cases.tsv`).
 
 ## Result: SAT (confirmed, reproduced 10/10 natively, control 0/10), the plain world
 
-ZB6 (snapshot `/bulk/gc-run/zb710-4` = system/zookeeper-buggy-detect bba07d7d1, tree set `/bulk/trees/zb710d` =
-4260614d, GC_OUT `/bulk/gc-out/zk-buggy/710`, image `/bulk/vm/zookeeper/j2sdk-image`, 361 s): EXPLORE stopped
+**On liftlab** (B1, `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-zk-buggy-710`): B1 (lead fills in).
+
+The record below is CloudLab's (2026-10-26).
+ZB6 (system/zookeeper-buggy-detect bba07d7d1, tree 4260614d, 361 s): EXPLORE stopped
 WITNESSED after 4 rounds and 113 obligation verdicts (an admitted replay observed the fatal at the declared
 occurrence); claim `SAT_CANDIDATE` `STATE_PAIRING_FLIPPED` at valuation 0, no root moved, `polarityDecides` true;
 CONFIRMED ("every edge the model chose was taken, and the claim's anchor observed the fatal"); REPRODUCE 10 of 10
@@ -103,14 +106,13 @@ hold does not block it. Necessity: excluding the takeover's arm on every path of
 **What it shows, and the caveat.** The confirmed witness is the plain world: in the native reproductions w1 completes
 with an ordinary reply and w2 throws once (the run ends at the anchor). ZOOKEEPER-710's fix changes only what follows
 a throw (the connection's teardown), so the fixed tree reaches this same occurrence: the fixed-tree control ZC2
-(graphchecker/zk-bug-710-control c0488b9b = 92c0f2b5 + this workload and marker, the fix intact; snapshot
-`zb710-4`; `/bulk/gc-out/zk-buggy/710ctl`) ends the same way -- SAT_CANDIDATE, the same pairing, confirmed, reproduced
+(graphchecker/zk-bug-710-control c0488b9b = 92c0f2b5 + this workload and marker, the fix intact) ends the same way -- SAT_CANDIDATE, the same pairing, confirmed, reproduced
 10/10, report.py PASS. "Two throws from one stale owner", the permanence the bug adds, is a relation between two
 occurrences of the throw, which a single-occurrence target cannot express. So this case counts as SAT at the point's
 own throw on the buggy tree with the bug's workload (the acceptance the hdfs-adhoc-11 buggy cases use), and the check
 does not separate the buggy tree from the fixed one.
 
-**How it got here** (every run; snapshots `/bulk/gc-run/zb710-<n>`):
+**How it got here** (every run, CloudLab 2026-10-26):
 
 | run | GC / tree | result |
 | --- | --- | --- |
@@ -130,7 +132,7 @@ occurrence is uninstrumented (a client's API root, a test thread's start) the ho
 never enters, and the order was silently not held. It now walks the reader's own anchor-producer chain and holds at
 the instrumented ITEM/HANDOFF_TASK claim nearest that send (here w2's Prep claim on the leader), under the existing
 guards; where none qualifies the old hold stays and is reported (ORDER_UNHELD: CONFIRM's summary, EXPLORE's DIAGNOSTIC
-gap rows). CONFIRM's checking is unchanged. The review recomputed every past CONFIRM plant under `/bulk/gc-out`: only
+gap rows). CONFIRM's checking is unchanged. The review recomputed every past CONFIRM plant of the CloudLab runs: only
 F7-11741 and Z10 container-reuse have the affected shape, both with identical edges (container-reuse gains
 ORDER_UNHELD notes only). Residual costs it named: a writer that waits on unrelated work queued behind the held claim
 on a single-threaded worker (Prep) waits out the 300 s order timeout -- time, no outcome change; and a long hold

@@ -1,111 +1,107 @@
-# START HERE: the 16 ZooKeeper cases on CloudLab (system/zookeeper-cloudlab, 2026-10-25)
+# START HERE: ZooKeeper's old bugs put back, on liftlab (system/zookeeper-buggy-detect, 2026-10-28)
 
-You take over GraphChecker's ZooKeeper group as it runs on a five-node CloudLab cluster. This file is self-contained:
-the goal, what the branch holds, the cluster and its parallel strategy, the results, how to run a case and the whole
-series, what is left, and the rules. The liftlab takeover file of the same group is
-[zookeeper-START-HERE.md](zookeeper-START-HERE.md) (`system/zookeeper`, 2026-10-22); HBase's is
-[hbase-START-HERE.md](hbase-START-HERE.md); HDFS on CloudLab is the branch `system/hdfs-cloudlab`.
+You take over the ZooKeeper buggy-detect branch. This file is self-contained: what the branch holds, the result, how
+to build the trees, run a case or all of them and read the result, what is left, and the rules.
+- **Repo:** `/u/vnr3ne/GraphChecker`, GitHub `git@github.com:JHSUYU/GraphChecker.git`, branch
+  **`system/zookeeper-buggy-detect`**: `system/zookeeper` (the 16 ad hoc cases; their takeover file is
+  [zookeeper-START-HERE.md](zookeeper-START-HERE.md)) plus two old bugs put back, one case each, and the engine work
+  they and the integration line before them added (STATE §Z "The buggy-detect line"). It runs on liftlab: the host
+  ledger charges memory, no lift above 70 % (29b8812dc reverted the CloudLab scheduling layer; that cluster's record is
+  the tag `archive/system/zookeeper-cloudlab`).
+- **The trees:** the fork `https://github.com/JHSUYU/zookeeper.git`, one branch per bug, on the fork commit 92c0f2b5
+  (`graphchecker/zookeeper-checks` 889f0e96 plus workload ports below the ephemeral range):
+  `graphchecker/zk-bug-710` (4260614d) and `graphchecker/zk-bug-2886` (b8b7149f), the trees `zookeeper-bug-710` and
+  `zookeeper-bug-2886` of [`experiments/zookeeper/trees.tsv`](../../experiments/zookeeper/trees.tsv);
+  `graphchecker/zk-bug-710-control` (c0488b9b) and `graphchecker/zk-bug-2886-control` (328765d1) carry the same
+  workloads and markers on the fixed code (the caveat below).
+- **The cases:** `experiments/zookeeper/zk-buggy-<jira>/` (case.sh, workflow.properties and a README with the bug, what
+  was put back, the workload, every declaration and every run), listed in
+  [`experiments/zookeeper/zookeeper-buggy-cases.tsv`](../../experiments/zookeeper/zookeeper-buggy-cases.tsv) (budget
+  21600 s each); `experiments/accept/report.py` holds their expected mechanism.
+- **VM image:** `/bigtemp/vnr3ne/vm-force13/j2sdk-image` (as every ZooKeeper case).
 
-- **Repo:** `git@github.com:JHSUYU/GraphChecker.git`, branch **`system/zookeeper-cloudlab`** (on the cluster:
-  `/bulk/GraphChecker`, integration worktree `/bulk/wt/gc-zk-cloudlab`).
-- **The tree:** the fork `https://github.com/JHSUYU/zookeeper.git`, branch `graphchecker/zookeeper-checks` (889f0e96:
-  the liftlab head 51b21356 plus this branch's two workarounds; local `/bulk/zookeeper`, branch `gc/zk-cloudlab`).
-  Tree sets (worktrees of `/bulk/zookeeper`, each with its Maven repository `/bulk/m2/zk<k>/zookeeper-checks`):
-  `/bulk/trees/zk3` (889f0e96, the final rounds), `zk2` (7aa086bb), `zk1` (51b21356, natives only).
-- **VM image:** `/bulk/vm/zookeeper/j2sdk-image` (this branch's VM sources, `tools/vm/build-image-docker.sh`).
-- **From GitHub:** [../REPRODUCE.md](../REPRODUCE.md) §8 makes the cluster, the image and the tree and runs the series.
+## 1. The goal and the result
 
-## 1. The goal and what was done
+The owner (2026-10-26): put back by hand, on today's trees, the old bugs that make an ad hoc check fail at the
+point's OWN declared throw, and detect them; a bug counts only if GraphChecker's witness fires that throw, confirmed
+in the VM, reproduced natively k/N with the control 0/N, report.py PASS. A check truly beyond GraphChecker's
+capability is not forced. ZooKeeper has two such bugs, both at zk-adhoc-02's throw (`SessionTrackerImpl.checkSession`'s
+`SessionMovedException`, line 367). [BUGGY-DETECT.md](BUGGY-DETECT.md) has the table of all four systems.
 
-The owner (2026-10-25): "git clone我的zookeeper代码git@github.com:JHSUYU/zookeeper.git。请你把system/zookeeper分支也改造成
-system/zookeeper-cloudlab zookeeper之前在别的服务器集群跑通了全部的adhoc check，现在，请你把多个node的利用也适配到我们这里的cloudlab。
-请你思考这么一个问题，我们的cloudlab一般是5个节点，是大内存。这点和之前的liftlab不同。所以在system/hdfs-cloudlab和
-system/zookeeper-cloudlab上，我们的并行策略要最大化cloudlab集群的使用。然后你优化好，让zookeeper的所有adho check检查也都能跑通".
+| case | bug | CloudLab, 2026-10-26 | liftlab, B1 |
+| --- | --- | --- | --- |
+| zk-buggy-710 | ZOOKEEPER-710: a SessionMoved never tears the connection down | **SAT** STATE_PAIRING_FLIPPED (the old write's `session.owner` reads paired with the takeover's REVALIDATE), confirmed, native 10/10, control 0/10, PASS (ZB6, 361 s) | B1 (lead fills in) |
+| zk-buggy-2886 | ZOOKEEPER-2886: a multi's SessionMoved stays a per-op error | **SAT**, the same pairing in the second multi, confirmed, native 10/10, control 0/10, PASS (ZB6, 363 s) | B1 (lead fills in) |
 
-What changed against `system/zookeeper` (git log has each commit):
-- **CloudLab's layer** from `system/hdfs-cloudlab`: hosts node0-node4 and `/bulk` (`tools/lib/gc-env.sh`), the host
-  ledger charging cores beside memory, every choice among hosts by free cores first, `tools/cloudlab/setup-nodes.sh`
-  and `tools/vm/build-image-docker.sh`, OPERATIONS §11, LESSONS §11.
-- **The parallel strategy for five big-memory nodes** ([PARALLEL.md](PARALLEL.md) §8, on both CloudLab branches): cores
-  bind here, not memory (5 x 40 logical cores x 251 GB against liftlab's 14 x 48 x 30 GB), so
-  - the ledger charges hundredths of a core and a replay its measured mean, not its 90th percentile rounded up;
-  - a node's busy cores are the lesser of its charges and its load plus what its newest starts have yet to add to it
-    (idle resident solvers keep their charges); a node's 40 logical cores are 20 physical ones, and admitting by idle
-    logical CPUs instead was measured slower (Z5, P4) and reverted;
-  - a round is one pool of every case (`tools/rounds/run-pool.sh`): longest expected first, a start whenever a tenth
-    of the cluster's cores is free, its head on the node heading the fewest; no lanes and no alone reruns.
-- **Two workarounds in the fork** (STATUS "Per-system surface", ZooKeeper column): `QuorumBase` starts its peers from
-  the highest server id down (zk-adhoc-02's setUp elected two leaders in 4 of 9 native runs), and in a workload a
-  wait of `CONNECTION_TIMEOUT` or more for a server to come up never times out (06's and 12's startup recordings
-  came up past the test's 30 s in the replay).
-- **results/zookeeper:** `final-stats.py` and `collect-results.sh` read CloudLab's run names (`accept-<round>-<case
-  less its first word>`).
+The caveat (each README): the witness is the plain world, and each fix changes only what follows the throw, so the
+fixed-code controls reach the same throw (710's ZC2 and 2886's ZC1: SAT, confirmed, 10/10). The owner (2026-10-27/28)
+counts both as detected.
 
-## 2. Results
+## 2. Read, in this order
 
-The CloudLab rounds Z1-Z9 (2026-10-25, `/bulk/gc-out/zk-final`; every case's table row and reading:
-`results/zookeeper/README.md` "On CloudLab"). Z4 (snapshot `/bulk/gc-run/zkF4` = 16ca5f402, tree set `/bulk/trees/zk3`,
-16 cases at once beside the HDFS pool P3, 2.5 h) is the run of record of 15 cases (06's stays liftlab's):
+1. This file, then [BUGGY-DETECT.md](BUGGY-DETECT.md) and the two case READMEs.
+2. [STATE.md](STATE.md) §Z (its "The buggy-detect line": what this branch adds to `system/zookeeper`) and
+   [TODO.md](TODO.md) "ZooKeeper: the buggy-detect line" (what is open).
+3. [zookeeper-START-HERE.md](zookeeper-START-HERE.md) for the 16 ad hoc cases, which this branch runs too.
+4. [RULES.md](RULES.md), [CHECKING.md](CHECKING.md), [OPERATIONS.md](OPERATIONS.md), [LESSONS.md](LESSONS.md) §10.
 
-| case | CloudLab (run, wall) | liftlab |
-| --- | --- | --- |
-| zk-bugs-quota-init | **PASS**: SAT MARKER_FLIPPED, native 10/10 (Z4, 863 s) | PASS 10/10 |
-| zk-bugs-election-offer | **PASS**: SAT STATE_PAIRING_FLIPPED after 10 refuted claims, native 9/10 (Z4, 2971 s) | PASS 10/10 |
-| zk-bugs-container-reuse | **PASS**: SAT STATE_PAIRING_FLIPPED, native 10/10 (Z4, 1699 s) | PASS 10/10 |
-| zk-bugs-retry-seq-quota | **PASS**: SAT MARKER_FLIPPED, native 10/10 (Z4, 1659 s) | PASS 10/10 |
-| zk-bugs-observer-master | **PASS**: SAT STATE_PAIRING_FLIPPED, native 7/10 (Z4, 1282 s) | PASS 4/10 |
-| zk-bugs-trunc-sync | not detected: the formula UNSAT_CLOSED, as liftlab's; the run RUN_DEFECT by one BLOCKING gap, an inherited flip one session stated no decision for (Z4, 8247 s; Z9 alone, 4884 s, the same gap on the same obligation: TODO ZooKeeper on CloudLab 2) | not detected, UNSAT_CLOSED |
-| zk-adhoc-01 | SAT_UNCONFIRMED: CONFIRM refused the claim (Z4, 3059 s) | the same |
-| zk-adhoc-02 | SAT_UNCONFIRMED: every claim refuted by CONFIRM (Z4, 8946 s) | the same |
-| zk-adhoc-03 | SAT CLOCK_SKEW, confirmed, native 4/10 (Z4, 1541 s) | the same, 4/10 |
-| zk-adhoc-04 | UNSAT_CLOSED, substantive, 6 of 6 paths free (Z4, 1967 s) | substantive |
-| zk-adhoc-06 | **not run through**: RUN_DEFECT at REPLAY in seven runs, its recorded election does not replay here (TODO ZooKeeper on CloudLab 1) | UNSAT substantive |
-| zk-adhoc-07 | UNSAT_CLOSED, substantive (Z4, 2096 s) | substantive |
-| zk-adhoc-10 | UNSAT_CLOSED, vacuous by construction (Z4, 1875 s) | vacuous, class C |
-| zk-adhoc-11 | UNSAT_CLOSED, vacuous by construction, every fatal arm literal false (Z4, 8697 s) | vacuous, class C |
-| zk-adhoc-12 | UNSAT_CLOSED, substantive (Z4, 2784 s) | substantive |
-| zk-adhoc-13 | UNSAT_CLOSED, substantive (Z4, 534 s) | substantive |
+## 3. Running
 
-So 15 of 16 cases reach their liftlab verdict on CloudLab; no new bug. The cluster: Z4 kept 54-59 % of the 200 logical
-CPUs busy, the 20 physical cores of each node full; the HDFS named cases beside it ran 36 % faster summed than on the
-first pool (P1 -> P3, PARALLEL §8.4). Per case the walls are 1.6-11.6x liftlab's (median about 2.6x: every case at
-once here, liftlab's longer cases alone on 14 lifts); the serial seeding alone is 1.1-2.0x slower (older cores).
+Run every command with `env -u BASH_ENV`; the lead's session runs on lift11 (the control host, no Maven). The
+workers are lift02-15 less lift07 (unreachable since 2026-10-23) and lift11; Maven only on lift02-06 and lift08-10.
 
-## 3. Read, in this order
+1. **Snapshot** of the branch (an explicit commit; never rebuild one a run reads):
+   ```
+   flock /localtmp/vnr3ne/worktree-add.lock bash tools/lib/worktree-add.sh /u/vnr3ne/gc-run/bd-zookeeper-<n> <commit> --detach
+   env -u BASH_ENV tools/onlift.sh -h lift03 -g 6 bash -c 'cd /u/vnr3ne/gc-run/bd-zookeeper-<n> && mvn -q -o package -DskipTests'
+   ```
+   B1's is `/u/vnr3ne/gc-run/bd-zookeeper-1`.
+2. **The trees**, into the buggy-detect tree set (one for every system's bug trees) and its Maven repositories, from a
+   worktree of the branch (the script first builds its checkout's jar, so never from a snapshot a run reads):
+   ```
+   cd <worktree of system/zookeeper-buggy-detect>
+   env -u BASH_ENV tools/onlift.sh -h lift03 -g 8 env GC_TREES=/bigtemp/vnr3ne/wt/bd-trees-1 GC_M2=/bigtemp/vnr3ne/m2/bd-1 \
+     bash experiments/zookeeper/prepare-trees.sh zookeeper-bug-710 zookeeper-bug-2886
+   ```
+   `prepare-trees.sh` clones each named tree's fork branch (`trees.tsv`) into `$GC_TREES/<name>` (a directory already
+   there is only built), builds the workload module of every case on it into `$GC_M2/zookeeper<the tree's path, / as _>`
+   and runs each case's workload once natively: one `PASSED` line per case (B1's build: `zk-buggy-710` 177 s,
+   `zk-buggy-2886` 155 s on lift03). A control: clone `graphchecker/zk-bug-<jira>-control` into another tree set's
+   `zookeeper-bug-<jira>` and run the script with that `GC_TREES`. Never rebuild a tree set a run reads, and never run
+   natives on it.
+3. **The cases**, from lift11 (B1 is `/bigtemp/vnr3ne/analysis/buggy-detect-liftlab-2026-10-28/launch-b1.sh zookeeper
+   zk-buggy-710 zk-buggy-2886`, which does exactly this):
+   ```
+   cd /u/vnr3ne/gc-run/bd-zookeeper-1 && env -u BASH_ENV \
+     GC_OUT=/bigtemp/vnr3ne/gc-out/buggy-detect GC_TREES=/bigtemp/vnr3ne/wt/bd-trees-1 GC_M2=/bigtemp/vnr3ne/m2/bd-1 \
+     LIFTS="lift02 lift03 lift04 lift05 lift06 lift08 lift09 lift10 lift12 lift13 lift14 lift15" \
+     CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force13/j2sdk-image CASE_TIMEOUT_SECONDS=21600 PRUNE=0 \
+     CASES="zk-buggy-710 zk-buggy-2886" tools/rounds/launch-round.sh /u/vnr3ne/gc-run/bd-zookeeper-1 B1
+   ```
+   One case: `CASES=zk-buggy-710`. Each case writes `$GC_OUT/accept-<ROUND>-<case>/` (B1:
+   `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-zk-buggy-710`, `-zk-buggy-2886`); a round's name is used once per case.
+   Stop one with `tools/rounds/stop-run.sh <ROUND>-<case>` (never by pattern).
+4. **Reading:** `GC_OUT=... tools/rounds/round-status.sh B1` (stage or verdict per case); `tools/rounds/round-verify.sh B1
+   zk-buggy-710` (how EXPLORE ended, z3 on the formula, BLOCKING gaps, moved roots, CONFIRM); the verdict and
+   report.py's PASS/FAIL against the expected mechanism are `<run>/summary.tsv` and `<run>/report/<case>/report.md`
+   (by hand: `python3 experiments/accept/report.py <case> <run>/out/<case> <report dir>`); native k/N is
+   `<run>/out/<case>/schedule/final/reproduce.json`; `tools/analysis/smt-legend.py <run>/out/<case>` names every symbol
+   of `candidate.smt2` for the hand reading; `python3 tools/analysis/vacuity.py --latest --detail <run>` on any UNSAT.
+   Then the case README's "On liftlab" line and BUGGY-DETECT.md's B1 column.
 
-1. This file, then `results/zookeeper/README.md` (the table and one reading per case).
-2. [PARALLEL.md](PARALLEL.md) §8 and [OPERATIONS.md](OPERATIONS.md) §11: the cluster and the strategy.
-3. [TODO.md](TODO.md) "ZooKeeper on CloudLab" and "ZooKeeper"; [LESSONS.md](LESSONS.md) §10 (ZooKeeper's traps), §11
-   (CloudLab's).
-4. `docs/checks/ZOOKEEPER.md` §E (the cases), STATUS "ZooKeeper checks" and "Per-system surface".
-5. [RULES.md](RULES.md), [CHECKING.md](CHECKING.md), [AGENTS.md](AGENTS.md).
+## 4. What is left
 
-## 4. Running a case and the series
+TODO "ZooKeeper: the buggy-detect line": B1's verdicts and the controls on liftlab; the map-removal encoding (the
+`zk-compose` design, whose branch was never pushed); the re-gating of a batch that admitted a later-dropped GROW
+re-run. Nothing else is owed by this branch; the ad hoc cases' parked items are TODO "ZooKeeper".
 
-- **Snapshot:** `bash tools/lib/worktree-add.sh /bulk/gc-run/<name> <commit> --detach` (an explicit commit), then
-  `ssh node2 'cd /bulk/gc-run/<name> && mvn -q -o package -DskipTests'`. Never rebuild a snapshot a run reads.
-- **Tree set:** `git -C /bulk/zookeeper worktree add --detach /bulk/trees/zk<k>/zookeeper-checks <commit>`, copy a
-  Maven repository to `/bulk/m2/zk<k>/zookeeper-checks`, then on a node `cd <worktree> && env
-  PATH=/usr/lib/maven/bin:$PATH GC_TREES=/bulk/trees/zk<k> ZOOKEEPER_MAVEN_REPO=/bulk/m2/zk<k>/zookeeper-checks bash
-  experiments/zookeeper/prepare-trees.sh` (16 PASSED lines, ~10-30 min). Never run natives on a tree a run reads.
-- **One case:** `cd <snapshot> && env GC_OUT=/bulk/gc-out/zk-final GC_TREES=/bulk/trees/zk3
-  CAUSYNTH_CUSTOM_JDK_HOME=/bulk/vm/zookeeper/j2sdk-image PRUNE=0 CASE_TIMEOUT_SECONDS=14400 tools/rounds/launch-run.sh
-  <snapshot> <case> <ROUND>-<case less its first word>`.
-- **The series:** from the snapshot, `(setsid nohup env GC_OUT=/bulk/gc-out/zk-final GC_TREES=/bulk/trees/zk3
-  CAUSYNTH_CUSTOM_JDK_HOME=/bulk/vm/zookeeper/j2sdk-image PRUNE=0 POOL_EXPECTED=<case TAB seconds file>
-  tools/rounds/run-pool.sh <ROUND> experiments/zookeeper/zookeeper-cases.tsv system/zookeeper=<snapshot> >
-  /bulk/gc-out/zk-final/pool-<ROUND>.out 2>&1 < /dev/null &)`; `touch /bulk/gc-out/zk-final/series-<ROUND>.STOP` stops
-  new starts, `tools/rounds/stop-run.sh <ROUND>-<case>` stops a case.
-- **Reading:** `tools/rounds/round-status.sh <ROUND>`, `tools/analysis/vacuity.py --latest --detail <run>` on every
-  UNSAT, `results/zookeeper/final-stats.py --order <rounds> --cases experiments/zookeeper/zookeeper-cases.tsv`,
-  `results/zookeeper/collect-results.sh <rounds>`.
+## 5. Rules you must keep (RULES.md has each)
 
-## 5. Rules you must keep
-
-As [zookeeper-START-HERE.md](zookeeper-START-HERE.md) §5 and RULES.md: general fixes only; a workaround is small, makes
-an order controllable or a value trackable, never switches the fatal outcome, and is named in STATUS "Per-system
-surface"; the time model is handled by workarounds; the false-positive filter (CONFIRM/REPRODUCE) stays; at most 5
-coding agents; kill only by explicit pid or process group (a `pgrep -f <pattern>` matches the shell that runs it);
-never `git add -A`; commits as Zhenyu Li <zhl136@ucsd.edu> with the trailer `Co-Authored-By: Claude Opus 5.5
-<noreply@anthropic.com>`. Parallelism serves throughput (owner 2026-10-06): judge a round by cases finished per hour
-and by the CPUs' busy share, not by how many campaigns run.
+- A bug counts only at the point's own throw, confirmed, reproduced natively with the control 0/N; never force a check
+  beyond GraphChecker's capability; CONFIRM and REPRODUCE stay.
+- General fixes only, no per-case engine code; a tree workaround is small, marked `// GraphChecker:`, makes an order
+  controllable or a value trackable, never switches the fatal outcome, and is named in STATUS "Per-system surface".
+  Every engine change on this branch was independently reviewed before it counted.
+- Kill only by explicit pid or `stop-run.sh`; never `git add -A`; never rebuild a tree or snapshot a run reads.
+- Commits as `Zhenyu Li <zhl136@ucsd.edu>` with the trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`;
+  push GraphChecker only with the owner's OK; the ZooKeeper fork may be pushed, apache never.

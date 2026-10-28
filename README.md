@@ -17,20 +17,58 @@ A SAT comes with a claim naming the roots that moved (`claim.json`) and one repl
 the program agrees (`confirm.json`). What the rows do not state is named, never silently
 defaulted.
 
-## Use all ten servers, in parallel -- mandatory for whoever takes over
+## The branches (github.com/JHSUYU/GraphChecker)
+
+Every system has two branches, both run on liftlab (the lifts below); nothing goes to `main` (the 2026-10-03 body):
+
+| system | ad hoc checks | old bugs put back (their `docs/handover/BUGGY-DETECT.md`) |
+| --- | --- | --- |
+| HDFS | `system/hdfs-liftlab` (replaces `system/hdfs` and `system/hdfs1`, which stay on origin as history) | `system/hdfs-buggy-detect` |
+| HBase | `system/hbase` | `system/hbase-buggy-detect` |
+| ZooKeeper | `system/zookeeper` | `system/zookeeper-buggy-detect` (this branch) |
+| Solr | `system/solr` | `system/solr-buggy-detect` |
+
+Each `system/<x>-buggy-detect` is `system/<x>` plus the old-bug cases (`experiments/{hadoop,hbase,zookeeper,solr}/*-buggy-<jira>/`) and
+the engine support they needed. The CloudLab record (2026-10-24..28) is the tags `archive/system/<x>-cloudlab`.
+
+The code under test is each system's fork, `github.com/JHSUYU/{hadoop,hbase,zookeeper,solr}` (never apache):
+`graphchecker/<x>-checks` is the ad hoc tree (hadoop also `graphchecker/hdfs-checks-adhoc07`, `-adhoc21` and
+`graphchecker/hdfs-11741`), `graphchecker/<x>-bug-<jira>` one old bug put back on it (hadoop `hdfs-bug-*`, hbase
+`hbase-bug-*`, zookeeper `zk-bug-*` with the fixed-code controls `zk-bug-*-control`, solr `solr-bug-*`); each
+`experiments/*/trees.tsv` names the branches its system's cases read.
+
+- **HDFS.** `system/hdfs-liftlab`: the 46 HDFS cases (36 study checks, 10 named bugs); its `docs/REPRODUCE.md`
+  runs them. `system/hdfs-buggy-detect`: HDFS-11741, -17383, -12931, -5766, -10609, -14075, -14311 put back.
+- **HBase** (finished 2026-10-21). `system/hbase`: the 22 HBase cases, `results/hbase/`, REPRODUCE §7.
+  `system/hbase-buggy-detect`: HBASE-15039, -20642, -28533.
+- **ZooKeeper** (finished 2026-10-22). `system/zookeeper`: the 16 ZooKeeper cases, `results/zookeeper/`, REPRODUCE §8
+  (its takeover file is [docs/handover/zookeeper-START-HERE.md](docs/handover/zookeeper-START-HERE.md) here).
+  `system/zookeeper-buggy-detect` (this branch): those 16 plus ZOOKEEPER-710 and -2886 put back, REPRODUCE §9;
+  [docs/handover/START-HERE.md](docs/handover/START-HERE.md) is where a new lead starts, STATE §Z what the branch holds,
+  TODO "ZooKeeper: the buggy-detect line" and "ZooKeeper" what is open, LESSONS §10 what ZooKeeper taught us.
+- **Solr** (finished 2026-10-19). `system/solr`: the 20 Solr cases, REPRODUCE §6. `system/solr-buggy-detect`:
+  SOLR-9440, -6101, -6197 (SOLR-6763 not reachable).
+
+This branch descends from `system/zookeeper` (from `system/hbase`, `system/solr`, `system/hdfs1`), so its documents also carry the
+earlier systems' state (STATE §H, §S, §0; STATUS per system); each system's own branch is its authority.
+
+## The cluster: use every lift, in parallel -- mandatory for whoever takes over
 
 The owner (long-term, 2026-10-05): "一定要最大化利用10个server。这10个server配有nfs,你只要做好代码隔离等。可以大大加速的。这是你的
-长期记忆"; "我们一个case内oblication当然可以分配到多机"; "我们不必强行要求独占". **A lead or agent that takes over keeps
-`lift06`-`lift15` (and, since 2026-10-13, `lift02`-`lift05`) full at all times; nothing waits in series except on a real dependency.** How the last leads did it
-(details and lessons: [docs/handover/PARALLEL.md](docs/handover/PARALLEL.md)):
+长期记忆"; "我们一个case内oblication当然可以分配到多机"; "我们不必强行要求独占". The hosts are `lift02`-`lift15`, 48 cores and
+30 GB each, NFS between them; `lift11` is the control host (the sessions run there; not a worker, no Maven), `lift07`
+has been unreachable since 2026-10-23 (set `LIFTS` without it and without `lift11`; `tools/lib/gc-env.sh`'s default
+names both), and Maven and Ant are only on `lift02`-`lift06` and `lift08`-`lift10` (build trees and snapshots there).
+**A lead or agent that takes over keeps the workers full at all times; nothing waits in series except on a real
+dependency.** How the last leads did it (details and lessons: [docs/handover/PARALLEL.md](docs/handover/PARALLEL.md)):
 
 1. **Inside one case:** every obligation (a solve, then a replay), GROW re-run, CONFIRM and native reproduction is a
-   separate start on whichever lift has room (`CAUSYNTH_CAMPAIGN_WORKER_HOSTS` = all ten); one case alone can keep
+   separate start on whichever lift has room (`CAUSYNTH_CAMPAIGN_WORKER_HOSTS` = every worker); one case alone can keep
    ~100 replays in flight.
-2. **Across cases:** a round is a sweep of many cases at once (`tools/adhoc/sweep.sh <snapshot> <ROUND> <cases> 2`: 2
-   heads per lift, the cases sharing the replay slots); several sweeps side by side (the named-bug baseline, the reruns
-   of cut cases, newly added checks). Give a full sweep `CASE_TIMEOUT_SECONDS=10800` (hdfs-11741 `14400`): under 20
-   heads the 90-min default cut six cases that closed at 3 h.
+2. **Across cases:** a round is many cases at once (`tools/rounds/launch-round.sh` with `CASES=...`, or
+   `tools/adhoc/sweep.sh <snapshot> <ROUND> <cases> 2`: 2 heads per lift, the cases sharing the replay slots). Give a
+   full sweep `CASE_TIMEOUT_SECONDS=10800` (hdfs-11741 `14400`): under 20 heads the 90-min default cut six cases that
+   closed at 3 h.
 3. **Across development:** up to 5 coding agents (owner 2026-10-18), each on its own branch, sparse worktree, frozen snapshot and
    `GC_OUT`, each running its offline gates and at most 2 live validation runs, beside the lead's rounds; review and
    diagnosis agents read only. A landed fix is validated at once on the cases it touches, never by waiting for a round.
@@ -38,10 +76,9 @@ The owner (long-term, 2026-10-05): "一定要最大化利用10个server。这10�
    (`tools/lib/worktree-add.sh`, seconds instead of most of an hour); system trees, VM images and recorded corpora are
    shared read-only; never rebuild a tree or snapshot a run reads; kill by pid only.
 5. **The one limit is memory:** every start is charged on the host ledger and no lift passes 70 %. Shared services must
-   not be flooded: offline gates go through `onlift.sh` off `lift11` (the owner's machine), a few cases at a time.
-   **The control host stays light:** the sessions run on lift11 -- `unset BASH_ENV` in every session (a wedged `/sw`
-   stalled every bash there), no polling or builds there, lift11 out of `LIFTS` while they run. The whole recipe as run
-   on 2026-10-12, with commands: [PARALLEL.md](docs/handover/PARALLEL.md) §6.
+   not be flooded: offline gates go through `onlift.sh`, a few cases at a time. **The control host stays light:**
+   `unset BASH_ENV` in every session (a wedged `/sw` stalled every bash there), no polling or builds there. The whole
+   recipe as run on 2026-10-12, with commands: [PARALLEL.md](docs/handover/PARALLEL.md) §6.
 6. **At every lull, look at the lifts** (memory and load on each) and fill them with whatever does not wait on a fix.
 7. **Parallelism serves throughput, never itself** (owner 2026-10-06: "你也不要过分并行哈。合理的并行"; "并行你要记住是让吞吐提升。
    而不是单单为了并行"): at ~18 live campaigns every case ran 3-5x slower. Keep about 8-10 live campaigns in all, the
@@ -50,28 +87,6 @@ The owner (long-term, 2026-10-05): "一定要最大化利用10个server。这10�
 
 ## Taking over: read these, in order
 
-**HDFS is finished** (46 of 46): every case has an exported `.smt` read by hand against the HDFS code (STATUS "HDFS
-checks"; 07, the last, closed on 2026-10-07), and every case then ran alone on the ten lifts for its time breakdown
-(series EX1, [docs/design/PERFORMANCE.md](docs/design/PERFORMANCE.md) §6). The work ends as two branches, by the owner's
-ruling: `system/hdfs` (the locked body, 39 cases) and `system/hdfs1` (the newest body, the other 7 and every later
-engine change); nothing goes to `main`. The remote keeps `main`, one branch per system (`system/hdfs`, `system/hdfs1`,
-`system/solr`, `system/hbase`, `system/zookeeper`); each system's fork keeps the trees its cases read (`graphchecker/*`,
-STATE §3). Everything a run of the 46 cases needs is on those
-branches: [docs/REPRODUCE.md](docs/REPRODUCE.md) rebuilds it from a fresh clone (the VM image, the four trees, both
-checkouts) and runs the series. **Solr is finished for now** (2026-10-19): the engine's rewrite and the final round
-SGF9 are on `system/solr` (pushed; from `system/hdfs1`), the tree is the Solr fork's `graphchecker/solr-checks`, and
-[docs/REPRODUCE.md](docs/REPRODUCE.md) §6 runs the 20 cases from a fresh clone.
-[docs/handover/STATE.md](docs/handover/STATE.md) §S says where it stands, [docs/handover/TODO.md](docs/handover/TODO.md)
-"Solr: after SGF9" what is left; STATUS "Solr checks" each case's result. **HBase is finished** (2026-10-21): the code is
-`system/hbase` (built from `system/solr`; `results/hbase/` holds each case's final `.smt`, claim and time table), the
-adapter the HBase fork's `graphchecker/hbase-checks`; [docs/REPRODUCE.md](docs/REPRODUCE.md) §7 runs the 22 cases from a
-fresh clone of the two, [docs/handover/hbase-START-HERE.md](docs/handover/hbase-START-HERE.md) is its takeover file, STATE
-§H what it holds. **ZooKeeper is finished** (2026-10-22; this branch): the code is `system/zookeeper` (built from
-`system/hbase`; `results/zookeeper/`), the adapter the ZooKeeper fork's `graphchecker/zookeeper-checks`
-(`https://github.com/JHSUYU/zookeeper.git`); [docs/REPRODUCE.md](docs/REPRODUCE.md) §8 runs the 16 cases from a fresh
-clone of the two. [docs/handover/START-HERE.md](docs/handover/START-HERE.md) is where a new lead starts, STATE §Z what
-the branch holds, TODO "ZooKeeper" what is parked, LESSONS §10 what ZooKeeper taught us.
-
 The README is an index. The handover documents hold the state, the plan and the rules. Every agent
 that works on this project takes [RULES.md](docs/handover/RULES.md),
 [AGENTS.md](docs/handover/AGENTS.md), [OPERATIONS.md](docs/handover/OPERATIONS.md),
@@ -79,22 +94,21 @@ that works on this project takes [RULES.md](docs/handover/RULES.md),
 
 | # | document | what it holds |
 | --- | --- | --- |
-| 0 | [docs/handover/START-HERE.md](docs/handover/START-HERE.md) | A new lead starts here: ZooKeeper finished (2026-10-22), each case's verdict, what to read in order, what is left, how to run a case and the series, the rules, where everything is (HBase's: [hbase-START-HERE.md](docs/handover/hbase-START-HERE.md)) |
-| 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands: ZooKeeper finished (§Z: what `system/zookeeper` and the ZooKeeper fork's tree hold, snapshots, images, runs, evidence); HBase finished (§H: what `system/hbase` and the HBase fork's tree hold, each case's result, where everything is); Solr after its final round SGF9 (2026-10-19, §S: what `system/solr` holds, the fork's tree, each study check's result and time); the end of the HDFS group (2026-10-08): the two HDFS branches and what each holds; the goals (verbatim); the remote and the parked local branches; every system tree (Hadoop, Solr, ZooKeeper, HBase) with its branch and, for HDFS, the fork's branch it is; VM images and snapshots; the rounds that closed each case; where the evidence lives. |
-| 2 | [docs/handover/TODO.md](docs/handover/TODO.md) | The plan, per system in the owner's order (HDFS, Solr, HBase, ZooKeeper): for HDFS the follow-ups (the two-phase final acceptance run, the general fixes the workarounds stand in for, the defects found, speed, cleanup); then each next system's steps. |
+| 0 | [docs/handover/START-HERE.md](docs/handover/START-HERE.md) | A new lead starts here: ZooKeeper's old bugs put back (ZOOKEEPER-710, -2886), their verdicts, how to build their trees, run them on liftlab and read the result, what is left, the rules; [zookeeper-START-HERE.md](docs/handover/zookeeper-START-HERE.md) is the 16 ad hoc cases' (ZooKeeper finished 2026-10-22) and [BUGGY-DETECT.md](docs/handover/BUGGY-DETECT.md) the four systems' old-bug table |
+| 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands: ZooKeeper (§Z: what `system/zookeeper` and the ZooKeeper fork's tree hold, snapshots, images, runs, evidence); HBase (§H); Solr after its final round SGF9 (§S); the HDFS group (§0-§5): its branches, the goals (verbatim), the remote and the parked local branches, every system tree with its branch, VM images and snapshots, the rounds that closed each case, where the evidence lives. |
+| 2 | [docs/handover/TODO.md](docs/handover/TODO.md) | What is left, per system in the owner's order (HDFS, Solr, HBase, ZooKeeper), each item parked with its evidence, then the cross-cutting engine items. |
 | 3 | [docs/handover/RULES.md](docs/handover/RULES.md) | The owner's standing rules, long-term, quoted: what a finished check is (only SAT or UNSAT, a right `.smt`), symbolic scope first, general fixes only, no fallback code, a large closure converges (a bound is a rare last resort), workarounds with measure, system by system, git and safety. |
 | 3b | [docs/handover/CHECKING.md](docs/handover/CHECKING.md) | How every verdict and `.smt` is checked before it counts (round-verify's columns, the hand check with the legend) and the twenty-one traps the leads fell into (cut searches, unbound handoffs, bounded rounds, constant fatal arms, unreached arms, one-value domains, HELD values, the let-binding trap, NO-SYMBOL, a sweep's default budget, run-to-run open arms, read-order divergence, residue that cannot move a constant phi, ...). |
 | 4 | [docs/handover/AGENTS.md](docs/handover/AGENTS.md) | How to work with agents: at most 5 coding agents, reviews at key complex places, briefs, design gates, worktrees, merges, stopping; how each lead ran them and the lessons. |
-| 5 | [docs/handover/OPERATIONS.md](docs/handover/OPERATIONS.md) | Servers (ten lifts, the 70 % memory ledger), storage, trees, VM images, helper commands and round tools, build and test, rounds, sweeps and exclusive runs, the offline gate, reading and debugging a campaign, traps. |
-| 6 | [docs/handover/PARALLEL.md](docs/handover/PARALLEL.md) | How development keeps all ten lifts full: the three levels of parallelism (inside a case, across cases, across agents), isolation and sharing over NFS, the loop in which nothing waits in series, what does not parallelize and how it gets faster. |
-| 6b | [docs/handover/OPTIMIZATIONS.md](docs/handover/OPTIMIZATIONS.md) | Every optimization so far -- parallelism and memory, the schedule, exploration rules, ZooKeeper -- with its measured effect and commit, and the ones designed but not done, ranked: the HBase port's refactor list (owner 2026-10-16). |
+| 5 | [docs/handover/OPERATIONS.md](docs/handover/OPERATIONS.md) | Servers (the lifts, the 70 % memory ledger), storage, trees, VM images, helper commands and round tools, build and test, rounds, sweeps and exclusive runs, the offline gate, reading and debugging a campaign, traps. |
+| 6 | [docs/handover/PARALLEL.md](docs/handover/PARALLEL.md) | How development keeps every lift full: the three levels of parallelism (inside a case, across cases, across agents), isolation and sharing over NFS, the loop in which nothing waits in series, what does not parallelize and how it gets faster. |
+| 6b | [docs/handover/OPTIMIZATIONS.md](docs/handover/OPTIMIZATIONS.md) | Every optimization so far -- parallelism and memory, the schedule, exploration rules, ZooKeeper -- with its measured effect and commit, and the ones designed but not done, ranked. |
 | 6c | [docs/handover/LESSONS.md](docs/handover/LESSONS.md) | The traps we fell into and how we work around them: shell, zombie processes, NFS, heaps, Java 8 concurrency; how to measure performance and how to debug and verify |
-| 6d | [docs/handover/REFACTOR-PLAN.md](docs/handover/REFACTOR-PLAN.md) | The owner-approved 2026-10-18 rewrite: rules, workstreams A-H with evidence and acceptance, the order; acceptance = all 20 Solr cases rerun |
 | 7 | [docs/checks/README.md](docs/checks/README.md) | Every ad hoc coordination check of the four systems (HDFS, Solr, HBase, ZooKeeper) and every bug check: site, guard, workload and live state; the per-system point tables and the owner's selection. |
 | 8 | [docs/design/README.md](docs/design/README.md) | The design at a glance, stage by stage, and the index of the design specs (PIPELINE, SYMBOL-SCOPE, IDENTITY, CONTRACT-SPEC, VM, PERFORMANCE). |
-| 9 | [docs/design/PERFORMANCE.md](docs/design/PERFORMANCE.md) | Where a campaign's time goes, how ten lifts run many campaigns at once, why cases were slow, how to debug a slow case, the open speed items. |
-| 10 | [docs/STATUS.md](docs/STATUS.md) | Every capability: done / partial / not done, with code pointers and the per-system surface (adapters, workarounds); every HDFS case's verdict and its `.smt` read by hand ("HDFS checks"); the open defects. |
-| 11 | [docs/REPRODUCE.md](docs/REPRODUCE.md) | From the GitHub branches alone: the machines, the GraphChecker checkout of each system, its VM image, its fork's trees, running one case or all of them, reading the results: HDFS (§0-§5), Solr (§6), HBase (§7), ZooKeeper (§8). |
+| 9 | [docs/design/PERFORMANCE.md](docs/design/PERFORMANCE.md) | Where a campaign's time goes, how the lifts run many campaigns at once, why cases were slow, how to debug a slow case, the open speed items. |
+| 10 | [docs/STATUS.md](docs/STATUS.md) | Every capability: done / partial / not done, with code pointers and the per-system surface (adapters, workarounds); every case's verdict and its `.smt` read by hand, per system; the open defects. |
+| 11 | [docs/REPRODUCE.md](docs/REPRODUCE.md) | From the GitHub branches alone: the machines, the GraphChecker checkout of each system, its VM image, its fork's trees, running one case or all of them, reading the results: HDFS (§0-§5), Solr (§6), HBase (§7), ZooKeeper (§8), ZooKeeper's old bugs (§9). |
 
 The sections below are the user-level reference: the pipeline, running one case, running the bug
 checks, outputs, and the repository map.
@@ -177,7 +191,7 @@ is written.
 `tools/lib/gc-env.sh` states, once for every tool and for `run_engine.sh`, the output root
 `GC_OUT` (default `/bigtemp/vnr3ne/gc-out`), the host ledger `CAUSYNTH_HOST_LEDGER` (default
 `/bigtemp/vnr3ne/gc-out/hosts`, one for the cluster whatever `GC_OUT` a run writes) and the hosts
-`LIFTS` (lift06–15).
+`LIFTS` (lift02–15 by default; set it without lift07 and lift11, above).
 
 Obligations of a campaign (each a solve, then its replay when the solver answers SAT, two starts),
 and GROW's re-runs, fan out over the hosts in
@@ -280,9 +294,9 @@ experiments/lib/                  the one harness every case runs through
 experiments/accept/               accept.sh, report.py, cone.py, probe.sh
 experiments/hadoop/               trees.tsv (the HDFS trees: fork branches), prepare-trees.sh + build.sh (make one),
                                   hdfs-cases.tsv (the 46 cases: branch, budget, EX1's result)
-experiments/{hadoop,solr,zookeeper}/  per-system scripts and cases (hadoop/hdfs-adhoc: the 36 HDFS study
-                                  checks, checks.tsv; hadoop/hdfs-bugs, zookeeper/zk-bugs: the bug_study
-                                  checks; HBase's harness is on branch hbase-startup)
+experiments/{hadoop,solr,hbase,zookeeper}/  per-system scripts and cases (<sys>-adhoc: the study checks,
+                                  checks.tsv; hadoop/hdfs-bugs, hbase/hbase-bugs, solr/solr-bugs,
+                                  zookeeper/zk-bugs: the bug checks; the named cases; <x>-cases.tsv)
 tools/onlift.sh, pick-lift.sh     run a command on the host of LIFTS with the most room (Java 8 + Maven)
 tools/vm/build-image.sh           the concolic VM image from third_party/, then its smoke suite
 tools/lib/                        gc-env.sh (where things live: GC_BULK, GC_OUT, GC_TREES, GC_M2, Z3_BIN, the

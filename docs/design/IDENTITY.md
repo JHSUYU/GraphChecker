@@ -262,7 +262,7 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   - Why: a PEWorker enters `TraceUtil.trace(this::runProcedure)`'s lambda `call()` between its poll
     wake and the step's claim, at `call@k`, where `k` counts that worker's steps since its last wake.
     Each next step's start, filed inside the claim, carried it, so one step on a busier worker
-    renamed every later step of its procedure (TODO HBase 21: hbase-adhoc-10's sessions activated
+    renamed every later step of its procedure (hbase-adhoc-10's sessions activated
     7-8 of the seed plan's 41 createTable-chain steps; hbase-adhoc-04's disable step stood at
     `call@1/...` in 2 of 10 native runs).
 - **Occurrence index** = frames from the scope base to the region entry (`#regionEnter`); for an
@@ -1107,7 +1107,7 @@ unplanned), and the answering task's own context only where the recording opened
 once, that occurrence (`aloneInContext`), and only at an index of the planned frames' depth and call
 sites, its counts alone differing (`RuntimeTask#countsAloneDiffer`): that invocation is the planned
 occurrence; one another path reached (an error's, a retry's) is not, and where the recording opened
-several it may be any of them (zk-adhoc-06 on CloudLab: the
+several it may be any of them (zk-adhoc-06 on slower hosts, 2026-10-25: the
 leader's work is a hand-off continuation of the election receiver's turn that delivered the deciding
 notification, `WorkerReceiver.run#u292@k`, the recordings decided on turn 4 and the replays on turn
 3, so every leader-side occurrence, the target's included, ran in its planned context at `@3` and

@@ -200,7 +200,8 @@ The owner (2026-10-21) chose ZooKeeper next, as HBase: the study checks of §D p
 - the container cleanup that deletes a replacement node (`zk-bugs-container-reuse`, #33).
 
 The tree is the fork's master eab165995 (Apache ZooKeeper master, Java 8: `maven.compiler.source/target 1.8`), where both
-PR bugs are present. Every row below was read on it (Z1, Z2: `docs/handover/zookeeper-agents/`); the line numbers of §A-§D
+PR bugs are present. Every row below was read on it (the read-only agents Z1, Z2:
+`/bigtemp/vnr3ne/analysis/zookeeper-2026-10-21/Z1-REPORT.txt`, `Z2-REPORT.txt`); the line numbers of §A-§D
 are branch-3.9's. The case declarations are `experiments/zookeeper/zk-adhoc/checks.tsv` and `zk-bugs/case.sh`; the case
 table with budgets is `experiments/zookeeper/zookeeper-cases.tsv`.
 

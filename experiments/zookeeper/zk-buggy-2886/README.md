@@ -13,7 +13,7 @@ out of the multi branch when a sub-result is `SESSIONMOVED`. Point zk-adhoc-02 i
 
 ## What was put back, on graphchecker/zk-bug-2886
 
-`graphchecker/zk-bug-2886` = gc/zk-cloudlab 92c0f2b5 plus:
+`graphchecker/zk-bug-2886` = the fork commit 92c0f2b5 (as zk-buggy-710's) plus:
 
 - **The bug, by hand** (cf2651ae): `FinalRequestProcessor.processServed` no longer rethrows a
   `SessionMovedException` ahead of the multi check, and a multi sub-op's `SESSIONMOVED` no longer throws out
@@ -40,8 +40,10 @@ timeout; `client_fault_transports=(ZK_QUORUM)`; report.py `STATE_PAIRING_FLIPPED
 
 ## Result: SAT (confirmed, reproduced 10/10 natively, control 0/10), the plain world
 
-ZB6 (snapshot `/bulk/gc-run/zb2886-3` = system/zookeeper-buggy-detect bba07d7d1, tree set `/bulk/trees/zb2886d` =
-b8b7149f, GC_OUT `/bulk/gc-out/zk-buggy/2886`, 363 s): EXPLORE stopped WITNESSED after 5 rounds and 101 obligation
+**On liftlab** (B1, `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-zk-buggy-2886`): B1 (lead fills in).
+
+The record below is CloudLab's (2026-10-26). ZB6 (system/zookeeper-buggy-detect bba07d7d1, tree b8b7149f, 363 s):
+EXPLORE stopped WITNESSED after 5 rounds and 101 obligation
 verdicts; claim `SAT_CANDIDATE` `STATE_PAIRING_FLIPPED` at valuation 0, no root moved, `polarityDecides` true; CONFIRMED
 ("every edge the model chose was taken, and the claim's anchor observed the fatal"); REPRODUCE 10 of 10 native runs
 (every order held), control 0 of 10; report.py PASS; `round-verify.sh`: z3 sat, end WITNESSED, 0 BOUNDED, 0 UNBOUND,
@@ -69,7 +71,7 @@ express. Evidence: zk-buggy-710's fixed-tree controls ZC1 (old engine: the same 
 | ZB4 | b4af526ca / 3dd47e98 (v3) | SAT_UNCONFIRMED (7 / 64): the intended pairing, CONFIRM's hold on the client's API root |
 | ZB5 | b4af526ca / b8b7149f (v4) | SAT_UNCONFIRMED (9 / 110): the hold on the target thread's start, not applied |
 | **ZB6** | **bba07d7d1 / b8b7149f (v4)** | **SAT, confirmed, 10/10, control 0/10, PASS** |
-| ZC1 | bba07d7d1 / control 328765d1 | fixed tree (graphchecker/zk-bug-2886-control = 92c0f2b5 + this workload and marker, the fix intact; `/bulk/gc-out/zk-buggy/2886ctl`): the same SAT -- WITNESSED (5 / 111), confirmed, reproduced 10/10, report.py PASS: the caveat's direct evidence |
+| ZC1 | bba07d7d1 / control 328765d1 | fixed tree (graphchecker/zk-bug-2886-control = 92c0f2b5 + this workload and marker, the fix intact): the same SAT -- WITNESSED (5 / 111), confirmed, reproduced 10/10, report.py PASS: the caveat's direct evidence |
 
 The engine step bba07d7d1 (CONFIRM holds the reader at the nearest instrumented claim on its chain when its submitter
 is an uninstrumented root; reviewed and approved unchanged) and its residual notes are in zk-buggy-710's README.

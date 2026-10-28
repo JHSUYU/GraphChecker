@@ -1,6 +1,6 @@
 # Lessons: the traps we fell into, how we measure, how we debug (2026-10-18; §10 ZooKeeper 2026-10-21)
 
-Read after RULES.md, AGENTS.md, OPERATIONS.md, PARALLEL.md, CHECKING.md and REFACTOR-PLAN.md. Every item below
+Read after RULES.md, AGENTS.md, OPERATIONS.md, PARALLEL.md and CHECKING.md. Every item below
 cost us time at least once; the date or the case it came from is named so it can be checked.
 
 ## 1. How we work (pointers; the rules themselves are in RULES.md)
@@ -349,60 +349,13 @@ seed-replay stall at a time, then read each claim's chain. Every run and decisio
   outside-witness net stays (TODO ZooKeeper 4).
 - **A diverged replay names a different occurrence.** A NOT_ADMITTED replay whose election took 4 turns named the
   leader's Prep.run `#u292@4`. A demand on it is DIAGNOSTIC, not BLOCKING (d90d21e18; TODO ZooKeeper 3).
-
-## 11. CloudLab (from system/hdfs-cloudlab: HDFS on HBase's engine, 2026-10-24)
-
-**Porting a system back onto a newer body.** `system/solr`'s cleanup deleted, "system/hdfs keeps them", the Hadoop
-shim (LOC 2a, 980a64b43) and the door entry points only the shim called (LOC 2b, b68e720f0). Read the deletions of the
-line between the two bodies first (`git log --format='%h %s' system/hdfs1..system/hbase | grep -iE 'hdfs|shim|LOC'`):
-restoring those two was the whole API port; the case declarations under `experiments/hadoop` had only lost comments.
-A read-only investigator over the 1550 commits between found no other HDFS-only deletion; what changed under HDFS is
-shared behaviour: the VM image (enum compares state terms), per-loop bounds (0e9a4000d), hand-off claims of cached
-pools, the TIMED_WAIT doors, the named bounds, the claim order.
-
-**The workload's own test class is woven now** (26d252eb5: a lineage root `<test classes>#<class>`), so its random
-draws go through `runtime.Randoms`, one keyed draw each, interpreted in the VM: hdfs-adhoc-21's workload
-(`TestDFSInputStream#testSkipInner`, ~1.6 M `nextInt`s) ran its seed replay into the 2400 s bound long after its target.
-Look for draw-heavy loops in a workload's test class (`grep -c 'nextInt\|new Random'`) when a seed replay is slow;
-a jstack of the replay's main thread names it (`Randoms.seed`).
-
-**A pure re-pairing world has nothing but its orders.** b9dfcedc5 (HBase) leaves a turn-counted ORDER row out of the
-native plant; for hdfs-bugs-slowdisk-zero every row stood in the disk detector's WAKE turn, so REPRODUCE planted
-nothing and refused; kept for worlds that plant no root (c8d40a5d8), it reproduced 10/10 again.
-
-**World depth 0 is the rule** (RULES, owner 2026-10-19). Run at the engine's default 3, hdfs-17897 asked 993
-obligations over 68 rounds where EX1 asked 30 in 4, and its first claims were refuted re-pairings.
-
-**CloudLab is CPU-bound, not memory-bound.** node0-4: 251 GB and 40 logical (20 physical, Xeon E5-2660 v2, 2013) cores
-each. The host ledger was memory-only; liftlab's 30 GB hosts capped every start by memory, so the per-head core count
-never mattered. Here nine campaigns each filled every host to 40 cores on its own: load 70-93 on 40 CPUs, seed replays
-3-5x slower than EX1. The ledger now charges cores too: every charge row names the cores it keeps busy (a replay the
-campaign's measured `campaign_replay_cores`, a solve two, an engine JVM one), and a start needs room in both memory
-and the node's cores summed over every campaign (`campaign_host_fits`), so a quiet "waiting for room" line names the
-cores it waits for. Campaigns of an older build charge no cores: judge a host by its load as well as its charges; one
-uncapped campaign (`launch-round.sh`) can take the whole pool, so development rounds run as sweeps (`sweep.sh`,
-shared pool). A fixture that limits a test host's cores must count the head's planner service (one core for the
-exploration).
-
-**ZooKeeper on CloudLab (2026-10-25).** Timing the lifts never exposed: (1) a startup race the lifts always won --
-QuorumBase started peers 1-5 in order, a quorum of 1-4 elected 4, and 5 won the votes of the peers still looking, so
-two leaders stood, one waiting forever under the adapter's `NEVER_MS` limits (4 of 9 native runs): start from the
-highest id down; (2) a test's own 30 s waits that a replay on slower cores outlives (06 and 12 record the ensemble's
-start): the waits a test needs to succeed are unbounded in a workload, its short probes keep their bound (an
-unbounded 2000 ms probe hung 04's native run); (3) a count in an identity -- the leader's occurrences name the
-receiver turn of the deciding notification, so a recording that decides on another turn than its replay loses every
-leader-side slot (06, TODO ZooKeeper on CloudLab 1). Measure a native workload ten times on the new cluster before
-the first round. And `pgrep -f '<pattern>'` matches the shell that runs it: kill by the pid a run wrote.
-
-**Charge what is used where cores bind (2026-10-25).** A replay charged its 90th percentile rounded up to whole cores
-(HDFS: mean 1.63, p90 2.46, charged 2 or 3) left a node at 40 cores charged under a load of 25-55: on liftlab memory
-bound first and the rounding cost nothing. The ledger charges hundredths, a replay its mean, and a round runs as one
-pool of every case (`tools/rounds/run-pool.sh`, PARALLEL §8), not lanes and not alone reruns, which only paid on 30 GB
-hosts.
-
-**Cluster setup traps (tools/cloudlab/setup-nodes.sh does them right):** the home directory is local per node, so the
-repositories, worktrees, snapshots, trees, ~/.m2 and z3 must live on the shared /bulk; Ubuntu's `maven` pulls in JDK 11
-as the default java (set JDK 8 with update-alternatives); the unit tests call `z3` from PATH (a /usr/local/bin link);
-the shell test needs `jq`; Ubuntu 22.04 has no gcc-6 (build the VM in the sources' Ubuntu 18.04 image,
-`tools/vm/build-image-docker.sh`); four tree builds at once race on the shared Maven wrapper's download (run `./mvnw -v`
-once first); a surefire provider is fetched at the first online `mvn package`, so the first test run must not be `-o`.
+- **Slower hosts expose what the lifts always won (2026-10-25; the fork's `graphchecker/zookeeper-checks` 889f0e96,
+  STATUS "Per-system surface").** (1) `QuorumBase` started peers 1-5 in order: a quorum of 1-4 elected 4, then 5 won
+  the votes of the peers still looking, so two leaders stood, one waiting forever under the adapter's `NEVER_MS` limits
+  (4 of 9 native runs of zk-adhoc-02's setUp): it starts from the highest id down (7aa086bb). (2) A test's own 30 s
+  wait for a server that a slower replay outlives (06 and 12 record the ensemble's start): a wait of
+  `CONNECTION_TIMEOUT` or more is unbounded in a workload, a short probe keeps its bound (an unbounded 2000 ms probe
+  hung 04's native run; 07a2f0df, 889f0e96). (3) A count in an identity: the leader's occurrences name the receiver
+  turn of the deciding notification, so a recording that decides on another turn than its replay loses every
+  leader-side slot (zk-adhoc-06; answered since by the own-context rule, 98e4122e8, IDENTITY §9 "The order rule").
+  Measure a native workload ten times on new hosts before the first round.

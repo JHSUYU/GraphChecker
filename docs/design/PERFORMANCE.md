@@ -31,11 +31,9 @@ memory, through one ledger, so any number of campaigns, gates and agent runs can
 running out of memory, and a single case alone takes the whole cluster.
 
 - **The host ledger** (`$CAUSYNTH_HOST_LEDGER/<host>/charges/`, PIPELINE §7.7): every start (a replay, a solve, an
-  engine JVM, a gate JVM, a `fanout.sh` job) is first charged on its host, its MB and the cores it keeps busy. A start
-  goes only when both the host's live charges and its real use (`MemTotal - MemAvailable`), plus the start and any
-  head's held room, stay within 70 % of `MemTotal`, and the live charged cores plus its own within
-  `CAUSYNTH_HOST_MAX_CORES_PCT` (100) percent of `nproc` (any one start on a host whose charges keep no core busy);
-  memory binds on liftlab, cores on CloudLab. A charge is a file whose mtime is a 120 s lease renewed every 10 s by its holder, so a
+  engine JVM, a recording, a gate JVM, a `fanout.sh` job) is first charged on its host. A start goes only when both
+  the host's live charges and its real use (`MemTotal - MemAvailable`), plus the start and any head's held room, stay
+  within 70 % of `MemTotal`. A charge is a file whose mtime is a 120 s lease renewed every 10 s by its holder, so a
   killed run's charges lapse; it is removed the moment what it ran returns. A running JVM that outgrows its charge asks
   for the excess and gets it unless the host's REAL use would pass the ceiling.
 - **Measured charges** (2026-10-05): a replay is charged the campaign's measured replay need (the largest resident
@@ -66,8 +64,7 @@ running out of memory, and a single case alone takes the whole cluster.
   explorations whose entry in `$CAUSYNTH_HOST_LEDGER/explorations/` is fresh, re-read at every start. One case alone
   keeps all of it; ten keep a tenth each, and a share grows as others end. A named acceptance run shares nothing.
 - **Head steps** (PIPELINE §7.7 HEAD STEPS): every engine JVM of a head (static passes, planner, composer, CONFIRM's
-  main, GROW's planner) goes to the head's own host if it fits, else to the pool's host with the most room (free cores
-  first, then memory), charged
+  main, GROW's planner) goes to the head's own host if it fits, else to the pool's host with the most room, charged
   at the heap it starts at; a step that waits holds its need on the best host so that host drains. A head holds room
   for its next step: its measured step need (the largest engine JVM peak x1.25, at least 1 GB; 3.4-6.4 GB measured,
   HR1), never a fixed 8 GB; a host counts only its largest idle reservation. Every engine JVM (a head's, the served
@@ -119,7 +116,7 @@ running out of memory, and a single case alone takes the whole cluster.
 | 32% of a seed's window with no workload thread runnable: schedule stalls standing the full 15 s (2026-10-15) | the schedule held the very thread the frontier event needed; the 15 s was a margin | an idle stall stands the grace (2 s); a repeated slotless let-go comes a grace apart (solr-idle): window 311 to 233 s |
 | a flip query z3 cannot decide (18413 isExpired: unknown, theory array) | an unrelated container axiom from the woven view bookkeeping in the same query | the query states only the flipped condition's independence cone (solr-cone): 474 KB unknown to 7 KB SAT |
 | 18413's witness-attempt COMPOSE undecided (2026-10-15: valuation 0's own run timed out at 600 s, "incomplete (theory array)" inside the fatal cone) | a hash map's free iteration order (`assoc_view_key`) was an uninterpreted function of the map's state, and a removal's state holds a lambda z3 models no function of | the free order keyed by the state's term (an Int digest) and size (solr-viewtag): the same asks sat in 1 s (path 0) and 21 s (path 1) |
-| zk-adhoc-06's final COMPOSE timed out on all 16 valuations (CloudLab A1/A4/A5, 2026-10-25); a 2-path, 392 KB reduction not even parsed in 120 s | each lowered `String.length()` asserted its Java int range on its own, so 127 lengths of MBean names no other assertion read kept their strings, the maps they were read from (42 to 87 removals, each removal's order and position two lambdas z3 elaborates threefold per removal) and a view's `assoc_key_at` in the query | the range is the length's side condition, stated where the length is used (PIPELINE §7.5's alphabet passage): A1's formula 1.2 MB to 167 KB, its 16 valuations unsat and its 10 paths' runs sat, each in 0.1 s; the removal chain's encoding is unchanged (TODO ZooKeeper on CloudLab 4) |
+| zk-adhoc-06's final COMPOSE timed out on all 16 valuations (runs A1/A4/A5 on the zk-int line, 2026-10-25); a 2-path, 392 KB reduction not even parsed in 120 s | each lowered `String.length()` asserted its Java int range on its own, so 127 lengths of MBean names no other assertion read kept their strings, the maps they were read from (42 to 87 removals, each removal's order and position two lambdas z3 elaborates threefold per removal) and a view's `assoc_key_at` in the query | the range is the length's side condition, stated where the length is used (PIPELINE §7.5's alphabet passage): A1's formula 1.2 MB to 167 KB, its 16 valuations unsat and its 10 paths' runs sat, each in 0.1 s; the removal chain's encoding is unchanged (TODO "ZooKeeper: the buggy-detect line" 4) |
 | Solr replays growing for minutes overcommitted lifts (SB11/SB13) | charges counted only during a 60 s ramp | life-long leased charges |
 | six cases cut at 90 min in a 35-case sweep (HG9, 2026-10-06), e.g. 05 at 61 min with 60 verdicts and 105 replays in flight (alone in HG8W: 226 verdicts in 39 min) | 20 heads share the replay slots; the sweep's default `CASE_TIMEOUT_SECONDS=5400` is a share of the cluster | rerun at 10800 (11 26 33 37 closed); give a full sweep 10800 from the start |
 | 11741 took 4.7-5.4 h though its witness landed after ~150 verdicts (AR1) | each solved obligation's REPLAY was put at the queue's front, ahead of the witness's CONFIRM: it waited behind 473 replays | a REPLAY goes behind a leading CONFIRM or RERUN (adffd6072) |
@@ -151,7 +148,7 @@ if it is clearly wrong, name the cause in code.
 | where EXPLORE's time went: per verdict the run time and the queue wait, the concurrency over time, the refusal reasons | `tools/rounds/obl-times.py <case>/schedule` |
 | time per stage, per round, per job | `out/<case>/schedule/stage_metrics.tsv`; `tools/analysis/timeline.py <case dir>` |
 | what the exploration did per round | the log's `[campaign] round N (wave W): K obligation(s), E exposure(s), F in flight` and `exploration stopped (<END>)` lines |
-| is the ledger the bottleneck | the log's `waiting for room: no host admits one more start (<host> has X MB charged ..., Y MB in use and Z MB held for a head ...` or `<host> has N cores charged to what it runs ...)`; `ls -l $CAUSYNTH_HOST_LEDGER/<host>/charges/` (live = mtime < 120 s) |
+| is the ledger the bottleneck | the log's `waiting for room: no host admits one more start (<host> has X MB charged ..., Y MB in use and Z MB held for a head ...)`; `ls -l $CAUSYNTH_HOST_LEDGER/<host>/charges/` (live = mtime < 120 s) |
 | why a seed replay stalls | `grep -c 'did not happen' .../seed-result/focused/replay.log`, then which events did not happen and on which thread; `jstack` the replay JVM (`ps -g $(cat <run>/pgid)` on the head host) |
 | where a JVM spends its time | sample `jstack <pid>` every few seconds (5-10 samples) and count the top frames; for IO, `strace -f -c` |
 | a replay's memory | the replay log's `the workload JVM's resident memory peaked at X MB; its host was charged Y MB` |
