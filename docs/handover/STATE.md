@@ -69,8 +69,8 @@ a3e1881d5 (2026-10-27). Integration worktree `/bigtemp/vnr3ne/wt/gc-hdfs-liftlab
 
 **The cluster** (OPERATIONS §1): liftlab, lift02-15, 48 cores and 30 GB each, `/bigtemp/vnr3ne` and the home over NFS;
 lift11 the control host (the lead's sessions; neither a worker nor a head); lift07 unreachable since the servers went down
-on 2026-10-23; lift02 and lift03 cannot reach lift15, so they are workers, never heads. The workers: the other 12, lift02-06,
-lift08-10, lift12-15. Maven and Ant only on lift02-06 and lift08-10.
+on 2026-10-23; lift02 and lift03 cannot reach lift15 (since 2026-10-28), so the workers are the 11 of gc-env's default
+`LIFTS`: lift02-06, lift08-10, lift12-14. Maven and Ant on PATH only on lift02-06 and lift08-10.
 
 **The image:** `/bigtemp/vnr3ne/vm-force12/j2sdk-image` (`system/hdfs-liftlab`'s VM sources are `system/hbase`'s).
 

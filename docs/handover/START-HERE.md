@@ -73,8 +73,9 @@ What is left for the old bugs: [TODO.md](TODO.md) "Buggy-detect".
   never rebuilt, so a tree change during a series is a new set.
 - **The cluster:** liftlab, lift02-15 (48 cores and 30 GB each; `/bigtemp/vnr3ne` and the home over NFS). lift11 is the
   control host (`GC_CONTROL_HOST`: the lead's sessions, neither a worker nor a head); lift07 has been unreachable since the
-  servers went down on 2026-10-23; lift02 and lift03 cannot reach lift15, so they are workers, never heads. The 12
-  workers: lift02-06, lift08-10, lift12-15. Maven and Ant are only on lift02-06 and lift08-10 (builds go there).
+  servers went down on 2026-10-23; lift02 and lift03 cannot reach lift15 (since 2026-10-28), so the workers are the 11
+  of gc-env's default `LIFTS`: lift02-06, lift08-10, lift12-14. Maven and Ant are on PATH only on lift02-06 and
+  lift08-10 (builds go there).
 - **The image:** `/bigtemp/vnr3ne/vm-force12/j2sdk-image` (this branch's VM sources are `system/hbase`'s).
 - **From GitHub:** [../REPRODUCE.md](../REPRODUCE.md) §0-§5 clones the branch and the fork, builds the image and the
   trees, and runs one case or the series.
