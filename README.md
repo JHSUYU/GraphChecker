@@ -19,6 +19,10 @@ defaulted.
 
 ## This branch: the old HDFS bugs put back by hand (`system/hdfs-buggy-detect`)
 
+[docs/handover/HANDOVER-2026-10-28.md](docs/handover/HANDOVER-2026-10-28.md) is the map of everything on liftlab:
+every GraphChecker branch and fork branch (and the archive tags), the tree sets, snapshots, images, the runs of
+record, the buggy-detect results and how to run a case. The same file is on all eight `system/*` branches.
+
 `system/hdfs-buggy-detect` is `system/hdfs-liftlab` (THE HDFS branch, next section) plus seven old HDFS bugs that make
 one of its ad hoc checks fail, each put back by hand on today's tree -- the owner (2026-10-26): a bug counts only if
 GraphChecker's witness fires the point's own declared throw -- and the engine support they needed (for HDFS-14311: an
