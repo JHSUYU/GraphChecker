@@ -1,16 +1,62 @@
-# START HERE: GraphChecker's HBase ad hoc checks (finished 2026-10-21)
+# START HERE: `system/hbase-buggy-detect` -- the old HBase bugs put back, on HBase's ad hoc engine (liftlab)
 
-You are the next lead (a coding agent that may run up to 5 coding agents). This file is self-contained: where HBase
-stands, what to read, what is left, how to run a case, and where everything is. Repo: `/u/vnr3ne/GraphChecker`, GitHub
-`git@github.com:JHSUYU/GraphChecker.git`. HBase's code is the branch `system/hbase`
-(pushed 2026-10-22; worktree `/bigtemp/vnr3ne/wt/gc-hbase`). The HBase tree is the fork's
-`graphchecker/hbase-checks` (`https://github.com/JHSUYU/hbase.git`, pushed; local `/u/vnr3ne/hbase` branch
-`gc/hbase-checks`): the adapter. **From GitHub:** clone the two and check out those branches;
-[../REPRODUCE.md](../REPRODUCE.md) §7 builds the VM image and the tree and runs every case. The old HBase bugs put back
-on today's tree are `system/hbase-buggy-detect` (its START-HERE). HDFS, ZooKeeper and Solr are finished on their own
-branches (README "Branches").
+You are the next lead (a coding agent that may run up to 5 coding agents). This branch is `system/hbase` (HBase's ad hoc
+checks, finished 2026-10-21: §1-§5 below) plus the old HBase bugs that make an ad hoc check fail, put back by hand on
+today's tree, and the engine support they needed (§0; the four systems' table: [BUGGY-DETECT.md](BUGGY-DETECT.md)). Repo:
+`/u/vnr3ne/GraphChecker`, GitHub `git@github.com:JHSUYU/GraphChecker.git`, branch `system/hbase-buggy-detect` (local
+`bd-liftlab-hbase`, worktree `/bigtemp/vnr3ne/wt/gc-hbase-bd`). The trees are the HBase fork's
+(`https://github.com/JHSUYU/hbase.git`) `graphchecker/hbase-bug-<jira>`, each `graphchecker/hbase-checks` b5d5cc6a20 with
+one bug put back, its workload and the point's target marker. HDFS, ZooKeeper and Solr are on their own branches
+(README "Branches").
 
-## 1. Where HBase stands (final series, 2026-10-20/21)
+## 0. The old HBase bugs (owner 2026-10-26: only a bug whose witness fires the point's own declared throw counts)
+
+| case | bug | point | tree (`experiments/hbase/trees.tsv`) | CloudLab, 2026-10-26 | liftlab, B1 |
+| --- | --- | --- | --- | --- | --- |
+| hbase-buggy-15039 | HBASE-15039: a token rejected before the ZooKeeper watcher applied its key | hbase-adhoc-34 (AuthenticationTokenSecretManager:139) | `hbase-bug-15039` (c2cecb3756) | SAT, STATE re-pairing, native 10/10, control 0/10 (HB15039b) | B1 (lead fills in) |
+| hbase-buggy-20642 | HBASE-20642: a retried disableTable attempt draws a new nonce | hbase-adhoc-04 (AbstractStateMachineTableProcedure:163) | `hbase-bug-20642` (1ba966bb6c) | SAT, MARKER_FLIPPED (lost DisableTable reply), native 10/10 by IDENTITY §9 shape, 0/10 exact, control 0/10 (HB20642f; accepted by the owner 2026-10-27) | B1 (lead fills in) |
+| hbase-buggy-28533 | HBASE-28533: a failed split's PREPARE rollback leaves the parent SPLITTING | hbase-adhoc-15 (MergeTableRegionsProcedure:507) | `hbase-bug-28533` (de71623820) | not reachable on today's code: README only, no run (closed by the owner) | no run |
+
+The runnable cases are `experiments/hbase/hbase-buggy-cases.tsv` (case, branch, budget 21600 s, bug, point); each case
+directory's README has the bug, what was put back and why, the workload, every declaration and the runs. Their expected
+mechanisms are `experiments/accept/report.py`'s `EXPECTED_MECHANISM` rows. The engine support on this branch only:
+948e4779f (the reply legs of a turn's earlier requests are control producers, SYMBOL-SCOPE, PIPELINE §7.2) and
+93a168e87 + 298508ffa (IDENTITY §9's order rule in one implementation, `runtime/AnswerOrder`, for a replay and for a
+native REPRODUCE run; `reproduced` stays exact-only, `reproducedByShape` is counted apart, PIPELINE §10b). The rest --
+the host ledger, heaps (`engine_memory_mb` 12288), launch tools -- is `system/hbase`'s.
+
+**Run them on liftlab** (the lead's series B1, 2026-10-28; workers lift02-15 but lift07 and lift11, OPERATIONS §1):
+1. **Snapshot** of this branch (never rebuild one a run reads): `bash tools/lib/worktree-add.sh
+   /u/vnr3ne/gc-run/bd-hbase-<n> <commit> --detach`, then in it `env -u BASH_ENV tools/onlift.sh -g 4 mvn -q -o package
+   -DskipTests`. B1's is `/u/vnr3ne/gc-run/bd-hbase-1` (b978bacb8).
+2. **The tree set** `/bigtemp/vnr3ne/wt/bd-trees-1` (every bug tree of the four systems; Maven repositories under
+   `/bigtemp/vnr3ne/m2/bd-1`, one per tree, `hbase_bigtemp_vnr3ne_wt_bd-trees-1_hbase-bug-<jira>`): from the snapshot,
+   `env -u BASH_ENV tools/onlift.sh -g 8 env GC_TREES=/bigtemp/vnr3ne/wt/bd-trees-1 GC_M2=/bigtemp/vnr3ne/m2/bd-1
+   experiments/hbase/prepare-trees.sh hbase-bug-15039 hbase-bug-20642` (it clones each fork branch into
+   `$GC_TREES/<tree>`, installs the snapshot's jar into the tree's Maven repository, builds, and runs each case's workload
+   once natively: one `PASSED` line each). Never build a tree a run reads.
+3. **Launch**, from lift11, with the image `vm-force12`:
+   ```bash
+   cd /u/vnr3ne/gc-run/bd-hbase-1 && env -u BASH_ENV GC_OUT=/bigtemp/vnr3ne/gc-out/buggy-detect \
+     GC_TREES=/bigtemp/vnr3ne/wt/bd-trees-1 GC_M2=/bigtemp/vnr3ne/m2/bd-1 \
+     LIFTS="lift04 lift05 lift06 lift08 lift09 lift10 lift12 lift13 lift14 lift15" \
+     CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force12/j2sdk-image CASE_TIMEOUT_SECONDS=21600 PRUNE=0 \
+     CASES="hbase-buggy-15039 hbase-buggy-20642" tools/rounds/launch-round.sh /u/vnr3ne/gc-run/bd-hbase-1 B1
+   ```
+   One case: `CASES=hbase-buggy-20642`. A round tag runs a case once (`accept-<ROUND>-<case>`); a rerun takes a new tag.
+   `LIFTS` leaves out lift02 and lift03: `launch-round.sh` may head a case on any host of `LIFTS` but lift11, and those
+   two cannot reach lift15, so PREFLIGHT refuses a run they head with lift15 among its workers ("campaign_worker_hosts
+   names lift15, which this host cannot reach": B1's first launch of both HBase cases, 2026-10-28 00:11, headed on lift02
+   and lift03). Keeping lift02 and lift03 instead means leaving out lift15.
+4. **Read the result** in `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-<case>/`: `summary.tsv` and
+   `report/<case>/report.md` (report.py's PASS: the expected mechanism, CONFIRM, native REPRODUCE k/N, control 0/N);
+   `tools/rounds/round-verify.sh B1` (how EXPLORE ended, z3 on the exported `final/candidate.smt2`, gaps, roots);
+   `python3 tools/analysis/vacuity.py --latest --detail <run dir>` on an UNSAT; `tools/analysis/smt-legend.py <run
+   dir>/out/<case>` to read the chain against the bug tree's code; `final/reproduce.json` and `final/reproduce/plant.log`
+   for the native runs (hbase-buggy-20642 counts `reproducedByShape`; its `ADDRESS_UNSTABLE` lines name each by-shape
+   run). Then the case README's result section and BUGGY-DETECT.md's B1 column.
+
+## 1. Where HBase's ad hoc checks stand (`system/hbase`, final series, 2026-10-20/21)
 
 The owner's goal (2026-10-19): "基于我们solr现在这么好的代码基础，完成对hbase的adhod check". The checks are
 `docs/checks/HBASE.md`: 17 study checks plus the owner's five bugs, 22 cases in `experiments/hbase/hbase-cases.tsv`.
@@ -93,7 +139,8 @@ A case is done as follows:
 
 ## 5. What is left
 
-Nothing is owed for HBase: every case has its final verdict (`results/hbase/`), `system/hbase` and the fork's
+This branch owes the old bugs' liftlab series B1 (§0, TODO "Old HBase bugs"). Nothing is owed for HBase's ad hoc
+checks: every case has its final verdict (`results/hbase/`), `system/hbase` and the fork's
 `graphchecker/hbase-checks` are on GitHub, and REPRODUCE §7's fresh-clone check passed (2026-10-22). Optional engine work,
 most return first (TODO "HBase"): 15 (the client thread's happens-before as JOIN rows, 2-3 days: it would close 08, 12,
 14, 15 and shorten 07's and nsrg's claim loops; parked as `archive/local/hbase-e15`), 10 (what remains of a znode's

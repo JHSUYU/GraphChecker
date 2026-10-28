@@ -56,12 +56,14 @@ preflight runs.
 | scope | `case.sh` | hbase-adhoc-04's: AbstractStateMachineTableProcedure, TableStateManager |
 | fault transports | `../system.sh` | `HBASE_RPC` (the HBase default): the client's DisableTable reply is a door |
 | world depth | `case.sh` | `CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=1`: the lost reply, and the retry's preflight read ordered after the first procedure's DISABLING write if a replay's retry comes first |
-| heap | `workflow.properties` | `engine_memory_mb` 24576 (CloudLab's cases use 65536 on 376 GB nodes; these nodes have 251 GB and five agents share the ledger) |
+| heap | `workflow.properties` | `engine_memory_mb` 12288, hbase-bugs' (a lift has 30 GB; the CloudLab rounds below ran at 24576) |
 | mechanism | `experiments/accept/report.py` | `hbase-buggy-20642`: MARKER_FLIPPED by an HBASE_RPC fault |
 
 The run's budget is `../hbase-buggy-cases.tsv`'s.
 
-## Result: SAT confirmed in the VM; native REPRODUCE 10/10 by shape at the anchor, 0/10 exact (control 0/10)
+## Result: SAT confirmed in the VM; native REPRODUCE 10/10 by shape at the anchor, 0/10 exact (control 0/10; CloudLab)
+
+Liftlab (series B1, 2026-10-28, `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-hbase-buggy-20642`): B1 (lead fills in).
 
 **Verdict.** SAT: the reply to the first DisableTable is lost, the client retries with a new nonce, and the retry's
 DisableTableProcedure throws at the point's own throw (:163). CONFIRM realized it in the VM. Natively, the planted
@@ -82,10 +84,9 @@ attempt's callback and the retry timer:
 HBase does not count sends per verb (the Hadoop IPC request level does), so the retry cannot be made "the Nth send".
 Only a recording that itself retried a DisableTable at that position could open the address. A fault-free recording
 has no failed attempt: a natural failure after the procedure is built fires the bug natively, and one before it makes
-the witness need a second moved root (`/bulk/analysis/buggy-detect-2026-10-26/HBASE-20642-notes.md`, H2).
+the witness need a second moved root (the CloudLab notes on HBASE-20642, H2).
 
-**HB20642e** (snapshot `/bulk/gc-run/hbase-b20642-5` = 93a168e87, tree set `/bulk/trees/hbb20642` = 1ba966bb6c;
-`/bulk/gc-out/hbase-buggy/20642/accept-HB20642e-hbase-buggy-20642`, 866 s, head node1):
+**HB20642e** (CloudLab, GraphChecker 93a168e87, tree 1ba966bb6c; 866 s):
 - **Claim** (valuation 1): `SAT_CANDIDATE` `MARKER_FLIPPED`, `polarityDecides` true. The one moved root is
   `REGION.678dfe9c...in.bb037ad5` = true: a fault marker of `RpcConnection.finishCall` (#u39) in client0's occurrence
   a5fe07ecef0b627e, which reads the master's reply (endpoint 1ed2bbc8a1b3d6c9) to the first DisableTable
@@ -124,9 +125,8 @@ anchor, not that it threw at the recorded address. REPRODUCE therefore keeps the
 - HB20642e's PLANT_FATAL rows predate the `byShape` field, so its counts cannot be recomputed with the new jq;
   HB20642f gives them under the split rule.
 
-**HB20642f** (snapshot `/bulk/gc-run/hbase-b20642-6` = 298508ffa; stopped after claim 1, as HB20642c was, because
-an exact-only REPRODUCE of 0/10 sends the campaign on to compose claim 2;
-`/bulk/gc-out/hbase-buggy/20642/accept-HB20642fSTOP-claim1-hbase-buggy-20642`, claim 1 in `final/unreproduced/0000`):
+**HB20642f** (CloudLab, GraphChecker 298508ffa; stopped after claim 1, as HB20642c was, because an exact-only
+REPRODUCE of 0/10 sends the campaign on to compose claim 2; claim 1 in `final/unreproduced/0000`):
 - **Claim 1** (valuation 1): MARKER_FLIPPED, polarityDecides true, moved root `REGION.678dfe9c...in.f9d4e5a9` = true.
   This is the reply reader of the first DisableTable, the same root as HB20642c's claim 1.
 - **CONFIRM:** realized, session 1ec4e01bc9896ff9-cd3e8abb.
@@ -155,13 +155,11 @@ made in 298508ffa (the exact and by-shape counts above).
 test turn's 19 REQUEST doors and no reply reader, and round 0 asked 38 REQUEST flips and 0 RESPONSE flips. A REQUEST
 fault keeps the first DisableTable from the master, so the retry runs one procedure and the bug is not reached.
 Engine support 948e4779f (lead-approved and reviewed) admits the reply legs of the demanded message's doors as control
-producers: 19 `finishCall` occurrences planned, and 57 RESPONSE flips in round 0
-(`/bulk/analysis/buggy-detect-2026-10-26/HBASE-20642-notes.md`).
+producers: 19 `finishCall` occurrences planned, and 57 RESPONSE flips in round 0 (the CloudLab notes on HBASE-20642).
 
 Earlier runs:
 
-**HB20642c** (snapshot `/bulk/gc-run/hbase-b20642-3` = f82385bcc on 948e4779f, tree set `/bulk/trees/hbb20642` =
-1ba966bb6c; `/bulk/gc-out/hbase-buggy/20642/accept-HB20642cSTOP-claim1-hbase-buggy-20642`; its claim 1 is in
+**HB20642c** (CloudLab, GraphChecker f82385bcc on 948e4779f, tree 1ba966bb6c; its claim 1 is in
 `final/unreproduced/0000`):
 - **Claim 1:** `SAT_CANDIDATE` `MARKER_FLIPPED`, `polarityDecides` true. The one moved root is
   `REGION.678dfe9c...in.f9d4e5a9` = true: the fault marker of `RpcConnection.finishCall` in client0's occurrence

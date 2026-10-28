@@ -25,7 +25,7 @@ Everything is on GitHub: GraphChecker (`git@github.com:JHSUYU/GraphChecker.git`,
 | system | ad hoc checks | old bugs put back on today's tree |
 | --- | --- | --- |
 | HDFS | `system/hdfs-liftlab` (replaces `system/hdfs` and `system/hdfs1`, which stay on the remote as history) | `system/hdfs-buggy-detect` |
-| HBase | `system/hbase` (this branch) | `system/hbase-buggy-detect` |
+| HBase | `system/hbase` | `system/hbase-buggy-detect` (this branch) |
 | ZooKeeper | `system/zookeeper` | `system/zookeeper-buggy-detect` |
 | Solr | `system/solr` | `system/solr-buggy-detect` |
 
@@ -42,12 +42,12 @@ kept only as the tags `archive/system/<x>-cloudlab`.
 
 **HDFS** (46 cases, finished): `system/hdfs-liftlab` runs every case on HBase's engine with liftlab's scheduling
 (`results/hdfs/`, its REPRODUCE §0-§5); `system/hdfs-buggy-detect` the seven old HDFS bugs put back.
-**HBase** (22 cases, finished 2026-10-21): this branch, `system/hbase` (built from `system/solr`; `results/hbase/` holds
-each case's final `.smt`, claim and time table), with the fork's `graphchecker/hbase-checks`;
-[docs/REPRODUCE.md](docs/REPRODUCE.md) §7 runs the 22 cases from a fresh clone of the two;
-[docs/handover/START-HERE.md](docs/handover/START-HERE.md) is where a new lead starts. `system/hbase-buggy-detect` runs
-HBASE-15039 and HBASE-20642 put back (HBASE-28533: not reachable on today's code).
-**ZooKeeper** (16 cases, finished 2026-10-22): `system/zookeeper` (built from this branch; its START-HERE and
+**HBase** (22 cases, finished 2026-10-21): `system/hbase` (built from `system/solr`; `results/hbase/` holds each case's
+final `.smt`, claim and time table), with the fork's `graphchecker/hbase-checks`; [docs/REPRODUCE.md](docs/REPRODUCE.md)
+§7 runs the 22 cases from a fresh clone of the two. This branch, `system/hbase-buggy-detect`, is `system/hbase` plus
+HBASE-15039 and HBASE-20642 put back on the fork's `graphchecker/hbase-bug-<jira>` (HBASE-28533: not reachable on today's
+code), REPRODUCE §B; [docs/handover/START-HERE.md](docs/handover/START-HERE.md) is where a new lead starts.
+**ZooKeeper** (16 cases, finished 2026-10-22): `system/zookeeper` (built from `system/hbase`; its START-HERE and
 REPRODUCE §8, `results/zookeeper/`); `system/zookeeper-buggy-detect` ZOOKEEPER-710 and -2886.
 **Solr** (20 cases, finished 2026-10-26): `system/solr` (its REPRODUCE §6, `results/solr/`);
 `system/solr-buggy-detect` SOLR-9440, -6101 and -6197.
@@ -94,9 +94,10 @@ that works on this project takes [RULES.md](docs/handover/RULES.md),
 
 | # | document | what it holds |
 | --- | --- | --- |
-| 0 | [docs/handover/START-HERE.md](docs/handover/START-HERE.md) | A new lead starts here: HBase finished (2026-10-21), each case's verdict, what to read in order, how to run a case, the rules, where everything is |
-| 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands: HBase finished (§H: what `system/hbase` and the HBase fork's tree hold, each case's result, where everything is); the goals (verbatim); every GraphChecker branch and the parked work; the trees, VM images and snapshots; where the evidence lives. |
-| 2 | [docs/handover/TODO.md](docs/handover/TODO.md) | What is left, all of it optional engine work: HBase's parked items, each with its evidence; the engine items found on HDFS and Solr; the cross-cutting ones. |
+| 0 | [docs/handover/START-HERE.md](docs/handover/START-HERE.md) | A new lead starts here: the old HBase bugs on this branch (§0: the cases, how to build their trees, run them on liftlab and read them), then HBase's ad hoc checks (finished 2026-10-21), the rules, where everything is |
+| 0b | [docs/handover/BUGGY-DETECT.md](docs/handover/BUGGY-DETECT.md) | The four systems' old bugs put back on today's trees: each case's point, mechanism, caveat and verdict (CloudLab 2026-10-26, liftlab B1), the owner's decisions, the engine support per branch |
+| 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands: the old HBase bugs (§B: this branch, its trees, snapshot and results); HBase finished (§H: what `system/hbase` and the HBase fork's tree hold, each case's result, where everything is); the goals (verbatim); every GraphChecker branch and the parked work; the trees, VM images and snapshots; where the evidence lives. |
+| 2 | [docs/handover/TODO.md](docs/handover/TODO.md) | What is left: the old HBase bugs' liftlab series B1; then optional engine work: HBase's parked items, each with its evidence; the engine items found on HDFS and Solr; the cross-cutting ones. |
 | 3 | [docs/handover/RULES.md](docs/handover/RULES.md) | The owner's standing rules, long-term, quoted: what a finished check is (only SAT or UNSAT, a right `.smt`), symbolic scope first, general fixes only, no fallback code, a large closure converges (a bound is a rare last resort), workarounds with measure, system by system, git and safety. |
 | 3b | [docs/handover/CHECKING.md](docs/handover/CHECKING.md) | How every verdict and `.smt` is checked before it counts (round-verify's columns, the hand check with the legend) and the twenty-one traps the leads fell into (cut searches, unbound handoffs, bounded rounds, constant fatal arms, unreached arms, one-value domains, HELD values, the let-binding trap, NO-SYMBOL, a sweep's default budget, run-to-run open arms, read-order divergence, residue that cannot move a constant phi, ...). |
 | 4 | [docs/handover/AGENTS.md](docs/handover/AGENTS.md) | How to work with agents: at most 5 coding agents, reviews at key complex places, briefs, design gates, worktrees, merges, stopping; how each lead ran them and the lessons. |
@@ -108,7 +109,7 @@ that works on this project takes [RULES.md](docs/handover/RULES.md),
 | 8 | [docs/design/README.md](docs/design/README.md) | The design at a glance, stage by stage, and the index of the design specs (PIPELINE, SYMBOL-SCOPE, IDENTITY, CONTRACT-SPEC, VM, PERFORMANCE). |
 | 9 | [docs/design/PERFORMANCE.md](docs/design/PERFORMANCE.md) | Where a campaign's time goes, how the lifts run many campaigns at once, why cases were slow, how to debug a slow case, the open speed items. |
 | 10 | [docs/STATUS.md](docs/STATUS.md) | Every capability: done / partial / not done, with code pointers and the per-system surface (adapters, workarounds); every HDFS case's verdict and its `.smt` read by hand ("HDFS checks"); the open defects. |
-| 11 | [docs/REPRODUCE.md](docs/REPRODUCE.md) | From the GitHub branches alone: the machines, the GraphChecker checkout, its VM image, the fork's tree, running one case or all of them, reading the results: HBase (§7) and Solr (§6); HDFS and ZooKeeper on their own branches. |
+| 11 | [docs/REPRODUCE.md](docs/REPRODUCE.md) | From the GitHub branches alone: the machines, the GraphChecker checkout, its VM image, the fork's trees, running one case or all of them, reading the results: HBase (§7), the old HBase bugs (§B), Solr (§6); HDFS and ZooKeeper on their own branches. |
 
 The sections below are the user-level reference: the pipeline, running one case, running the bug
 checks, outputs, and the repository map.

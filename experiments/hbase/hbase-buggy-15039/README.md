@@ -55,13 +55,14 @@ Natively the workload passed 6 of 6 runs before any campaign (2.27-2.32 s).
 | scope | `case.sh` | hbase-adhoc-34's: AuthenticationTokenSecretManager, ZKSecretWatcher |
 | window | `case.sh` | the default (`up`): the new key is made and distributed inside it |
 | world depth | `case.sh` | 0: one re-pairing or one fault |
-| heap | `workflow.properties` | `engine_memory_mb` 24576, as hbase-buggy-20642 |
+| heap | `workflow.properties` | `engine_memory_mb` 12288, hbase-bugs' (a lift has 30 GB; the CloudLab rounds below ran at 24576) |
 | mechanism | `experiments/accept/report.py` | `hbase-buggy-15039`: STATE_PAIRING_FLIPPED or MARKER_FLIPPED, no clock; a MARKER claim has to be the watcher's ZooKeeper READ fault (read by hand) |
 
-## Result: SAT, STATE re-pairing, confirmed and reproduced 10/10 (HB15039b, PASS)
+## Result: SAT, STATE re-pairing, confirmed and reproduced 10/10 (HB15039b on CloudLab, PASS)
 
-Round HB15039b (2026-10-26, snapshot `/bulk/gc-run/hbase-b20642-3` = GraphChecker f82385bcc, tree set
-`/bulk/trees/hbb15039` = c2cecb3756, `/bulk/gc-out/hbase-buggy/15039/accept-HB15039b-hbase-buggy-15039`): 1211 s,
+Liftlab (series B1, 2026-10-28, `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-hbase-buggy-15039`): B1 (lead fills in).
+
+Round HB15039b (CloudLab, 2026-10-26; GraphChecker f82385bcc, tree c2cecb3756): 1211 s,
 `SAT_CANDIDATE` `FINAL_READY`, `report.py` **PASS** (`STATE_PAIRING_FLIPPED` at valuation 0, `polarityDecides` true, no
 gap, no defect). `round-verify.sh`: `end=(FIXED_POINT)`, z3 sat on the exported `candidate.smt2`, 2 leaves, confirmed,
 0 BOUNDED, 0 UNBOUND, 0 HOLD. The claim moves no root (`movedRoots` {}): it is a re-pairing, the shape of
@@ -93,5 +94,5 @@ hbase-adhoc-22's accepted STATE claim.
 - **With the fix** the same world refreshes the keys from ZooKeeper on the miss (`refreshKeys`) and finds key 2; no
   throw.
 
-Earlier: HB15039a (snapshot hbase-b15039-1 = 9649eb08b) was stopped in SEED, its head steps held by the shared
-ledger's mixed core units (fixed by f82385bcc).
+Earlier: HB15039a (CloudLab, GraphChecker 9649eb08b) was stopped in SEED, its head steps held by the shared ledger's
+mixed core units (CloudLab's core-charging ledger; liftlab's charges memory only).

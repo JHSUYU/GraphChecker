@@ -1,4 +1,4 @@
-# Reproducing the checks from GitHub: HBase (§7) and Solr (§6); HDFS and ZooKeeper on their own branches
+# Reproducing the checks from GitHub: HBase (§7), the old HBase bugs (§B), Solr (§6); HDFS and ZooKeeper on their own branches
 
 Everything a run needs is on GitHub: GraphChecker's branch of the system (the engine, the case settings, the VM
 sources) and the system's fork, whose `graphchecker/*` branch is the tree under test (the adapter, the target markers,
@@ -261,3 +261,59 @@ cluster and bounds").
    HBase 19) and 31 (vacuous; its RUN_DEFECT was stale generation gaps, fixed after the run). A run's
    `out/<case>/schedule/final/candidate.smt2` compares with `results/hbase/<case>.smt2.gz`; replays race, so wall times
    vary run to run and a native reproduction is a count.
+
+## B. The old HBase bugs put back (`system/hbase-buggy-detect`)
+
+This branch is `system/hbase` plus the cases of the old HBase bugs that make an ad hoc check fail, each on a tree of its
+own: the HBase fork's `graphchecker/hbase-bug-<jira>`, `graphchecker/hbase-checks` b5d5cc6a20 with that bug put back by
+hand, its workload and the point's target marker (`experiments/hbase/trees.tsv`). The runnable cases are
+`experiments/hbase/hbase-buggy-cases.tsv` (hbase-buggy-15039, hbase-buggy-20642; hbase-buggy-28533 is a README only:
+not reachable at its own throw on today's code); the table of every system's is
+[handover/BUGGY-DETECT.md](handover/BUGGY-DETECT.md).
+
+1. **GraphChecker.** As §7.1, on the branch `system/hbase-buggy-detect`:
+
+   ```bash
+   git clone -q --no-checkout -b system/hbase-buggy-detect git@github.com:JHSUYU/GraphChecker.git ~/GraphChecker-hbase-bd
+   git -C ~/GraphChecker-hbase-bd sparse-checkout set --no-cone '/*' '!/third_party/'
+   git -C ~/GraphChecker-hbase-bd checkout -q system/hbase-buggy-detect
+   (cd ~/GraphChecker-hbase-bd && tools/onlift.sh -g 6 mvn -q package -DskipTests)
+   source ~/GraphChecker-hbase-bd/tools/lib/gc-env.sh
+   ```
+
+2. **The image** is §7.2's: the VM sources are `system/hbase`'s (on the cluster `/bigtemp/vnr3ne/vm-force12/j2sdk-image`).
+
+3. **The trees**, into a tree set of their own (each gets its own Maven repository under `GC_M2`, named by its path):
+
+   ```bash
+   cd ~/GraphChecker-hbase-bd
+   tools/onlift.sh -g 8 env GC_TREES=$GC_BULK/wt/bd-trees GC_M2=$GC_BULK/m2/bd \
+     experiments/hbase/prepare-trees.sh hbase-bug-15039 hbase-bug-20642 > $GC_BULK/prepare-hbase-bd.log 2>&1
+   ```
+
+   As §7.3: each fork branch is cloned into `$GC_TREES/hbase-bug-<jira>`, built against the checkout's jar, and the
+   case's workload runs once natively (`TestCausynthTokenKeyWatch#theOtherServerValidatesATokenOfANewKey`,
+   `TestCausynthDisableRetryNonce#disableTwoTables`: one `PASSED` line each).
+
+4. **The cases**, both at once (each case's obligations go to every host of `LIFTS`; a head on a host that cannot reach
+   every worker is refused in PREFLIGHT, §0):
+
+   ```bash
+   env GC_OUT=$GC_BULK/gc-out/buggy-detect GC_TREES=$GC_BULK/wt/bd-trees GC_M2=$GC_BULK/m2/bd \
+     CAUSYNTH_CUSTOM_JDK_HOME=$GC_BULK/vm/hbase/j2sdk-image CASE_TIMEOUT_SECONDS=21600 PRUNE=0 \
+     CASES="hbase-buggy-15039 hbase-buggy-20642" tools/rounds/launch-round.sh ~/GraphChecker-hbase-bd B1
+   ```
+
+   One case: `CASES=hbase-buggy-20642`. On liftlab the lead's series B1 (2026-10-28) ran from the snapshot
+   `/u/vnr3ne/gc-run/bd-hbase-1` (b978bacb8) with the tree set `/bigtemp/vnr3ne/wt/bd-trees-1` (`GC_M2`
+   `/bigtemp/vnr3ne/m2/bd-1`) and the outputs `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-<case>`.
+
+5. **Reading them**, as §5: a case reproduces when its `report/<case>/report.md` says PASS -- `SAT_CANDIDATE` with the
+   mechanism of `experiments/accept/report.py`'s `EXPECTED_MECHANISM` row (hbase-buggy-15039: `STATE_PAIRING_FLIPPED`,
+   or `MARKER_FLIPPED` by the watcher's ZooKeeper READ fault; hbase-buggy-20642: `MARKER_FLIPPED` by an `HBASE_RPC` fault
+   on `RpcConnection`), confirmed in the VM, reproduced natively k/10 with control 0/10 (`final/reproduce.json`). The
+   retried DisableTable's handler of hbase-buggy-20642 has no recorded address, so a native run answers the declared
+   occurrence by its shape (IDENTITY §9, `runtime/AnswerOrder`): `reproduce.json` counts it as `reproducedByShape`
+   apart from the exact `reproduced`, and `plant.log` names each such run `ADDRESS_UNSTABLE` (the owner accepted the
+   by-shape count, 2026-10-27). The verdicts: BUGGY-DETECT.md (CloudLab, 2026-10-26: both SAT, native 10/10; liftlab:
+   B1 (lead fills in)).

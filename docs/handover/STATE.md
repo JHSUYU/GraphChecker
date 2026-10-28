@@ -1,15 +1,49 @@
-# State: HBase finished (`system/hbase`, final series 2026-10-21: all five owner bugs PASS)
+# State: `system/hbase-buggy-detect` -- HBase's ad hoc checks (finished 2026-10-21) plus the old HBase bugs put back
 
-HBase: section H below (finished: the code is this branch, `system/hbase`, the adapter the HBase fork's
-`graphchecker/hbase-checks`, both on GitHub; [../REPRODUCE.md](../REPRODUCE.md) §7 runs every case from a fresh clone
-of the two). The old HBase bugs put back on today's tree run on `system/hbase-buggy-detect` (this branch plus their
-cases; its `docs/handover/BUGGY-DETECT.md`). Every other system is finished on its own pair of branches (§2): HDFS on
-`system/hdfs-liftlab`, ZooKeeper on `system/zookeeper` (built from this branch), Solr on `system/solr` (this branch's
-base); each branch's STATE says where it stands. Nothing runs on any lift for HBase. Read this file, then
-[TODO.md](TODO.md) (what is left), [RULES.md](RULES.md), [CHECKING.md](CHECKING.md), [AGENTS.md](AGENTS.md),
-[OPERATIONS.md](OPERATIONS.md) and [PARALLEL.md](PARALLEL.md). The design is in [../design/](../design/README.md);
-every check's state is in [../checks/README.md](../checks/README.md); done / partial / missing per requirement in
-[../STATUS.md](../STATUS.md).
+This branch is `system/hbase` (section H: HBase finished, the adapter the HBase fork's `graphchecker/hbase-checks`;
+[../REPRODUCE.md](../REPRODUCE.md) §7) plus the old HBase bugs that make an ad hoc check fail, put back by hand on
+today's tree, and the engine support they needed (section B; [BUGGY-DETECT.md](BUGGY-DETECT.md) has every system's
+table; REPRODUCE §B runs them from a fresh clone). Every other system is on its own pair of branches (§2). Read this
+file, then [START-HERE.md](START-HERE.md), [TODO.md](TODO.md) (what is left), [RULES.md](RULES.md),
+[CHECKING.md](CHECKING.md), [AGENTS.md](AGENTS.md), [OPERATIONS.md](OPERATIONS.md) and [PARALLEL.md](PARALLEL.md). The
+design is in [../design/](../design/README.md); every check's state is in [../checks/README.md](../checks/README.md);
+done / partial / missing per requirement in [../STATUS.md](../STATUS.md).
+
+## B. The old HBase bugs (`system/hbase-buggy-detect`, liftlab)
+
+The owner's goal (2026-10-26): from the owner's list of old bugs, those that make an ad hoc check's OWN declared throw
+fail, put back with small changes on today's trees and detected on each system's branch. HBase's three:
+hbase-buggy-15039 (HBASE-15039 at hbase-adhoc-34), hbase-buggy-20642 (HBASE-20642 at hbase-adhoc-04) and
+hbase-buggy-28533 (HBASE-28533 at hbase-adhoc-15: README only, not reachable at its own throw on today's code; the
+owner closed it as it stands). Each case directory's README has the bug, the put-back commits, the workload, every
+declaration and the runs.
+
+**The branch** (GitHub `system/hbase-buggy-detect`; local `bd-liftlab-hbase`, worktree `/bigtemp/vnr3ne/wt/gc-hbase-bd`):
+`system/hbase` 26910df2a, then the CloudLab work it was made on (the cases, their trees, the engine support below, and
+CloudLab's scheduling layer, `archive/system/hbase-cloudlab`), then b978bacb8: CloudLab's scheduling layer reverted --
+`run_engine.sh`, `tools/` and the case settings are `system/hbase`'s (the host ledger charges memory, 70 % of a lift; a
+head step's heap 12288 MB, the buggy cases' too) with REPRODUCE by shape kept. The engine support, each reviewed:
+948e4779f (the reply legs of a demanded message's doors are its control producers, in PLAN and EXPLORE: SYMBOL-SCOPE,
+PIPELINE §7.2), 93a168e87 + 298508ffa (IDENTITY §9's order rule in one implementation, `runtime/AnswerOrder`, for a
+replay and a native REPRODUCE run; `reproduced` exact-only, `answeredByShape`/`reproducedByShape` counted apart,
+`ADDRESS_UNSTABLE` in `plant.log`: PIPELINE §10b); rejected and reverted: 455a6dd66 (017dcf890).
+
+**The trees:** the HBase fork's `graphchecker/hbase-bug-15039` (c2cecb3756), `-20642` (1ba966bb6c), `-28533`
+(de71623820), each from `graphchecker/hbase-checks` b5d5cc6a20 (`experiments/hbase/trees.tsv`). On liftlab: the tree set
+`/bigtemp/vnr3ne/wt/bd-trees-1` (every bug tree of the four systems, each system's `prepare-trees.sh` with
+`GC_TREES=/bigtemp/vnr3ne/wt/bd-trees-1 GC_M2=/bigtemp/vnr3ne/m2/bd-1`; HBase's two workloads PASSED natively,
+2026-10-28), the snapshot `/u/vnr3ne/gc-run/bd-hbase-1` (b978bacb8), the image `/bigtemp/vnr3ne/vm-force12`.
+
+**Results:**
+
+| case | CloudLab, 2026-10-26 | liftlab, B1 (`/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-<case>`) |
+| --- | --- | --- |
+| hbase-buggy-15039 | HB15039b: SAT `STATE_PAIRING_FLIPPED`, confirmed, native 10/10, control 0/10, report.py PASS, 1211 s | B1 (lead fills in) |
+| hbase-buggy-20642 | HB20642f: SAT `MARKER_FLIPPED` (the first DisableTable's lost reply), confirmed, native 10/10 by IDENTITY §9 shape, 0/10 exact, control 0/10; accepted by the owner 2026-10-27 (HB20642e: 866 s, report.py PASS) | B1 (lead fills in) |
+| hbase-buggy-28533 | not run (not reachable on today's code) | not run |
+
+B1's first launch (2026-10-28 00:11) headed both HBase cases on lift02 and lift03, which cannot reach lift15: PREFLIGHT
+refused them (kept as `accept-B1STOP-*`); relaunched at 00:22 with heads lift04 and lift06.
 
 ## H. HBase (finished: final series 2026-10-21) -- read this first if you take over HBase
 
@@ -98,7 +132,7 @@ that serves throughput.
 | `system/solr` | the Solr group (finished 2026-10-26), from `system/hdfs1`; tree: the fork `JHSUYU/solr` `graphchecker/solr-checks` |
 | `system/solr-buggy-detect` | `system/solr` plus the old Solr bugs put back |
 | `system/hbase` | the HBase group (§H; pushed 2026-10-22), from `system/solr`; tree: the fork `JHSUYU/hbase` `graphchecker/hbase-checks` |
-| `system/hbase-buggy-detect` | `system/hbase` plus HBASE-15039, -20642 and -28533 put back (trees `graphchecker/hbase-bug-<jira>`) |
+| `system/hbase-buggy-detect` | this branch: `system/hbase` plus HBASE-15039, -20642 and -28533 put back (§B; trees `graphchecker/hbase-bug-<jira>`) |
 | `system/zookeeper` | the ZooKeeper group (pushed 2026-10-22; its own STATE §Z), from `system/hbase`; tree: the fork `JHSUYU/zookeeper` `graphchecker/zookeeper-checks` |
 | `system/zookeeper-buggy-detect` | `system/zookeeper` plus the old ZooKeeper bugs put back |
 
@@ -134,7 +168,7 @@ VM images: `/bigtemp/vnr3ne/vm-force12/j2sdk-image` (built from this branch's VM
 (VM.md §8) and `exportLeaf`/`mintLeaf` can go in the next VM build.
 
 Snapshots in `~/gc-run/` (frozen; `tools/rounds/snapshot-gc.sh` refuses one in use): HBase's final series ran on
-`hb-int-16` (319428f7d) and `hb-int-17` (e53c3c882); `bd-hbase-1` is `system/hbase-buggy-detect`'s.
+`hb-int-16` (319428f7d) and `hb-int-17` (e53c3c882); this branch's series B1 runs `bd-hbase-1` (b978bacb8).
 
 ## 4. Where the analyses and evidence live
 

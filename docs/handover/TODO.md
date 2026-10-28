@@ -1,17 +1,31 @@
-# TODO: HBase finished (`system/hbase`, final series 2026-10-21: all five owner bugs PASS, results/hbase/)
+# TODO: `system/hbase-buggy-detect` -- the old HBase bugs on liftlab; HBase's ad hoc checks finished (results/hbase/)
 
-Every system is finished on its own branches (README "Branches"); nothing below is owed. What is left is optional
-engine work, each item with its evidence:
+This branch owes the old HBase bugs' liftlab series B1 (section "Old HBase bugs"). Every system's ad hoc checks are
+finished on their own branches (README "Branches"); the rest is optional engine work, each item with its evidence:
 1. HBase (section "HBase"): the parked engine items, most return first 15, 10, 19, 9 (START-HERE §5).
 2. The engine items found on HDFS and on Solr, which the shared engine still carries (sections "HDFS engine
    follow-ups" and "Engine items found on Solr"); HDFS itself is on `system/hdfs-liftlab`, Solr on `system/solr`, each
    with its own TODO.
 3. Cross-cutting items, when a system needs them.
 
-The old HBase bugs put back on today's tree are `system/hbase-buggy-detect`'s (its TODO). Branch, tree and path details
+The old HBase bugs put back on today's tree are this branch's: section "Old HBase bugs" first. Branch, tree and path details
 are in [STATE.md](STATE.md); every check with its state in [../checks/README.md](../checks/README.md) and its reading
 in [../STATUS.md](../STATUS.md); commands in [OPERATIONS.md](OPERATIONS.md); speed and the cluster in
 [../design/PERFORMANCE.md](../design/PERFORMANCE.md).
+
+## Old HBase bugs (`system/hbase-buggy-detect`, liftlab; STATE §B, BUGGY-DETECT.md)
+
+1. **Series B1 on liftlab** (the lead, 2026-10-28): hbase-buggy-15039 and hbase-buggy-20642 once each from the snapshot
+   `bd-hbase-1` on the tree set `bd-trees-1` (START-HERE §0). Each is accepted by BUGGY-DETECT.md's standard (SAT, CONFIRM
+   in the VM, native k/10 with control 0/10, report.py PASS; 20642's native count by shape), as on CloudLab; then its README's result, STATE §B's and
+   BUGGY-DETECT.md's B1 column: B1 (lead fills in).
+2. **A head that cannot reach every worker** (2026-10-28): `launch-round.sh` heads a case on any host of `LIFTS` but
+   lift11, while lift02 and lift03 cannot reach lift15 over ssh (lift15 reaches both), so PREFLIGHT refuses a case it
+   heads there (B1's first HBase launch). Until a launch tool checks it, give `LIFTS` without lift15 or without lift02
+   and lift03 (OPERATIONS §1).
+3. **HBASE-28533, optional** (the owner closed it as it stands, 2026-10-27): its native check was started and stopped by
+   the owner before any result, nothing committed -- make a split fail after PREPARE, merge the SPLITTING parent, record
+   which throw fires (expected `RegionStateNode`:322, not :507; README "Finding").
 
 ## HDFS engine follow-ups (found on the former HDFS bodies `system/hdfs`, `system/hdfs1`; HDFS itself: `system/hdfs-liftlab`)
 
