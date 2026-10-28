@@ -18,7 +18,7 @@ in [../STATUS.md](../STATUS.md); commands in [OPERATIONS.md](OPERATIONS.md); spe
 1. **Series B1 on liftlab** (the lead, 2026-10-28): hbase-buggy-15039 and hbase-buggy-20642 once each from the snapshot
    `bd-hbase-1` on the tree set `bd-trees-1` (START-HERE §0). Each is accepted by BUGGY-DETECT.md's standard (SAT, CONFIRM
    in the VM, native k/10 with control 0/10, report.py PASS; 20642's native count by shape), as on CloudLab; then its README's result, STATE §B's and
-   BUGGY-DETECT.md's B1 column: B1 (lead fills in).
+   BUGGY-DETECT.md's B1 column: B1: both SAT again with CONFIRM and report.py PASS (results/hbase-buggy/): HBASE-15039 native 10/10, HBASE-20642 by IDENTITY §9 shape 10/10 (exact id 0/10), the controls 0/10.
 2. **A head that cannot reach every worker** (2026-10-28): `launch-round.sh` heads a case on any host of `LIFTS` but
    lift11, while lift02 and lift03 cannot reach lift15 over ssh (lift15 reaches both), so PREFLIGHT refuses a case it
    heads there (B1's first HBase launch). Until a launch tool checks it, give `LIFTS` without lift15 or without lift02

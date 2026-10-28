@@ -316,4 +316,4 @@ not reachable at its own throw on today's code); the table of every system's is
    occurrence by its shape (IDENTITY §9, `runtime/AnswerOrder`): `reproduce.json` counts it as `reproducedByShape`
    apart from the exact `reproduced`, and `plant.log` names each such run `ADDRESS_UNSTABLE` (the owner accepted the
    by-shape count, 2026-10-27). The verdicts: BUGGY-DETECT.md (CloudLab, 2026-10-26: both SAT, native 10/10; liftlab:
-   B1 (lead fills in)).
+   B1: both SAT again with CONFIRM and report.py PASS (results/hbase-buggy/): HBASE-15039 native 10/10, HBASE-20642 by IDENTITY §9 shape 10/10 (exact id 0/10), the controls 0/10).

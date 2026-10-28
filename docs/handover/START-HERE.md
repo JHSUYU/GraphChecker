@@ -13,8 +13,8 @@ one bug put back, its workload and the point's target marker. HDFS, ZooKeeper an
 
 | case | bug | point | tree (`experiments/hbase/trees.tsv`) | CloudLab, 2026-10-26 | liftlab, B1 |
 | --- | --- | --- | --- | --- | --- |
-| hbase-buggy-15039 | HBASE-15039: a token rejected before the ZooKeeper watcher applied its key | hbase-adhoc-34 (AuthenticationTokenSecretManager:139) | `hbase-bug-15039` (c2cecb3756) | SAT, STATE re-pairing, native 10/10, control 0/10 (HB15039b) | B1 (lead fills in) |
-| hbase-buggy-20642 | HBASE-20642: a retried disableTable attempt draws a new nonce | hbase-adhoc-04 (AbstractStateMachineTableProcedure:163) | `hbase-bug-20642` (1ba966bb6c) | SAT, MARKER_FLIPPED (lost DisableTable reply), native 10/10 by IDENTITY §9 shape, 0/10 exact, control 0/10 (HB20642f; accepted by the owner 2026-10-27) | B1 (lead fills in) |
+| hbase-buggy-15039 | HBASE-15039: a token rejected before the ZooKeeper watcher applied its key | hbase-adhoc-34 (AuthenticationTokenSecretManager:139) | `hbase-bug-15039` (c2cecb3756) | SAT, STATE re-pairing, native 10/10, control 0/10 (HB15039b) | B1: SAT, CONFIRM, native 10/10, control 0/10, report.py PASS, 755 s (B1-hbase-buggy-15039) |
+| hbase-buggy-20642 | HBASE-20642: a retried disableTable attempt draws a new nonce | hbase-adhoc-04 (AbstractStateMachineTableProcedure:163) | `hbase-bug-20642` (1ba966bb6c) | SAT, MARKER_FLIPPED (lost DisableTable reply), native 10/10 by IDENTITY §9 shape, 0/10 exact, control 0/10 (HB20642f; accepted by the owner 2026-10-27) | B1: SAT, CONFIRM, native by IDENTITY §9 shape 10/10 (exact id 0/10), control 0/10, report.py PASS, 1393 s; 5 claims CONFIRM refuted first, 681 s (B1-hbase-buggy-20642) |
 | hbase-buggy-28533 | HBASE-28533: a failed split's PREPARE rollback leaves the parent SPLITTING | hbase-adhoc-15 (MergeTableRegionsProcedure:507) | `hbase-bug-28533` (de71623820) | not reachable on today's code: README only, no run (closed by the owner) | no run |
 
 The runnable cases are `experiments/hbase/hbase-buggy-cases.tsv` (case, branch, budget 21600 s, bug, point); each case
@@ -39,7 +39,7 @@ the host ledger, heaps (`engine_memory_mb` 12288), launch tools -- is `system/hb
    ```bash
    cd /u/vnr3ne/gc-run/bd-hbase-1 && env -u BASH_ENV GC_OUT=/bigtemp/vnr3ne/gc-out/buggy-detect \
      GC_TREES=/bigtemp/vnr3ne/wt/bd-trees-1 GC_M2=/bigtemp/vnr3ne/m2/bd-1 \
-     LIFTS="lift04 lift05 lift06 lift08 lift09 lift10 lift12 lift13 lift14 lift15" \
+     LIFTS="lift04 lift05 lift06 lift08 lift09 lift10 lift12 lift13 lift14" \
      CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force12/j2sdk-image CASE_TIMEOUT_SECONDS=21600 PRUNE=0 \
      CASES="hbase-buggy-15039 hbase-buggy-20642" tools/rounds/launch-round.sh /u/vnr3ne/gc-run/bd-hbase-1 B1
    ```

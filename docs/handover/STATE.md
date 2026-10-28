@@ -38,8 +38,8 @@ replay and a native REPRODUCE run; `reproduced` exact-only, `answeredByShape`/`r
 
 | case | CloudLab, 2026-10-26 | liftlab, B1 (`/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-<case>`) |
 | --- | --- | --- |
-| hbase-buggy-15039 | HB15039b: SAT `STATE_PAIRING_FLIPPED`, confirmed, native 10/10, control 0/10, report.py PASS, 1211 s | B1 (lead fills in) |
-| hbase-buggy-20642 | HB20642f: SAT `MARKER_FLIPPED` (the first DisableTable's lost reply), confirmed, native 10/10 by IDENTITY §9 shape, 0/10 exact, control 0/10; accepted by the owner 2026-10-27 (HB20642e: 866 s, report.py PASS) | B1 (lead fills in) |
+| hbase-buggy-15039 | HB15039b: SAT `STATE_PAIRING_FLIPPED`, confirmed, native 10/10, control 0/10, report.py PASS, 1211 s | B1: SAT, CONFIRM, native 10/10, control 0/10, report.py PASS, 755 s (B1-hbase-buggy-15039) |
+| hbase-buggy-20642 | HB20642f: SAT `MARKER_FLIPPED` (the first DisableTable's lost reply), confirmed, native 10/10 by IDENTITY §9 shape, 0/10 exact, control 0/10; accepted by the owner 2026-10-27 (HB20642e: 866 s, report.py PASS) | B1: SAT, CONFIRM, native by IDENTITY §9 shape 10/10 (exact id 0/10), control 0/10, report.py PASS, 1393 s; 5 claims CONFIRM refuted first, 681 s (B1-hbase-buggy-20642) |
 | hbase-buggy-28533 | not run (not reachable on today's code) | not run |
 
 B1's first launch (2026-10-28 00:11) headed both HBase cases on lift02 and lift03, which cannot reach lift15: PREFLIGHT

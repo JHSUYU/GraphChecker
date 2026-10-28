@@ -60,7 +60,7 @@ Natively the workload passed 6 of 6 runs before any campaign (2.27-2.32 s).
 
 ## Result: SAT, STATE re-pairing, confirmed and reproduced 10/10 (HB15039b on CloudLab, PASS)
 
-Liftlab (series B1, 2026-10-28, `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-hbase-buggy-15039`): B1 (lead fills in).
+Liftlab (series B1, 2026-10-28, `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-hbase-buggy-15039`): B1: SAT, CONFIRM, native 10/10, control 0/10, report.py PASS, 755 s (B1-hbase-buggy-15039).
 
 Round HB15039b (CloudLab, 2026-10-26; GraphChecker f82385bcc, tree c2cecb3756): 1211 s,
 `SAT_CANDIDATE` `FINAL_READY`, `report.py` **PASS** (`STATE_PAIRING_FLIPPED` at valuation 0, `polarityDecides` true, no

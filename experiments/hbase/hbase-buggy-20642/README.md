@@ -63,7 +63,7 @@ The run's budget is `../hbase-buggy-cases.tsv`'s.
 
 ## Result: SAT confirmed in the VM; native REPRODUCE 10/10 by shape at the anchor, 0/10 exact (control 0/10; CloudLab)
 
-Liftlab (series B1, 2026-10-28, `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-hbase-buggy-20642`): B1 (lead fills in).
+Liftlab (series B1, 2026-10-28, `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-hbase-buggy-20642`): B1: SAT, CONFIRM, native by IDENTITY §9 shape 10/10 (exact id 0/10), control 0/10, report.py PASS, 1393 s; 5 claims CONFIRM refuted first, 681 s (B1-hbase-buggy-20642).
 
 **Verdict.** SAT: the reply to the first DisableTable is lost, the client retries with a new nonce, and the retry's
 DisableTableProcedure throws at the point's own throw (:163). CONFIRM realized it in the VM. Natively, the planted

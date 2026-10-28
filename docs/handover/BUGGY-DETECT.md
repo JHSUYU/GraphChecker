@@ -1,68 +1,72 @@
-# Old bugs that make an ad hoc check fail, put back on today's trees: the four systems' table
+# Old bugs that make an ad hoc check fail, put back on today's trees (the four systems)
 
-Standard (owner 2026-10-26): a bug counts only if GraphChecker's witness fires the point's OWN declared throw. SAT is
-accepted when CONFIRM realizes it in the VM, native REPRODUCE reproduces it k/N with control 0/N, and report.py passes.
-Where the fixed code also reaches the throw in the witness world, the case README says so ("caveat"). The owner
-(2026-10-26): a check truly beyond GraphChecker's capability is not forced.
+Standard (owner 2026-10-26): a bug counts only if GraphChecker's witness fires the point's OWN declared throw. It is
+detected when the formula is SAT, CONFIRM realizes the witness in the VM, native REPRODUCE reproduces it k/N with the
+control 0/N, and report.py passes. Where the fixed code also reaches the throw in the witness world, the case README
+says so ("caveat"). A check truly beyond GraphChecker's capability is not forced (owner 2026-10-26).
 
-Source: the owner's list of 73 old bugs; 21 of them fire an ad hoc point's own throw: 20 usable (HDFS-6325 excluded: its
-point's guard IS the fix), 4 of them existing GraphChecker bug checks (HDFS-17897, -17899, -17967, SOLR-18406), so 16 put
-back by hand on each system's current tree, one fork branch each (`graphchecker/<sys>-bug-<jira>`; ZooKeeper's
-`graphchecker/zk-bug-<jira>`). Each case's README (`experiments/{hadoop,hbase,zookeeper,solr}/<case>/`) has the bug, what was put
-back, the workload and its workarounds, every declaration, the runs and the reading.
+Source: the owner's list of 73 old bugs. 21 make an ad hoc check's own throw fail: HDFS-6325 is excluded (its point's
+guard IS the fix), HDFS-17897, -17899, -17967 and SOLR-18406 are existing GraphChecker bug checks, so 16 were put back by
+hand on each system's current tree, one fork branch each (`graphchecker/<sys>-bug-<jira>`). Four more HDFS bugs
+(15590, 16689, 11890, 13145) were dropped by the owner: their witnesses fire another throw or none.
 
-The verdicts first came from the CloudLab runs of 2026-10-26..28 (column "CloudLab"; that branch is kept as the tag
-`archive/system/<x>-cloudlab`). Each case runs again on liftlab as series B1 (`/bigtemp/vnr3ne/gc-out/buggy-detect`,
-`accept-B1-<case>`, an HDFS case without its `hdfs-` prefix), on its system's `system/<x>-buggy-detect` with liftlab's scheduling.
+The first runs were on CloudLab (2026-10-25..27, the run names in the table; that cluster is no longer used). Round B1
+(2026-10-28) ran every runnable case again on liftlab, the cases beside each other on the workers
+(`/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-<case>`; each branch's `results/<sys>-buggy/` holds the formulas, claims
+and the time table).
 
-| system | bug | case | point | mechanism | caveat | CloudLab, 2026-10-26 | liftlab, B1 |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| HDFS | HDFS-11741 | hdfs-buggy-11741 | hdfs-adhoc-11 | CLOCK_SKEW, nn0 + target-dn clocks | the fix checks the Balancer's own clock, unmoved | **SAT, native 10/10** (B11741b) | B1 (lead fills in) |
-| HDFS | HDFS-17383 | hdfs-buggy-17383 | hdfs-adhoc-12 | lost heartbeat reply from the standby | -- | **SAT, native 10/10** (B17383a) | B1 (lead fills in) |
-| HDFS | HDFS-12931 | hdfs-buggy-12931 | hdfs-adhoc-11 | lost key-update heartbeat reply | the DataNode throws first on the fixed code too | **SAT, native 10/10** (B12931a) | B1 (lead fills in) |
-| HDFS | HDFS-5766 | hdfs-buggy-5766 | hdfs-adhoc-11 | lost key-update heartbeat request | same | **SAT, native 10/10** (B5766a) | B1 (lead fills in) |
-| HDFS | HDFS-10609 | hdfs-buggy-10609 | hdfs-adhoc-11 | lost key-update heartbeat request | same | **SAT, native 10/10** (B10609a) | B1 (lead fills in) |
-| HDFS | HDFS-14075 | hdfs-buggy-14075 | hdfs-adhoc-45 | LOCAL_IO fault on roll 1's edits open | -- (the fix terminates the NN) | **SAT, native 10/10** (B14075c) | B1 (lead fills in) |
-| HDFS | HDFS-14311 | hdfs-buggy-14311 | hdfs-adhoc-24 | the intended STATE re-pairing (vol2's layoutVersion read <- vol1's upgrade-task write) is never realized: the engine offers the reader's own task, created after the read, as a concurrent writer, and CONFIRM's pairing hold sits after the reads that decide the guard | the only witness found (B14311d) was the race by timing, native 0/10 | not detected: a capability limit (B14311a-f) | B1 (lead fills in) |
-| HBase | HBASE-15039 | hbase-buggy-15039 | hbase-adhoc-34 | STATE: the watcher's addKey after the validation | -- (the fix refreshes) | **SAT, native 10/10** (HB15039b) | B1 (lead fills in) |
-| HBase | HBASE-20642 | hbase-buggy-20642 | hbase-adhoc-04 | lost DisableTable reply, retry with a new nonce | the retry's handler has no recorded address; native runs answer it by the rule CONFIRM uses (IDENTITY §9), decided by arrival order | **SAT, native 10/10** (HB20642f: by IDENTITY §9 shape 10/10, exact id 0/10, control 0/10; accepted by the owner 2026-10-27) | B1 (lead fills in) |
-| HBase | HBASE-28533 | hbase-buggy-28533 (README only) | hbase-adhoc-15 | the merge constructor's checkOnline refuses first | the lowest world reaching :507 never runs the buggy rollback | not reachable on today's code (no run) | no run |
-| ZooKeeper | ZOOKEEPER-710 | zk-buggy-710 | zk-adhoc-02 | STATE: the owner read paired with the takeover's REVALIDATE | the fixed-tree control is also SAT 10/10 (plain world) | **SAT, native 10/10** (ZB6) | B1 (lead fills in) |
-| ZooKeeper | ZOOKEEPER-2886 | zk-buggy-2886 | zk-adhoc-02 | same, multi-only | same | **SAT, native 10/10** (ZB6) | B1 (lead fills in) |
-| Solr | SOLR-9440 | solr-buggy-9440 | solr-adhoc-31 | ZooKeeper SessionExpired on node1's leader-election create during the core CREATE | -- (the fixed code evicts the frozen view) | **SAT, native 10/10** (S9440b) | B1 (lead fills in) |
-| Solr | SOLR-6101 | solr-buggy-6101 | solr-adhoc-19 | CONFIG legacyCloud true -> false cluster-wide (field-backed via a tree workaround) | -- (the fixed code assigns a coreNodeName) | **SAT, native 10/10** (S6101g) | B1 (lead fills in) |
-| Solr | SOLR-6197 | solr-buggy-6197 | solr-adhoc-19 | same, MIGRATE | -- | **SAT, native 10/10** (S6197g) | B1 (lead fills in) |
-| Solr | SOLR-6763 | solr-buggy-6763 (README only) | solr-adhoc-38 | masked by SOLR-7844 | -- | not reachable on today's code (no run) | no run |
+| system | bug | point | CloudLab, 2026-10-26 | B1, liftlab, 2026-10-28 | mechanism | caveat |
+| --- | --- | --- | --- | --- | --- | --- |
+| HDFS | HDFS-11741 | hdfs-adhoc-11 | **SAT, native 10/10** (B11741b) | **SAT, native 10/10**, control 0/10, 884 s | CLOCK_SKEW, nn0 + target-dn clocks | the fix checks the Balancer's own clock, unmoved |
+| HDFS | HDFS-17383 | hdfs-adhoc-12 | **SAT, native 10/10** (B17383a) | **SAT, native 10/10**, control 0/10, 572 s | lost heartbeat reply from the standby | -- |
+| HDFS | HDFS-12931 | hdfs-adhoc-11 | **SAT, native 10/10** (B12931a) | **SAT, native 10/10**, control 0/10, 368 s | lost key-update heartbeat reply | the DataNode throws first on the fixed code too |
+| HDFS | HDFS-5766 | hdfs-adhoc-11 | **SAT, native 10/10** (B5766a) | **SAT, native 10/10**, control 0/10, 516 s | lost key-update heartbeat request | same |
+| HDFS | HDFS-10609 | hdfs-adhoc-11 | **SAT, native 10/10** (B10609a) | **SAT, native 10/10**, control 0/10, 506 s | lost key-update heartbeat request | same |
+| HDFS | HDFS-14075 | hdfs-adhoc-45 | **SAT, native 10/10** (B14075c) | **SAT, native 10/10**, control 0/10, 463 s | LOCAL_IO fault on roll 1's edits open | -- (the fix terminates the NN) |
+| HDFS | HDFS-14311 | hdfs-adhoc-24 | not detected: a capability limit (B14311a-f) | not detected, as on CloudLab: formula UNSAT_CLOSED and substantive (vacuity.py: 9 paths, 8 free; 1 of 5 reads offered another writer), report.py FAIL as expected, 2333 s | the intended STATE re-pairing (vol2's layoutVersion read <- vol1's upgrade-task write) is never realized: the engine offers the reader's own task, created after the read, as a concurrent writer, and CONFIRM's pairing hold sits after the reads that decide the guard | the only CloudLab witness (B14311d) was the race by timing, native 0/10 |
+| HBase | HBASE-15039 | hbase-adhoc-34 | **SAT, native 10/10** (HB15039b) | **SAT, native 10/10**, control 0/10, 755 s | STATE: the watcher's addKey after the validation | -- (the fix refreshes) |
+| HBase | HBASE-20642 | hbase-adhoc-04 | **SAT, native 10/10 by IDENTITY §9 shape** (HB20642f; exact id 0/10, control 0/10; accepted by the owner 2026-10-27) | **SAT, native by shape 10/10** (exact id 0/10), control 0/10, 1393 s (681 s of them 5 claims CONFIRM refuted first) | lost DisableTable reply, retry with a new nonce | the retry's handler has no recorded address; native runs answer it by the rule CONFIRM uses, decided by arrival order |
+| HBase | HBASE-28533 | hbase-adhoc-15 | not reachable on today's code (no run) | no run (put back only) | the merge constructor's checkOnline refuses first | the lowest world reaching :507 never runs the buggy rollback |
+| ZooKeeper | ZOOKEEPER-710 | zk-adhoc-02 | **SAT, native 10/10** (ZB6) | **SAT, native 10/10**, control 0/10, 308 s | STATE: the owner read paired with the takeover's REVALIDATE | the fixed-tree control is also SAT 10/10 (plain world) |
+| ZooKeeper | ZOOKEEPER-2886 | zk-adhoc-02 | **SAT, native 10/10** (ZB6) | **SAT, native 10/10**, control 0/10, 294 s | same, multi-only | same |
+| Solr | SOLR-9440 | solr-adhoc-31 | **SAT, native 10/10** (S9440b) | **SAT, native 6/10**, control 0/10, 907 s | ZooKeeper SessionExpired on node1's leader-election create during the core CREATE | -- (the fixed code evicts the frozen view) |
+| Solr | SOLR-6101 | solr-adhoc-19 | **SAT, native 10/10** (S6101g) | **SAT, native 10/10**, control 0/10, 884 s | CONFIG legacyCloud true -> false cluster-wide (field-backed via a tree workaround) | -- (the fixed code assigns a coreNodeName) |
+| Solr | SOLR-6197 | solr-adhoc-19 | **SAT, native 10/10** (S6197g) | **SAT, native 10/10**, control 0/10, 988 s | same, MIGRATE | -- |
+| Solr | SOLR-6763 | solr-adhoc-38 | not reachable on today's code (no run): masked by SOLR-7844 | no run (no tree branch) | -- | -- |
 
-Tally on CloudLab (16 put back): **13 detected and accepted** (HDFS-11741, -17383, -12931, -5766, -10609, -14075;
-HBASE-15039, -20642; ZOOKEEPER-710, -2886; SOLR-9440, -6101, -6197 -- of these 5 with the caveat that the fixed code also
-reaches the throw in the witness world, and HBASE-20642 reproduced natively by IDENTITY §9 shape, accepted by the owner);
-1 not detected, a capability limit (HDFS-14311); 2 not reachable on today's code (HBASE-28533, SOLR-6763). Plus 4
-existing GraphChecker bug checks at own throws (HDFS-17897, -17899, -17967, SOLR-18406). Tally on liftlab: B1 (lead fills
-in).
+Tally (16 put back): **13 detected and accepted** -- HDFS-11741, -17383, -12931, -5766, -10609, -14075; HBASE-15039,
+-20642; ZOOKEEPER-710, -2886; SOLR-9440, -6101, -6197 (of these 5 with the caveat that the fixed code also reaches the
+throw in the witness world, and HBASE-20642 reproduced natively by IDENTITY §9 shape); 1 not detected, a capability limit
+(HDFS-14311); 2 not reachable on today's code (HBASE-28533, SOLR-6763). B1 on liftlab gives the same verdict, mechanism
+and CONFIRM for every case; native REPRODUCE differs only for SOLR-9440 (6/10 on liftlab, 10/10 on CloudLab; the
+control 0/10 on both). Plus 4 existing GraphChecker bug checks at own throws (HDFS-17897, -17899, -17967, SOLR-18406).
+
+Branches (github.com/JHSUYU): GraphChecker `system/hdfs-buggy-detect`, `system/hbase-buggy-detect`,
+`system/zookeeper-buggy-detect`, `system/solr-buggy-detect`, each `system/<x>` (liftlab) plus that system's old-bug cases
+and their engine support; the forks' `graphchecker/hdfs-bug-<jira>` (hadoop), `graphchecker/hbase-bug-<jira>` (hbase),
+`graphchecker/zk-bug-<jira>` and `graphchecker/zk-bug-<jira>-control` (zookeeper), `graphchecker/solr-bug-<jira>`
+(solr). Each case's README (`experiments/<sys>/<sys>-buggy-<jira>/`; ZooKeeper's `zk-buggy-<jira>`) has the bug, what
+was put back, the workload and its workarounds, every declaration, the runs and the reading.
+
+Engine support, on these branches only, each independently reviewed:
+- HDFS (for 14311): ba6580331, 131bf16d9, 7f562ef37, 252ed18da, 6a7c74e61, 838b0c888 (an earlier or later concurrent
+  writer may move past a write the reader cannot pass; per-version proposals; holds after the passed write's activation
+  exits, decided by Arms' one rule).
+- HBase: 948e4779f (the reply legs of a turn's earlier requests are control producers), 93a168e87 + 298508ffa (one
+  implementation of IDENTITY §9, `AnswerOrder`, used by CONFIRM and native REPRODUCE; `reproduced` stays exact-only,
+  by-shape counted apart). Rejected and reverted: 455a6dd66 (017dcf890).
+- ZooKeeper: bba07d7d1 (CONFIRM holds at the nearest instrumented claim when the submitter is uninstrumented), on the
+  integration line of 2026-10-25 (own-context answer by counts; the String-length range as a side condition; the GROW
+  re-run swap rules).
+- Solr: 61e881776 + e5c894636 + ad3d08028 (native REPRODUCE plants a field-backed CONFIG root at the plan's read sites,
+  guarded by a GETFIELD count; getter CONFIG roots stay refused).
+- CloudLab's host ledger in hundredths of a core (f82385bcc, 35a513aa7) was reverted with CloudLab's scheduling layer
+  when the branches came to liftlab (2026-10-28).
 
 Decided by the owner (2026-10-27/28): the 5 caveated cases count as detected (the bug makes the ad hoc check fail);
 HBASE-20642's by-shape native reproduction is accepted; HDFS-14311 (capability limit), HBASE-28533 and SOLR-6763 (not
-reachable on today's code) are closed as they stand; the branches are pushed.
-
-Branches (github.com/JHSUYU): GraphChecker `system/hdfs-buggy-detect`, `system/hbase-buggy-detect`,
-`system/zookeeper-buggy-detect`, `system/solr-buggy-detect`, each its system's liftlab branch (`system/hdfs-liftlab`,
-`system/hbase`, `system/zookeeper`, `system/solr`) plus the old-bug cases and the engine support below; the forks'
-`graphchecker/{hdfs,hbase,solr}-bug-<jira>` and `graphchecker/zk-bug-<jira>` (with `-control`, the same workloads on the
-fixed code).
-
-Engine support, on these branches only, each independently reviewed:
-- HBase: 948e4779f (the reply legs of a turn's earlier requests are control producers; SYMBOL-SCOPE, PIPELINE §7.2),
-  93a168e87 + 298508ffa (one implementation of IDENTITY §9, `AnswerOrder`, used by CONFIRM and native REPRODUCE;
-  `reproduced` stays exact-only, by-shape counted apart: PIPELINE §10b). Rejected and reverted: 455a6dd66. CloudLab's
-  host ledger in core hundredths (f82385bcc) is reverted on liftlab (b978bacb8): the ledger charges memory as
-  `system/hbase`'s does.
-- ZooKeeper: bba07d7d1 (CONFIRM holds at the nearest instrumented claim when the submitter is uninstrumented).
-- HDFS: ba6580331, 131bf16d9, 7f562ef37, 252ed18da, 6a7c74e61, 838b0c888 (an earlier or later concurrent writer may move
-  past a write the reader cannot pass; per-version proposals; holds after the passed write's activation exits).
-- Solr: 61e881776 + e5c894636 + ad3d08028 (native REPRODUCE plants a field-backed CONFIG root at the plan's read sites,
-  guarded by a GETFIELD count; getter CONFIG roots stay refused).
-
-Left as follow-ups, not done: a CONFIRM change for HDFS-14311's post-fatal ORDER timeout; the native getter-CONFIG plant
-scope (wider than the VM, kept disabled); three minor native-plant report gaps (fieldUnwritten silent while the window is closed; a
-planned method with no GETFIELD; a class the agent fails to rewrite).
+reachable on today's code) are closed as they stand. Left as follow-ups, not done: a CONFIRM change for HDFS-14311's
+post-fatal ORDER timeout (needs the owner's sign-off); the native getter-CONFIG plant scope (wider than the VM, kept
+disabled); three minor native-plant report gaps (fieldUnwritten silent while the window is closed; a planned method
+with no GETFIELD; a class the agent fails to rewrite); native verification of HBASE-28533 and SOLR-6763 (started and
+stopped by the owner, nothing committed).
