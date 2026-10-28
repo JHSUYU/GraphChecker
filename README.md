@@ -19,6 +19,10 @@ defaulted.
 
 ## The branches (github.com/JHSUYU/GraphChecker)
 
+[docs/handover/HANDOVER-2026-10-28.md](docs/handover/HANDOVER-2026-10-28.md) is the map of everything on liftlab:
+every GraphChecker branch and fork branch (and the archive tags), the tree sets, snapshots, images, the runs of
+record, the buggy-detect results and how to run a case. The same file is on all eight `system/*` branches.
+
 Every system has two branches, both run on liftlab (the lifts below); nothing goes to `main` (the 2026-10-03 body):
 
 | system | ad hoc checks | old bugs put back (their `docs/handover/BUGGY-DETECT.md`) |
