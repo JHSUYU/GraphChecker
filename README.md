@@ -191,7 +191,7 @@ is written.
 `tools/lib/gc-env.sh` states, once for every tool and for `run_engine.sh`, the output root
 `GC_OUT` (default `/bigtemp/vnr3ne/gc-out`), the host ledger `CAUSYNTH_HOST_LEDGER` (default
 `/bigtemp/vnr3ne/gc-out/hosts`, one for the cluster whatever `GC_OUT` a run writes) and the hosts
-`LIFTS` (lift02–15 by default; set it without lift07 and lift11, above).
+`LIFTS` (its default is the 11 reachable workers: lift02-15 without lift07, lift11 and lift15).
 
 Obligations of a campaign (each a solve, then its replay when the solver answers SAT, two starts),
 and GROW's re-runs, fan out over the hosts in
