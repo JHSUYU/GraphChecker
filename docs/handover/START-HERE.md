@@ -1,60 +1,87 @@
-# START HERE: GraphChecker's Solr work -- every case has its `.smt` (2026-10-26)
+# START HERE: `system/solr-buggy-detect` -- old Solr bugs put back by hand, detected on liftlab
 
-You are the next lead (a coding agent that may run up to 5 coding agents). This file is self-contained: where Solr
-stands, what to read, what is left, how to run a case, and where everything is. Repo: `/u/vnr3ne/GraphChecker`, GitHub
-`git@github.com:JHSUYU/GraphChecker.git`; Solr's code is the branch `system/solr` (pushed; worktree
-`/bigtemp/vnr3ne/wt/gc-solr`). The adapter
-(the Solr tree) is the fork's `graphchecker/solr-checks` (`https://github.com/JHSUYU/solr.git`, 12d23091d1). From GitHub:
-clone the two; [../REPRODUCE.md](../REPRODUCE.md) builds the image and the tree and runs every case. The old Solr bugs put
-back by hand (SOLR-9440, -6101, -6197) are the branch `system/solr-buggy-detect` (its own START-HERE); the other systems'
-branches are README "Branches".
+You are the next lead (a coding agent that may run up to 5 coding agents). This branch is `system/solr` (the 20 Solr
+ad hoc cases, finished 2026-10-26, `results/solr/`) plus the old Solr bugs that make an ad hoc check's own throw fail,
+put back by hand on today's tree, and the engine support they needed. Repo: `/u/vnr3ne/GraphChecker`, GitHub
+`git@github.com:JHSUYU/GraphChecker.git`, branch `system/solr-buggy-detect`. Each bug's tree is a branch of the Solr fork
+(`https://github.com/JHSUYU/solr.git`): `graphchecker/solr-checks` (12d23091d1) with that one bug put back. The other
+systems' branches are README "Branches"; the experiment across the four systems is [BUGGY-DETECT.md](BUGGY-DETECT.md).
 
-## 1. Where Solr stands
+## 1. The cases
 
-All 20 cases have their final `.smt`, claim and time row in [`results/solr/`](../../results/solr/README.md):
-- the 8 bug checks PASS (SGF7: SAT, confirmed in the VM, native 10/10; 18413 fatal 10/10);
-- the 12 study checks: 38 SAT (confirmed in the VM, native 0/10), 21 UNSAT_CLOSED, 07 a substantive UNSAT, and 05 09 10 13
-  14 19 31 39 40 UNSAT with their limits named (vacuous by construction, NO_ROOT, or a truncated closure; one reading
-  each in `results/solr/README.md` and STATUS "Solr checks").
+| case | bug | point | fork branch (tree `$GC_TREES/solr-bug-<jira>`) | CloudLab, 2026-10-26 | liftlab B1 |
+| --- | --- | --- | --- | --- | --- |
+| solr-buggy-9440 | SOLR-9440: a node whose watch on a collection was dropped keeps its frozen `DocCollection`, where the killed leader is still ACTIVE: FORCELEADER is refused | solr-adhoc-31 | `graphchecker/solr-bug-9440` 1e7324c461 | SAT, native 10/10 (S9440b) | B1 (lead fills in) |
+| solr-buggy-6101 | SOLR-6101: under `legacyCloud=false` SPLITSHARD's sub-shard core-admin CREATE carries no `coreNodeName` and the node refuses it | solr-adhoc-19 | `graphchecker/solr-bug-6101` 040ae6d4c6 | SAT, native 10/10 (S6101g) | B1 (lead fills in) |
+| solr-buggy-6197 | SOLR-6197: the same in MIGRATE, for its temporary collection's replica on the target leader | solr-adhoc-19 | `graphchecker/solr-bug-6197` f5d86cbd8a | SAT, native 10/10 (S6197g) | B1 (lead fills in) |
+| (solr-buggy-6763) | SOLR-6763 | solr-adhoc-38 | none | not reachable on today's code (masked by SOLR-7844): a README only, no run | -- |
 
-The eight cases SGF9 left without a clean result (05 07 09 13 14 19 31 39) were finished on 2026-10-22..26 (owner: "完成剩余
-几个没跑完case的adhoc check。如果case扩大，控制一下scope，降低我们的用时"): they found five engine defects, fixed on
-`system/solr` (STATE §S), and then each ran alone for its time (series X1/X1B/X1C). The owner's caps: the exploration runs
-at most 2 h (`explore_budget_s` 7200), 05 07 14 31 run without client faults and with one claim, 14 composes at most
-117 paths.
+The list is [`experiments/solr/solr-buggy-cases.tsv`](../../experiments/solr/solr-buggy-cases.tsv), the trees
+[`experiments/solr/trees.tsv`](../../experiments/solr/trees.tsv); each case's README
+(`experiments/solr/solr-buggy-<jira>/README.md`) has the bug, what was put back and why, the workload and its tree
+workarounds, every declaration, the runs and their reading. The engine support, reviewed: native REPRODUCE plants a
+field-backed CONFIG root at the plan's reads of its field, guarded by a GETFIELD count (61e881776, e5c894636,
+ad3d08028; STATE §B). The CloudLab record of 2026-10-26 is the case READMEs' rounds (their `/bulk` paths were that
+cluster's); the CloudLab port itself is the tag `archive/system/solr-cloudlab`.
 
 ## 2. Read, in this order
 
-1. This file.
-2. [STATE.md](STATE.md) §S -- what is on `system/solr`, the fork, the images, how the owed cases ran.
-3. `results/solr/README.md` -- every case's verdict, time and regions, one reading each.
-4. [TODO.md](TODO.md) "Solr: after the owed cases" -- what is left, each with its evidence.
-5. [LESSONS.md](LESSONS.md) -- the traps (shell, zombies and hung agents, NFS, heaps, Java 8 concurrency), how to
-   measure, how to debug. Read all of it before running anything.
-6. [RULES.md](RULES.md), [AGENTS.md](AGENTS.md), [OPERATIONS.md](OPERATIONS.md), [PARALLEL.md](PARALLEL.md),
-   [CHECKING.md](CHECKING.md), [OPTIMIZATIONS.md](OPTIMIZATIONS.md) (every optimization, done, reverted and owed).
-7. `docs/design/PIPELINE.md` for the stage you touch; `docs/REPRODUCE.md` to run the Solr cases from a fresh clone.
+1. This file; [BUGGY-DETECT.md](BUGGY-DETECT.md) (the standard, every system's verdicts, the owner's decisions).
+2. [STATE.md](STATE.md) §B (this branch) and §S (the ad hoc cases it carries); the three case READMEs.
+3. [TODO.md](TODO.md) "Buggy-detect" -- what is left.
+4. [LESSONS.md](LESSONS.md), [RULES.md](RULES.md), [CHECKING.md](CHECKING.md), [OPERATIONS.md](OPERATIONS.md),
+   [PARALLEL.md](PARALLEL.md), [AGENTS.md](AGENTS.md); `docs/REPRODUCE.md` §6 to run the cases from a fresh clone.
 
-## 3. Running a case
+## 3. Running the buggy cases on liftlab (round B1)
 
-From a fresh clone: [../REPRODUCE.md](../REPRODUCE.md) (GraphChecker `system/solr`, the image built from the same
-branch -- the runtime refuses an older image by name --, the fork's tree, one case or the series). On liftlab (the
-workers are lift02-15 but lift11, the control host where the sessions run, and lift07, unreachable since 2026-10-23;
-Maven and Ant only on lift02-06 and lift08-10):
+The workers are lift02-15 but lift11 (the control host, where the sessions run) and lift07 (unreachable since
+2026-10-23); Maven and Ant only on lift02-06 and lift08-10. Image `/bigtemp/vnr3ne/vm-force10/j2sdk-image` (this
+branch's VM sources are `system/solr`'s).
 
-1. A snapshot of the head: `tools/lib/worktree-add.sh /u/vnr3ne/gc-run/<name> <commit> --detach`, then
-   `mvn -q -o package -DskipTests` on a lift with Maven (`LIFTS='lift04 lift05 lift06 lift08 lift09 lift10'
-   tools/onlift.sh -g 4`); never rebuild a snapshot a run reads.
-2. The cases, with the series driver of 2026-10-22: `SNAP=<snapshot> TREES=/bigtemp/vnr3ne/wt/sg3j-trees MAX_CLAIMS=3
-   WORKERS='<the workers>' HEADS=lift10 /bigtemp/vnr3ne/analysis/solr-2026-10-22/lead/final/series2.sh <round>
-   <concurrency> <case>...` (each run detached on its head, `gc-out/solr-final/accept-<round>-<case>`; image
-   `VM_IMAGE`, default vm-force10). Run Solr cases one at a time for their time, at most 3 at once otherwise: the 21.5 GB
-   head steps starve beside more (R1-14's planner never started among 8). The last snapshot is `/u/vnr3ne/gc-run/sr-6`.
-3. Watch with `/bigtemp/vnr3ne/analysis/solr-2026-10-22/lead/lead-watch3.sh` (run ends, series lines, a log quiet 25
-   min, a lift past 80 %) and `lead/watchdog.sh`; after each case `tools/analysis/vacuity.py --latest --detail <run>`, a
-   reading, the STATUS row; `results/solr/final-stats.py` prints the table over `results/solr/index.tsv`.
+1. **The trees** (`bd-trees-1`: every bug tree of the four systems; Solr's three): from a checkout of this branch,
+   `experiments/solr/prepare-trees.sh <tree>...` clones each fork branch of `trees.tsv`, builds it with Ant against the
+   checkout's jar and runs its workload once natively (`PASSED` per workload, `== <tree>: ready`):
 
-## 4. Rules you must keep (each in RULES.md or LESSONS.md)
+   ```bash
+   cd <checkout of system/solr-buggy-detect>
+   LIFTS="lift04 lift05 lift06 lift08 lift09 lift10" tools/onlift.sh -g 8 env GC_TREES=/bigtemp/vnr3ne/wt/bd-trees-1 \
+     GC_M2=/bigtemp/vnr3ne/m2/bd-1 experiments/solr/prepare-trees.sh solr-bug-9440 solr-bug-6101 solr-bug-6197
+   ```
+
+   Never rebuild a tree a run reads.
+2. **The snapshot**: `tools/lib/worktree-add.sh /u/vnr3ne/gc-run/bd-solr-1 <commit> --detach`, then `mvn -q -o package
+   -DskipTests` in it on a lift with Maven (`tools/onlift.sh` as above). `bd-solr-1` is 1bddceee1.
+3. **The cases**, all three at once (or one: `CASES=solr-buggy-9440`), from lift11:
+
+   ```bash
+   cd /u/vnr3ne/gc-run/bd-solr-1 && env -u BASH_ENV \
+     GC_OUT=/bigtemp/vnr3ne/gc-out/buggy-detect GC_TREES=/bigtemp/vnr3ne/wt/bd-trees-1 GC_M2=/bigtemp/vnr3ne/m2/bd-1 \
+     LIFTS="lift02 lift03 lift04 lift05 lift06 lift08 lift09 lift10 lift12 lift13 lift14 lift15" \
+     CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force10/j2sdk-image CASE_TIMEOUT_SECONDS=21600 PRUNE=0 \
+     CASES="solr-buggy-9440 solr-buggy-6101 solr-buggy-6197" tools/rounds/launch-round.sh /u/vnr3ne/gc-run/bd-solr-1 B1
+   ```
+
+   Each case writes `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-<case>/` (a round name is written once: a rerun takes
+   a new one). `tools/rounds/round-status.sh B1` (same `GC_OUT`) shows each case's stage; `tools/rounds/stop-run.sh
+   B1-<case>`, alone on its command line, stops one. Solr cases at most 3 at once: a head step wants ~23 GB (STATE §S).
+4. **Reading a result.** `accept.sh` ends each run with `report.py`: `accept-B1-<case>/summary.tsv` (the verdict row)
+   and `report/<case>/report.md` (the claim, the witness's mechanism, the causal cone). PASS needs the case's
+   `EXPECTED_MECHANISM` row in `experiments/accept/report.py` (all three `MARKER_FLIPPED`: 6101 and 6197 by the CONFIG
+   root `legacyCloud==true` moved to `false`, 9440 by a `SolrZkClient`/`ZooKeeper` fault, no clock), CONFIRM in the VM
+   and native REPRODUCE k/N with control 0/N (`out/<case>/schedule/final/reproduce.json`). Then
+   `GC_OUT=/bigtemp/vnr3ne/gc-out/buggy-detect tools/rounds/round-verify.sh B1` (how EXPLORE ended, z3 on the
+   formula, gaps, moved roots), `tools/analysis/vacuity.py --latest --detail <run dir>` for an UNSAT, and
+   `tools/analysis/smt-legend.py <run>/out/<case> --repo <tree>` to read the `.smt` against the tree. The B1 verdicts go
+   into BUGGY-DETECT.md and the case READMEs beside CloudLab's.
+
+## 4. The 20 ad hoc cases
+
+They run here as on `system/solr` (its START-HERE): tree `graphchecker/solr-checks` (`/bigtemp/vnr3ne/wt/sg3j-trees`),
+`experiments/solr/solr-cases.tsv`, their records in `results/solr/` (runs of `system/solr`). This branch's engine differs
+from `system/solr`'s by the native CONFIG plant alone (61e881776, e5c894636, ad3d08028: `ConfirmMain`, `PlantSites`,
+`PlantAgent`, `RecordingPlant`).
+
+## 5. Rules you must keep (each in RULES.md or LESSONS.md)
 
 - Old code is deleted for good: one implementation per concept, no flags or fallbacks.
 - Read the existing mechanism before building one; a small general workaround beats a huge engine change.
@@ -69,7 +96,7 @@ Maven and Ant only on lift02-06 and lift08-10):
   owner's OK (the fork JHSUYU/solr may be pushed; apache never).
 - Decide engineering yourself and report; at most 5 coding agents; read-only analysts as needed.
 
-## 5. Where things are
+## 6. Where things are
 
 - The owed cases (2026-10-22..26): `/bigtemp/vnr3ne/analysis/solr-2026-10-22/lead/` (RUNS.txt: every run and
   decision; vacuity-<run>.txt; final/: the series drivers and their logs); runs

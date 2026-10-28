@@ -81,6 +81,11 @@ Budget 21600 s.
 `TestCausynthS2Scratch#probeView`, `#probeView2`, `#probeView3` on the buggy tree print node0's maps and view at
 each step (above). `#forceLeaderWithoutRefresh` (= this workload) passes on the buggy tree.
 
+**Running it (liftlab):** START-HERE §3 (`CASES=solr-buggy-9440`, the tree set `/bigtemp/vnr3ne/wt/bd-trees-1`, the
+snapshot `/u/vnr3ne/gc-run/bd-solr-1`, round B1: `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-solr-buggy-9440`). The
+rounds below ran on CloudLab (2026-10-26); their `/bulk` paths were that cluster's and stay as the record. Liftlab:
+B1 (lead fills in).
+
 ## Result: SAT, accepted (S9440b)
 
 Round S9440b (2026-10-26, agent S9; snapshot `/bulk/gc-run/solr-b9440-3` = GraphChecker 3ca19cf52, tree set

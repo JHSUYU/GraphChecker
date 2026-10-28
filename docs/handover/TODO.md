@@ -1,15 +1,32 @@
-# TODO: Solr finished -- what is left on this branch (2026-10-26)
+# TODO: `system/solr-buggy-detect` -- the old Solr bugs on liftlab; what the ad hoc work left (2026-10-28)
 
-Solr is finished (2026-10-26, section "Solr: after the owed cases"): all 20 cases have their `.smt` (`results/solr/`);
-what is left is optional engine work, each item with its evidence. The other systems' plans are on their own branches
-(README "Branches"): HDFS on `system/hdfs-liftlab`, HBase on `system/hbase`, ZooKeeper on `system/zookeeper`; the old
-Solr bugs put back by hand on `system/solr-buggy-detect`.
+This branch is `system/solr` plus the old Solr bugs put back by hand (STATE §B). What is left for them is section
+"Buggy-detect"; the rest of this file is `system/solr`'s plan (Solr's 20 ad hoc cases are finished, 2026-10-26,
+`results/solr/`: what is left is optional engine work, each item with its evidence). The other systems' plans are on
+their own branches (README "Branches"): HDFS on `system/hdfs-liftlab`, HBase on `system/hbase`, ZooKeeper on
+`system/zookeeper`, their old bugs on `system/<x>-buggy-detect`.
 
 The owner: "hdfs所有的case跑完为一组，不要有回归。然后就到另一个系统". Each system is finished when every one of its
 checks has an exported `.smt` that is right (SAT confirmed, or UNSAT at the fixed point) and every known bug of it
 passes. Branch, tree and path details are in [STATE.md](STATE.md); every check with its state in
 [../checks/README.md](../checks/README.md) and its reading in [../STATUS.md](../STATUS.md); commands in
 [OPERATIONS.md](OPERATIONS.md); speed and the cluster in [../design/PERFORMANCE.md](../design/PERFORMANCE.md).
+
+## Buggy-detect (this branch, liftlab)
+
+1. **Round B1** (the lead, 2026-10-28): the three cases on liftlab (START-HERE §3); each verdict, time and native k/N
+   goes into BUGGY-DETECT.md, STATE §B and the case README beside CloudLab's. B1 (lead fills in). The cases now take
+   solr-adhoc's engine heap, 21504 MB (CloudLab's runs had 65536): check in B1 that their head steps fit it.
+2. **The native getter-CONFIG plant** (e5c894636): a CONFIG root a getter returns is refused natively
+   (`NATIVE_PLANT_UNSUPPORTED`), as before 61e881776: planted at the getter, `RecordingPlant` applied it at every call
+   in the window on every node of the one-JVM cluster, wider than the VM's mint inside a matching active region
+   (S6101e/S6197e). Kept disabled; a root both read from a field and returned by a getter is refused too (ad3d08028).
+3. **Three minor reporting gaps of the native field plant** (HANDOVER-2026-10-28 §5): `fieldUnwritten` is silent while
+   the window is closed; a planned method with no GETFIELD of the field is not named; a class the plant agent fails to
+   rewrite is not named.
+4. **SOLR-6763's native check** (started and stopped by the owner, nothing committed): expire the leader's session
+   inside `waitForReplicasToComeUp` on the put-back tree and look for solr-adhoc-38's refusal. The owner closed
+   SOLR-6763 as it stands (not reachable on today's code); for later only.
 
 ## HDFS engine follow-ups (general items, open on this body; the HDFS record is `system/hdfs-liftlab`)
 

@@ -102,6 +102,11 @@ reach them: the plant is woven into `CausynthLegacyCloud`'s body, which they cal
 node-only runs' size (S6101d's larger scope ended in z3 timeouts); their reads are planted, concretely, never minted.
 The run's budget is `solr-buggy-cases.tsv`'s 21600 s.
 
+**Running it (liftlab):** START-HERE §3 (`CASES=solr-buggy-6101`, the tree set `/bigtemp/vnr3ne/wt/bd-trees-1`, the
+snapshot `/u/vnr3ne/gc-run/bd-solr-1`, round B1: `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-solr-buggy-6101`). The
+rounds below ran on CloudLab (2026-10-26); their `/bulk` paths were that cluster's and stay as the record. Liftlab:
+B1 (lead fills in).
+
 ## Result: SAT in the bug's own cluster-wide world -- confirmed, reproduced natively 10/10, accepted (S6101g)
 
 **Where it stands against the acceptance**: accepted -- CONFIRM yes, GraphChecker's native REPRODUCE **10/10** with

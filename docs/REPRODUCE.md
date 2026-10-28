@@ -1,17 +1,19 @@
-# Reproducing the Solr checks from GitHub (`system/solr`)
+# Reproducing the Solr checks from GitHub: the 20 ad hoc cases (§0-§5, `system/solr`), the old Solr bugs (§6, this branch)
 
-Everything a run of the 20 Solr cases needs is on GitHub: this branch (the engine, the case settings, the VM sources)
-and the Solr fork's `graphchecker/solr-checks` (the tree under test). Nothing on the cluster's disks is assumed besides
-the operating system packages below (§0).
+Everything a run needs is on GitHub: a GraphChecker branch (the engine, the case settings, the VM sources) and a branch
+of the Solr fork (the tree under test). §0-§5 run the 20 Solr ad hoc cases from `system/solr` (this branch carries them
+unchanged); §6 runs the old Solr bugs put back by hand from this branch, `system/solr-buggy-detect`. Nothing on the
+cluster's disks is assumed besides the operating system packages below (§0).
 
 | repository | branch | what it holds |
 | --- | --- | --- |
 | `git@github.com:JHSUYU/GraphChecker.git` (private) | `system/solr` | the engine, the 20 cases ([`experiments/solr/solr-cases.tsv`](../experiments/solr/solr-cases.tsv): case, branch, budget), the VM sources, every case's final `.smt` and time row ([`results/solr/`](../results/solr/README.md)) |
+| | `system/solr-buggy-detect` | `system/solr` plus the old Solr bugs' cases ([`experiments/solr/solr-buggy-cases.tsv`](../experiments/solr/solr-buggy-cases.tsv)) and their engine support (§6) |
 | `https://github.com/JHSUYU/solr.git` (public fork) | `graphchecker/solr-checks` | the Solr 8.11 tree of every case (`lucene-solr-checks`, [`experiments/solr/trees.tsv`](../experiments/solr/trees.tsv)): Apache Lucene/Solr `branch_8_11` (8.11.4, `faca81b`) with the adapter, every case's target marker and the bug checks' workloads |
 
 The other systems reproduce from their own branches' `docs/REPRODUCE.md` (README "Branches"): HDFS from
-`system/hdfs-liftlab`, HBase from `system/hbase`, ZooKeeper from `system/zookeeper`, the old Solr bugs put back by hand
-from `system/solr-buggy-detect`. The HDFS cases this branch carries from `system/hdfs1` are reproduced by
+`system/hdfs-liftlab`, HBase from `system/hbase`, ZooKeeper from `system/zookeeper`; their old bugs from
+`system/<x>-buggy-detect`. The HDFS cases this branch carries from `system/hdfs1` are reproduced by
 `system/hdfs-liftlab`.
 
 ## 0. The machines
@@ -132,3 +134,41 @@ time and regions to compare with are [`results/solr/`](../results/solr/README.md
 (confirmed by a replay, reproduced natively: `final/reproduce.json`); a study check when its `.smt` is right, SAT
 confirmed or UNSAT at its fixed point with no `BOUNDED`/`UNBOUND` (each case's row: [STATUS.md](STATUS.md) "Solr
 checks"; the checking method and its traps: [handover/CHECKING.md](handover/CHECKING.md)).
+
+## 6. The old Solr bugs (`system/solr-buggy-detect`)
+
+Three cases, one branch, liftlab: `solr-buggy-9440`, `solr-buggy-6101`, `solr-buggy-6197`
+([`experiments/solr/solr-buggy-cases.tsv`](../experiments/solr/solr-buggy-cases.tsv): case, branch, budget, bug,
+point), each on its own tree, the fork's `graphchecker/solr-bug-<jira>` = `graphchecker/solr-checks` with that bug put
+back by hand and its workload (`experiments/solr/trees.tsv`; each case's README says what was put back and why).
+
+1. **GraphChecker and the image.** As §1 on the branch `system/solr-buggy-detect` (`~/GraphChecker-solr-bd`); its VM
+   sources are `system/solr`'s, so §2's image serves it (`/bigtemp/vnr3ne/vm-force10/j2sdk-image` on liftlab).
+2. **The trees**, into a tree set of their own (liftlab's is `/bigtemp/vnr3ne/wt/bd-trees-1`, Maven repository
+   `/bigtemp/vnr3ne/m2/bd-1`):
+
+   ```bash
+   cd ~/GraphChecker-solr-bd
+   tools/onlift.sh -g 8 env GC_TREES=$GC_BULK/wt/bd-trees GC_M2=$GC_BULK/m2/bd \
+     experiments/solr/prepare-trees.sh solr-bug-9440 solr-bug-6101 solr-bug-6197 > $GC_BULK/prepare-solr-bd.log 2>&1
+   ```
+
+   One `PASSED` line per workload and `== <tree>: ready` per tree (2026-10-28 on liftlab: 3 of 3).
+3. **The cases**, all three at once (at most 3 Solr cases at a time), each to `$GC_OUT/accept-B1-<case>/`:
+
+   ```bash
+   export GC_OUT=$GC_BULK/gc-out/repro-solr-bd GC_TREES=$GC_BULK/wt/bd-trees GC_M2=$GC_BULK/m2/bd \
+     CAUSYNTH_CUSTOM_JDK_HOME=$GC_BULK/vm/solr/j2sdk-image CASE_TIMEOUT_SECONDS=21600 PRUNE=0
+   CASES="solr-buggy-9440 solr-buggy-6101 solr-buggy-6197" tools/rounds/launch-round.sh ~/GraphChecker-solr-bd B1
+   ```
+
+   One case: `CASES=solr-buggy-9440`. A snapshot (`tools/lib/worktree-add.sh <dir> <commit> --detach`, built) instead
+   of the checkout keeps a rebuild from touching a running case.
+4. **Reading them.** Each run ends with `report.py` (`summary.tsv`, `report/<case>/report.md`): a case reproduces when it
+   PASSes -- SAT, confirmed by CONFIRM in the VM, its declared mechanism (`EXPECTED_MECHANISM` in
+   `experiments/accept/report.py`: `MARKER_FLIPPED`, by the CONFIG root `legacyCloud==true` set `false` for 6101 and 6197,
+   by a `SolrZkClient`/`ZooKeeper` fault for 9440), and native REPRODUCE k/N with control 0/N
+   (`out/<case>/schedule/final/reproduce.json`). `tools/rounds/round-verify.sh B1` and
+   `tools/analysis/smt-legend.py <run>/out/<case> --repo $GC_TREES/solr-bug-<jira>` read the formula. The verdicts to
+   compare with: [handover/BUGGY-DETECT.md](handover/BUGGY-DETECT.md) (CloudLab 2026-10-26 and liftlab B1) and each
+   case's README.

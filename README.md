@@ -27,7 +27,7 @@ body, round V25).
 | system | ad hoc checks | old bugs put back | fork branches (the trees) |
 | --- | --- | --- | --- |
 | HDFS | `system/hdfs-liftlab` | `system/hdfs-buggy-detect` | hadoop `graphchecker/hdfs-checks`, `-adhoc07`, `-adhoc21`, `graphchecker/hdfs-11741`, `graphchecker/hdfs-bug-<jira>` |
-| Solr | `system/solr` (this branch) | `system/solr-buggy-detect` | solr `graphchecker/solr-checks`, `graphchecker/solr-bug-<jira>` |
+| Solr | `system/solr` | `system/solr-buggy-detect` (this branch) | solr `graphchecker/solr-checks`, `graphchecker/solr-bug-<jira>` |
 | HBase | `system/hbase` | `system/hbase-buggy-detect` | hbase `graphchecker/hbase-checks`, `graphchecker/hbase-bug-<jira>` |
 | ZooKeeper | `system/zookeeper` | `system/zookeeper-buggy-detect` | zookeeper `graphchecker/zookeeper-checks`, `graphchecker/zk-bug-<jira>`, `graphchecker/zk-bug-<jira>-control` |
 
@@ -82,8 +82,16 @@ times; nothing waits in series except on a real dependency.** How the last leads
 
 ## Taking over: read these, in order
 
-**Solr is finished** (2026-10-26): the code is this branch, `system/solr` (from `system/hdfs1`), the adapter the Solr
-fork's `graphchecker/solr-checks`; every one of the 20 cases has its final `.smt`, claim and time row in
+**This branch, `system/solr-buggy-detect`,** is `system/solr` plus the old Solr bugs put back by hand on today's tree:
+SOLR-9440 (point solr-adhoc-31), SOLR-6101 and SOLR-6197 (solr-adhoc-19), each a case
+`experiments/solr/solr-buggy-<jira>` on its fork branch `graphchecker/solr-bug-<jira>` (SOLR-6763: a README only), and
+their engine support (native REPRODUCE of a field-backed CONFIG root). On CloudLab (2026-10-26) all three were
+detected (SAT, confirmed, native 10/10, control 0/10); on liftlab they run as round B1.
+[docs/handover/START-HERE.md](docs/handover/START-HERE.md) says how, [docs/handover/BUGGY-DETECT.md](docs/handover/BUGGY-DETECT.md)
+holds every system's verdicts, STATE §B and TODO "Buggy-detect" the state and what is left.
+
+**Solr's ad hoc checks are finished** (2026-10-26): their code is `system/solr` (from `system/hdfs1`), which this branch
+carries, the adapter the Solr fork's `graphchecker/solr-checks`; every one of the 20 cases has its final `.smt`, claim and time row in
 [`results/solr/`](results/solr/README.md) (the 8 bug checks PASS; the 12 study checks SAT, UNSAT or a named bound, the
 eight SGF9 left open finished on 2026-10-22..26, each alone), and [docs/REPRODUCE.md](docs/REPRODUCE.md) runs them
 from a fresh clone of the two. [docs/handover/START-HERE.md](docs/handover/START-HERE.md) and
@@ -99,9 +107,10 @@ that works on this project takes [RULES.md](docs/handover/RULES.md),
 
 | # | document | what it holds |
 | --- | --- | --- |
-| 0 | [docs/handover/START-HERE.md](docs/handover/START-HERE.md) | A new lead starts here: where Solr stands (every case has its `.smt`), what to read in order, what is left, how to run a case, the rules, where everything is |
-| 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands: Solr (§S: what `system/solr` holds, the fork's tree, how the owed cases ran and their verdicts); the goals (verbatim); the branches; the Solr tree, the VM image and the snapshots; where the evidence lives. |
-| 2 | [docs/handover/TODO.md](docs/handover/TODO.md) | What is left: the general engine follow-ups from HDFS (the workarounds' general fixes, the defects found, speed, cleanup), Solr's open items after its owed cases, and the cross-cutting engine items. |
+| 0 | [docs/handover/START-HERE.md](docs/handover/START-HERE.md) | A new lead starts here: the old Solr bugs on this branch, what to read in order, how to build their trees and run them on liftlab, how to read a result, the rules, where everything is |
+| 0b | [docs/handover/BUGGY-DETECT.md](docs/handover/BUGGY-DETECT.md) | The buggy-detect experiment across the four systems: the standard, every put-back bug's point, verdict (CloudLab 2026-10-26, liftlab B1), mechanism and caveat, the owner's decisions, the branches and the engine support |
+| 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands: the old Solr bugs (§B: the branch, the engine support, the trees, the results); Solr (§S: what `system/solr` holds, the fork's tree, how the owed cases ran and their verdicts); the goals (verbatim); the branches; the Solr tree, the VM image and the snapshots; where the evidence lives. |
+| 2 | [docs/handover/TODO.md](docs/handover/TODO.md) | What is left: the buggy-detect items (round B1, the native plant's open gaps), the general engine follow-ups from HDFS (the workarounds' general fixes, the defects found, speed, cleanup), Solr's open items after its owed cases, and the cross-cutting engine items. |
 | 3 | [docs/handover/RULES.md](docs/handover/RULES.md) | The owner's standing rules, long-term, quoted: what a finished check is (only SAT or UNSAT, a right `.smt`), symbolic scope first, general fixes only, no fallback code, a large closure converges (a bound is a rare last resort), workarounds with measure, system by system, git and safety. |
 | 3b | [docs/handover/CHECKING.md](docs/handover/CHECKING.md) | How every verdict and `.smt` is checked before it counts (round-verify's columns, the hand check with the legend) and the twenty-one traps the leads fell into (cut searches, unbound handoffs, bounded rounds, constant fatal arms, unreached arms, one-value domains, HELD values, the let-binding trap, NO-SYMBOL, a sweep's default budget, run-to-run open arms, read-order divergence, residue that cannot move a constant phi, ...). |
 | 4 | [docs/handover/AGENTS.md](docs/handover/AGENTS.md) | How to work with agents: at most 5 coding agents, reviews at key complex places, briefs, design gates, worktrees, merges, stopping; how each lead ran them and the lessons. |
@@ -113,7 +122,7 @@ that works on this project takes [RULES.md](docs/handover/RULES.md),
 | 8 | [docs/design/README.md](docs/design/README.md) | The design at a glance, stage by stage, and the index of the design specs (PIPELINE, SYMBOL-SCOPE, IDENTITY, CONTRACT-SPEC, VM, PERFORMANCE). |
 | 9 | [docs/design/PERFORMANCE.md](docs/design/PERFORMANCE.md) | Where a campaign's time goes, how the lifts run many campaigns at once, why cases were slow, how to debug a slow case, the open speed items. |
 | 10 | [docs/STATUS.md](docs/STATUS.md) | Every capability: done / partial / not done, with code pointers and the per-system surface (adapters, workarounds); every HDFS and Solr case's verdict and its `.smt` reading ("HDFS checks", "Solr checks"); the open defects. |
-| 11 | [docs/REPRODUCE.md](docs/REPRODUCE.md) | From the GitHub branches alone: the machines, the GraphChecker checkout, the VM image, the Solr tree, running one case or all 20 (each alone), reading the results against `results/solr/`. |
+| 11 | [docs/REPRODUCE.md](docs/REPRODUCE.md) | From the GitHub branches alone: the machines, the GraphChecker checkout, the VM image, the Solr tree, running one case or all 20 (each alone), reading the results against `results/solr/`; §6 the old Solr bugs of this branch. |
 
 The sections below are the user-level reference: the pipeline, running one case, running the bug
 checks, outputs, and the repository map.
@@ -299,9 +308,10 @@ experiments/lib/                  the one harness every case runs through
 experiments/accept/               accept.sh, report.py, cone.py, probe.sh
 experiments/hadoop/               trees.tsv (the HDFS trees: fork branches), prepare-trees.sh + build.sh (make one),
                                   hdfs-cases.tsv (the 46 cases: branch, budget, EX1's result)
-experiments/solr/                 solr-cases.tsv (the 20 cases: branch, budget), trees.tsv (the fork branch of the
-                                  tree), prepare-trees.sh + build.sh (make it), solr-adhoc (the 12 study checks),
-                                  solr-bugs, solr-18406, solr-18413 (the 8 bug checks)
+experiments/solr/                 solr-cases.tsv (the 20 cases: branch, budget), solr-buggy-cases.tsv (the old bugs put
+                                  back: solr-buggy-<jira>), trees.tsv (the fork branch of each tree), prepare-trees.sh +
+                                  build.sh (make one), solr-adhoc (the 12 study checks), solr-bugs, solr-18406,
+                                  solr-18413 (the 8 bug checks)
 experiments/{hadoop,zookeeper}/   per-system scripts and cases inherited from system/hdfs1 (hadoop/hdfs-adhoc: the 36
                                   HDFS study checks, checks.tsv; hadoop/hdfs-bugs, zookeeper/zk-bugs: the bug_study
                                   checks); HBase's and ZooKeeper's harnesses are on system/hbase and system/zookeeper

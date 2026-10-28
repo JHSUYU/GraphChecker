@@ -92,6 +92,11 @@ the MIGRATE succeeds natively (9.3 s on the tree set; 20/20 passes, below).
 The Overseer-side callers need not be in the scope for the world to reach them (the plant is woven into
 `CausynthLegacyCloud`'s body, which they call); left out, the formula is the node-only runs' size. Budget 21600 s.
 
+**Running it (liftlab):** START-HERE §3 (`CASES=solr-buggy-6197`, the tree set `/bigtemp/vnr3ne/wt/bd-trees-1`, the
+snapshot `/u/vnr3ne/gc-run/bd-solr-1`, round B1: `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-solr-buggy-6197`). The
+rounds below ran on CloudLab (2026-10-26); their `/bulk` paths were that cluster's and stay as the record. Liftlab:
+B1 (lead fills in).
+
 ## Result: SAT in the bug's own cluster-wide world -- confirmed, reproduced natively 10/10, accepted (S6197g)
 
 **Where it stands against the acceptance**: accepted -- CONFIRM yes, GraphChecker's native REPRODUCE **10/10** with

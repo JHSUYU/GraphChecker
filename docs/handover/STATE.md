@@ -1,12 +1,57 @@
-# State: Solr finished -- every case has its `.smt` (2026-10-26)
+# State: `system/solr-buggy-detect` -- the old Solr bugs on liftlab (2026-10-28); the 20 ad hoc cases as on `system/solr`
 
-Solr: section S below. The other systems live on their own branches (README "Branches"): HDFS on `system/hdfs-liftlab`,
-HBase on `system/hbase`, ZooKeeper on `system/zookeeper`, each system's old bugs on `system/<x>-buggy-detect`. This
-branch was made from `system/hdfs1` and still carries its HDFS cases and engine (§0); the HDFS record is
-`system/hdfs-liftlab`. Read this file, then [TODO.md](TODO.md) (what is left), [RULES.md](RULES.md),
-[CHECKING.md](CHECKING.md), [AGENTS.md](AGENTS.md), [OPERATIONS.md](OPERATIONS.md) and [PARALLEL.md](PARALLEL.md). The
-design is in [../design/](../design/README.md); every check's state is in [../checks/README.md](../checks/README.md);
-done / partial / missing per requirement in [../STATUS.md](../STATUS.md).
+This branch is `system/solr` plus the old Solr bugs put back by hand and their engine support (§B). The ad hoc cases
+it carries stand as on `system/solr` (§S); the other systems live on their own branches (README "Branches"). This
+branch was made from `system/hdfs1` through `system/solr` and still carries its HDFS cases and engine (§0); the HDFS
+record is `system/hdfs-liftlab`. Read this file, then [TODO.md](TODO.md) (what is left), [BUGGY-DETECT.md](BUGGY-DETECT.md),
+[RULES.md](RULES.md), [CHECKING.md](CHECKING.md), [AGENTS.md](AGENTS.md), [OPERATIONS.md](OPERATIONS.md) and
+[PARALLEL.md](PARALLEL.md). The design is in [../design/](../design/README.md); every check's state is in
+[../checks/README.md](../checks/README.md); done / partial / missing per requirement in [../STATUS.md](../STATUS.md).
+
+## B. The old Solr bugs put back (buggy-detect) -- read this first if you take over this branch
+
+The owner's goal (2026-10-26): the old bugs that make an ad hoc check's OWN declared throw fail, put back with small
+changes on today's trees and detected (the standard and every system's verdicts: [BUGGY-DETECT.md](BUGGY-DETECT.md)).
+Solr's: SOLR-9440 (solr-adhoc-31), SOLR-6101 and SOLR-6197 (solr-adhoc-19) run; SOLR-6763 (solr-adhoc-38) is not
+reachable on today's code, masked by SOLR-7844 (a README only, closed by the owner as it stands).
+
+**The branch.** Made on CloudLab (2026-10-26..27) from `system/solr-cloudlab`, kept as the tag
+`archive/system/solr-cloudlab` (149d34cb9); then put back on liftlab (2026-10-27/28): CloudLab's scheduling layer
+reverted (c4043f12f: `run_engine.sh`, the tools and the case settings are `system/solr`'s again -- the host ledger charges
+memory, 70 % of a lift; the three buggy cases' engine heap is solr-adhoc's 21504 MB, for CloudLab's 65536) and
+`system/solr` f5eb1fc14 merged (1bddceee1).
+
+**The engine support** (each reviewed): native REPRODUCE plants a field-backed CONFIG root -- a configuration a field
+holds (`ConfigRoots#fieldValue`), which the VM mints at the field's read and writes before every read site the plan
+declares. 61e881776: `PlantSites` reads each task's configured source phases into root -> field -> read sites, and the
+native plant writes the world's value before each such read. e5c894636: a planned method is planted only when its
+GETFIELDs of the field are exactly the plan's sites (`PlantAgent`'s count guard); otherwise each read calls
+`RecordingPlant.fieldUnwritten` (PLANT_UNWRITTEN), and getter configurations are refused again. ad3d08028:
+`ConfirmMain#assignedRoot` refuses a CONFIG root that is read from fields and also returned by a getter. Open
+(TODO "Buggy-detect"): the getter-CONFIG plant scope, wider than the VM's, stays disabled; three minor reporting gaps.
+
+**The trees** (fork `JHSUYU/solr`, each `graphchecker/solr-checks` 12d23091d1 with one bug put back by hand and its
+workload; `experiments/solr/trees.tsv`):
+
+| tree | fork branch | tree workaround (`// GraphChecker:`) |
+| --- | --- | --- |
+| `solr-bug-9440` | `graphchecker/solr-bug-9440` 1e7324c461 | the Overseer's test-only wait before it retries a failed state write (`Overseer#failedStateWriteRetryDelayMs`, 5 s; inert unless a write fails) |
+| `solr-bug-6101` | `graphchecker/solr-bug-6101` 040ae6d4c6 | every read of `legacyCloud` through one field-backed value (`CausynthLegacyCloud`) |
+| `solr-bug-6197` | `graphchecker/solr-bug-6197` f5d86cbd8a | the same |
+
+On liftlab (2026-10-28): the tree set `/bigtemp/vnr3ne/wt/bd-trees-1` (every bug tree of the four systems, each built
+by its system's `prepare-trees.sh` with `GC_TREES=/bigtemp/vnr3ne/wt/bd-trees-1 GC_M2=/bigtemp/vnr3ne/m2/bd-1`; Solr's
+three workloads PASSED natively), the snapshot `/u/vnr3ne/gc-run/bd-solr-1` (1bddceee1), the image
+`/bigtemp/vnr3ne/vm-force10/j2sdk-image`; round B1 in `/bigtemp/vnr3ne/gc-out/buggy-detect` (`accept-B1-<case>`,
+START-HERE §3).
+
+**Results:**
+
+| case | CloudLab, 2026-10-26 (the case README's record) | liftlab B1 |
+| --- | --- | --- |
+| solr-buggy-9440 | S9440b: SAT MARKER_FLIPPED by a ZooKeeper SessionExpired on node1's leader-election create during the core CREATE; CONFIRM, native REPRODUCE 10/10, control 0/10, report.py PASS; 821 s | B1 (lead fills in) |
+| solr-buggy-6101 | S6101g: SAT MARKER_FLIPPED, CONFIG `legacyCloud` true -> false cluster-wide (the field plant); CONFIRM, native 10/10, control 0/10, PASS; 1102 s | B1 (lead fills in) |
+| solr-buggy-6197 | S6197g: the same, MIGRATE; CONFIRM, native 10/10, control 0/10, PASS; 754 s | B1 (lead fills in) |
 
 ## S. Solr: every case has its `.smt` (the owed cases, 2026-10-22..26) -- read this first if you take over Solr
 
@@ -109,7 +154,7 @@ that serves throughput.
 ## 2. GraphChecker branches (repo `~/GraphChecker`, remote `origin` = github)
 
 The remote keeps, per system, its ad hoc branch and its old-bug branch (README "Branches"): `system/hdfs-liftlab` and
-`system/hdfs-buggy-detect`, `system/solr` (this branch) and `system/solr-buggy-detect`, `system/hbase` and
+`system/hdfs-buggy-detect`, `system/solr` and `system/solr-buggy-detect` (this branch), `system/hbase` and
 `system/hbase-buggy-detect`, `system/zookeeper` and `system/zookeeper-buggy-detect`; besides them `main` (the
 2026-10-03 body, round V25) and, as history, `system/hdfs` and `system/hdfs1` (§0). The CloudLab ports (2026-10-24..28)
 are the tags `archive/system/<x>-cloudlab`.

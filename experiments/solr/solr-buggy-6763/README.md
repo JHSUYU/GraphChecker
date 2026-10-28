@@ -24,8 +24,9 @@ same window twice more, so the deletion alone changes nothing the point can see:
 
 The study's chain (the old election survives, writes the leader node, the new one sets `isLeader=false`) needs both
 gone, which is reverting most of SOLR-7844 (11 files): a backport to 2014 code, not a small change on today's (owner,
-2026-10-26). Decision: the lead, 2026-10-26 (no case, no run). Notes:
-`/bulk/analysis/buggy-detect-2026-10-26/6763-notes.md`.
+2026-10-26). Decision: the lead, 2026-10-26 (no case, no run); the owner closed it as it stands (2026-10-27/28). Notes:
+`6763-notes.md` in the buggy-detect analysis on CloudLab (`/bulk/analysis/buggy-detect-2026-10-26/`, that cluster's;
+not copied to liftlab).
 
 On the fixed code the point is already SAT through a different fault world (STATUS "Solr checks", solr-adhoc-38,
 SGF9: MARKER_FLIPPED, confirmed in the VM, native 0/10).

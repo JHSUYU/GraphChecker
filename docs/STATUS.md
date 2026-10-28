@@ -1,6 +1,7 @@
 # Status
 
-This page describes what the code on this branch (HEAD, `system/solr`) does. "Solr checks" below holds each of the 20
+This page describes what the code on this branch (HEAD, `system/solr-buggy-detect`: `system/solr` plus the native
+plant of a field-backed CONFIG root, STATE §B) does. "Solr checks" below holds each of the 20
 Solr cases with its run, verdict and reading. "HDFS checks" holds the 46 HDFS cases as the two former HDFS branches
 closed them (`system/hdfs` locked, or `system/hdfs1`, which this branch was made from), each with its run, verdict and
 its `.smt` read by hand; the HDFS record now is `system/hdfs-liftlab`. Every commit that completes or changes something listed here updates this page in the same
