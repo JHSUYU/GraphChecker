@@ -24,9 +24,10 @@ on the cluster is faster):
 Measured per campaign in `out/<case>/schedule/stage_metrics.tsv`; `tools/analysis/timeline.py <case dir>` splits it by
 stage, round and job (streaming layout; the per-round solve/replay waits included).
 
-## 2. How ten lifts run many campaigns at once (the design)
+## 2. How the lifts run many campaigns at once (the design)
 
-Ten lifts (`lift06`-`lift15`), 48 cores and 30 GB each, NFS-shared home and `/bigtemp`. Everything is placed by
+liftlab's workers (`lift02`-`lift15` but `lift11`, the control host, and `lift07`, unreachable since 2026-10-23; ten
+`lift06`-`lift15` when most of these numbers were measured), 48 cores and 30 GB each, NFS-shared home and `/bigtemp`. Everything is placed by
 memory, through one ledger, so any number of campaigns, gates and agent runs can share the cluster without a host
 running out of memory, and a single case alone takes the whole cluster.
 
@@ -188,7 +189,7 @@ recordings the offline gate needs: keep `PRUNE=0` for a round you will gate agai
    in the body); 07's CC7 still lost 8 obligations to a full host (no host had room within the 60 s placement wait).
 6. 17897's COMPOSE: two z3 runs per satisfiable ask, whole asks 16-56 s (measured on `hdfs-compose-perf-wip`,
    bundled in `/bigtemp/vnr3ne/handover/2026-10-08/graphchecker-remote-branches.bundle`).
-7. The two-phase final run (TODO HDFS §1): short cases a few at a time, deep closures each with the whole cluster.
+7. The two-phase final run (TODO HDFS §1, done another way: `system/hdfs-liftlab`'s series H1 ran each case alone).
 8. **A hard question held its host's solver** (SP4-10/13, 2026-10-12; branch `solr-solve`): a host's solver answers
    one question at a time, and obligation solves ran at the full 1810 s z3 budget. Answered questions took a median
    1 s (p90 3-4 s, max 9 s), but 16 READ-door (`SolrZkClient.getData`) and routed-alias
