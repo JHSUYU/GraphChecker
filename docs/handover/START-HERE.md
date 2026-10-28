@@ -43,15 +43,15 @@ list and its tree branch was never pushed.
 - **The snapshot:** `/u/vnr3ne/gc-run/bd-hdfs-1` (c9aece5af, built): `bash tools/lib/worktree-add.sh
   /u/vnr3ne/gc-run/<name> <commit> --detach`, then `tools/onlift.sh -h <a Maven host> -g 6 mvn -q -o package
   -DskipTests` in it.
-- **One case, or all of them at once** (round B1 ran them together, the shared ledger spreading every replay over the 12
+- **One case, or all of them at once** (round B1 ran them together, the shared ledger spreading every replay over the
   workers): from the snapshot, `env GC_OUT=/bigtemp/vnr3ne/gc-out/buggy-detect GC_TREES=/bigtemp/vnr3ne/wt/bd-trees-1
-  GC_M2=/bigtemp/vnr3ne/m2/bd-1 LIFTS="lift02 lift03 lift04 lift05 lift06 lift08 lift09 lift10 lift12 lift13 lift14
-  lift15" CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force12/j2sdk-image CASE_TIMEOUT_SECONDS=21600 PRUNE=0
+  GC_M2=/bigtemp/vnr3ne/m2/bd-1 LIFTS="lift02 lift03 lift04 lift05 lift06 lift08 lift09 lift10 lift12 lift13 lift14"
+  CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force12/j2sdk-image CASE_TIMEOUT_SECONDS=21600 PRUNE=0
   CASES="hdfs-buggy-11741 ..." tools/rounds/launch-round.sh /u/vnr3ne/gc-run/bd-hdfs-1 <ROUND>` (`DRY=1` prints the heads
-  it would choose). Each case writes `$GC_OUT/accept-<ROUND>-buggy-<jira>`. The heads come from `LIFTS` by room: a head
-  on lift02 or lift03 fails PREFLIGHT when it cannot reach lift15 (B1's first 10609 and 14311 did: kept as
-  `accept-B1STOP-*`, relaunched). The lead's wrapper: `/bigtemp/vnr3ne/analysis/buggy-detect-liftlab-2026-10-28/launch-b1.sh
-  hdfs <case...>`; its log `RUNS.txt` beside it.
+  it would choose). Each case writes `$GC_OUT/accept-<ROUND>-buggy-<jira>`. The heads come from `LIFTS` by room and every
+  head must reach every worker: lift02 and lift03 cannot reach lift15, so lift15 stays out of `LIFTS` (B1's first
+  launches with it in failed PREFLIGHT on heads lift02/lift03: kept as `accept-B1STOP-*`, relaunched). The lead's wrapper:
+  `/bigtemp/vnr3ne/analysis/buggy-detect-liftlab-2026-10-28/launch-b1.sh hdfs <case...>`; its log `RUNS.txt` beside it.
 - **Reading a case:** `GC_OUT=... tools/rounds/round-verify.sh <ROUND>` (how EXPLORE ended, z3 on the file, gaps, moved
   roots, CONFIRM); the report `$run/report/<case>/report.md` (PASS = the expected mechanism, confirmed, reproduced
   natively; again by hand: `python3 experiments/accept/report.py <case> $run/out/<case> <work dir>`);

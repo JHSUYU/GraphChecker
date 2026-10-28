@@ -208,8 +208,8 @@ hand and its workload). One branch holds everything, on liftlab as §0-§5:
      tools/rounds/launch-round.sh <snapshot> R1
    ```
 
-   Each case writes `$GC_OUT/accept-R1-buggy-<jira>/` (`DRY=1` first prints the head each would get; on liftlab a head on
-   lift02 or lift03 cannot reach lift15 and fails PREFLIGHT: relaunch that case). One case: `CASES=hdfs-buggy-17383`, or
+   Each case writes `$GC_OUT/accept-R1-buggy-<jira>/` (`DRY=1` first prints the head each would get). Every head must reach
+   every host of `LIFTS`: on liftlab lift02 and lift03 cannot reach lift15, so leave lift15 out of `LIFTS` for this round. One case: `CASES=hdfs-buggy-17383`, or
    `tools/rounds/launch-run.sh <snapshot> hdfs-buggy-17383 R1-buggy-17383` as §4.
 
 5. **Reading them**, as §5: `tools/rounds/round-verify.sh R1`; each run's `report/<case>/report.md` (PASS: the case's

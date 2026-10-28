@@ -41,7 +41,7 @@ reader after the passed write's activation exits (`StateClosure#holdAfter`, PIPE
 system's `prepare-trees.sh`; Maven repositories `/bigtemp/vnr3ne/m2/bd-1`; build logs
 `/bigtemp/vnr3ne/analysis/buggy-detect-liftlab-2026-10-28/trees/`: the seven HDFS workloads PASSED), snapshot
 `/u/vnr3ne/gc-run/bd-hdfs-1` (c9aece5af), image `/bigtemp/vnr3ne/vm-force12/j2sdk-image`; round B1, all seven at once
-through `tools/rounds/launch-round.sh` on the 12 workers (driver `launch-b1.sh`, log `RUNS.txt`, both in
+through `tools/rounds/launch-round.sh` on 11 workers (lift15 left out: lift02 and lift03 cannot reach it) (driver `launch-b1.sh`, log `RUNS.txt`, both in
 `/bigtemp/vnr3ne/analysis/buggy-detect-liftlab-2026-10-28/`), runs `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-buggy-<jira>`:
 B1 (lead fills in). The CloudLab runs' names (B11741b, B17383a, ...) stay in each case's README as the record.
 
