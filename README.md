@@ -17,7 +17,22 @@ A SAT comes with a claim naming the roots that moved (`claim.json`) and one repl
 the program agrees (`confirm.json`). What the rows do not state is named, never silently
 defaulted.
 
-## This branch: THE HDFS branch (`system/hdfs-liftlab`)
+## This branch: the old HDFS bugs put back by hand (`system/hdfs-buggy-detect`)
+
+`system/hdfs-buggy-detect` is `system/hdfs-liftlab` (THE HDFS branch, next section) plus seven old HDFS bugs that make
+one of its ad hoc checks fail, each put back by hand on today's tree -- the owner (2026-10-26): a bug counts only if
+GraphChecker's witness fires the point's own declared throw -- and the engine support they needed (for HDFS-14311: an
+earlier or later concurrent writer may move past a write the reader cannot pass, one proposal per observed version,
+CONFIRM holding the reader after the passed write's activation exits; IDENTITY §4, PIPELINE §10). The cases are
+`experiments/hadoop/hdfs-buggy-<jira>/` (HDFS-11741, -17383, -12931, -5766, -10609, -14075, -14311; list
+`experiments/hadoop/hdfs-buggy-cases.tsv`), each on its own tree `hadoop-hdfs-bug-<jira>` = the Hadoop fork's
+`graphchecker/hdfs-bug-<jira>` (`experiments/hadoop/trees.tsv`). Its scheduling and cluster are `system/hdfs-liftlab`'s
+(liftlab, the memory ledger). The results table of the old bugs of all four systems is
+[docs/handover/BUGGY-DETECT.md](docs/handover/BUGGY-DETECT.md): on CloudLab (2026-10-26) six of the seven HDFS bugs were
+detected and HDFS-14311 is a capability limit; the liftlab round B1: B1 (lead fills in). **Start at
+[docs/handover/START-HERE.md](docs/handover/START-HERE.md) §0**; a fresh clone: [docs/REPRODUCE.md](docs/REPRODUCE.md) §7.
+
+## THE HDFS branch underneath (`system/hdfs-liftlab`)
 
 `system/hdfs-liftlab` runs every HDFS case on `system/hbase`'s engine on liftlab (lift02-15, 48 cores and 30 GB each;
 lift11 the control host) and replaces `system/hdfs` and `system/hdfs1`, which stay on the remote as history (the owner,
@@ -30,8 +45,8 @@ liftlab. The final series H1 (2026-10-26/27) ran the 45 cases but hdfs-11741 one
 its verdict and time breakdown: 62555 s (17.4 h; seeding 42 %, exploration 53 %, compose + solver 4 %); the 9 named bugs
 but 11741 PASS (native 10/10), hdfs-adhoc-10 and -12 SAT, hdfs-adhoc-52 a named bound, 33 UNSAT_CLOSED (`results/hdfs/`;
 hdfs-11741's row is the port's CloudLab run F7, by the owner's choice). The CloudLab record of the port (rounds F1-F8,
-2026-10-24, the same verdicts) is the tag `archive/system/hdfs-cloudlab`. **Start at
-[docs/handover/START-HERE.md](docs/handover/START-HERE.md)**; a fresh clone: [docs/REPRODUCE.md](docs/REPRODUCE.md).
+2026-10-24, the same verdicts) is the tag `archive/system/hdfs-cloudlab`. Its takeover sections are START-HERE §1-§5 and
+STATE §L; a fresh clone: REPRODUCE §0-§5.
 
 ## The branches
 
@@ -41,7 +56,7 @@ on liftlab:
 
 | system | ad hoc checks | old bugs put back | the fork's tree branches |
 | --- | --- | --- | --- |
-| HDFS | `system/hdfs-liftlab` (this branch; replaces `system/hdfs` and `system/hdfs1`, kept on the remote as history) | `system/hdfs-buggy-detect` | `JHSUYU/hadoop`: `graphchecker/hdfs-checks`, `graphchecker/hdfs-checks-adhoc21`, `graphchecker/hdfs-11741` (this branch's trees), `graphchecker/hdfs-checks-adhoc07` (`system/hdfs1`'s 07), `graphchecker/hdfs-bug-<jira>` (one old bug each) |
+| HDFS | `system/hdfs-liftlab` (replaces `system/hdfs` and `system/hdfs1`, kept on the remote as history) | `system/hdfs-buggy-detect` (this branch) | `JHSUYU/hadoop`: `graphchecker/hdfs-checks`, `graphchecker/hdfs-checks-adhoc21`, `graphchecker/hdfs-11741` (the ad hoc trees), `graphchecker/hdfs-checks-adhoc07` (`system/hdfs1`'s 07), `graphchecker/hdfs-bug-<jira>` (one old bug each) |
 | HBase | `system/hbase` | `system/hbase-buggy-detect` | `JHSUYU/hbase`: `graphchecker/hbase-checks`, `graphchecker/hbase-bug-<jira>` |
 | ZooKeeper | `system/zookeeper` | `system/zookeeper-buggy-detect` | `JHSUYU/zookeeper`: `graphchecker/zookeeper-checks`, `graphchecker/zk-bug-<jira>`, `graphchecker/zk-bug-<jira>-control` (the same workload on the fixed code) |
 | Solr | `system/solr` | `system/solr-buggy-detect` | `JHSUYU/solr`: `graphchecker/solr-checks`, `graphchecker/solr-bug-<jira>` |
@@ -51,11 +66,11 @@ of its ad hoc checks fail, each put back by hand on today's tree (one fork branc
 needed; its `docs/handover/BUGGY-DETECT.md` is the results table. The CloudLab ports' heads are the tags
 `archive/system/<x>-cloudlab`. Never push to an apache remote.
 
-- **HDFS** is finished (46 of 46). This branch runs every case on HBase's engine (series H1, above; STATE §L). The former
+- **HDFS** is finished (46 of 46). `system/hdfs-liftlab` runs every case on HBase's engine (series H1, above; STATE §L). The former
   bodies' readings -- each case's `.smt` read by hand against the HDFS code -- are STATUS "HDFS checks", and their time
   breakdown, every case alone on ten lifts, series EX1 ([docs/design/PERFORMANCE.md](docs/design/PERFORMANCE.md) §6).
-  `system/hdfs-buggy-detect` holds seven old HDFS bugs (HDFS-11741, -17383, -12931, -5766, -10609, -14075, -14311:
-  `experiments/hadoop/hdfs-buggy-<jira>/`).
+  This branch, `system/hdfs-buggy-detect`, adds seven old HDFS bugs (HDFS-11741, -17383, -12931, -5766, -10609, -14075,
+  -14311: `experiments/hadoop/hdfs-buggy-<jira>/`; STATE §B).
 - **HBase** is finished (2026-10-21): `system/hbase` (its START-HERE, REPRODUCE and `results/hbase/`: 22 cases, the
   owner's five bugs PASS) and `system/hbase-buggy-detect`.
 - **ZooKeeper** is finished (2026-10-22): `system/zookeeper` (its START-HERE, REPRODUCE and `results/zookeeper/`: 5 of
@@ -105,9 +120,10 @@ that works on this project takes [RULES.md](docs/handover/RULES.md),
 
 | # | document | what it holds |
 | --- | --- | --- |
-| 0 | [docs/handover/START-HERE.md](docs/handover/START-HERE.md) | A new lead starts here: what this branch holds, the cluster, the trees, the results (series H1, `results/hdfs/`), what to read, how to run a case and the series, the rules |
-| 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands: HDFS on this branch (§L: the snapshot, tree set, image and drivers of series H1); the former HDFS bodies `system/hdfs` and `system/hdfs1` (§0, history); the goals (verbatim); the remote and the parked local branches; every system tree with its fork branch; VM images and snapshots; the rounds that closed each case; where the evidence lives; the other systems' branches (§O). |
-| 2 | [docs/handover/TODO.md](docs/handover/TODO.md) | What is left for HDFS ("HDFS on liftlab": the port's open items), the former bodies' open engine items (general fixes the workarounds stand in for, defects, speed, cleanup), and the cross-cutting engine items; the other systems' plans are on their branches. |
+| 0 | [docs/handover/START-HERE.md](docs/handover/START-HERE.md) | A new lead starts here: the old HDFS bugs of this branch (§0: trees, snapshot, round B1, how to run and read a case), then what `system/hdfs-liftlab` holds, the cluster, the trees, the results (series H1, `results/hdfs/`), what to read, how to run a case and the series, the rules |
+| 0b | [docs/handover/BUGGY-DETECT.md](docs/handover/BUGGY-DETECT.md) | The old bugs of all four systems that make an ad hoc check fail, put back by hand: the standard, each bug's point, verdict, mechanism and caveat (CloudLab 2026-10-26 beside the liftlab round B1), the owner's decisions, the engine support |
+| 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands: the old HDFS bugs (§B); HDFS on `system/hdfs-liftlab` (§L: the snapshot, tree set, image and drivers of series H1); the former HDFS bodies `system/hdfs` and `system/hdfs1` (§0, history); the goals (verbatim); the remote and the parked local branches; every system tree with its fork branch; VM images and snapshots; the rounds that closed each case; where the evidence lives; the other systems' branches (§O). |
+| 2 | [docs/handover/TODO.md](docs/handover/TODO.md) | What is left for the old bugs ("Buggy-detect") and for HDFS ("HDFS on liftlab": the port's open items), the former bodies' open engine items (general fixes the workarounds stand in for, defects, speed, cleanup), and the cross-cutting engine items; the other systems' plans are on their branches. |
 | 3 | [docs/handover/RULES.md](docs/handover/RULES.md) | The owner's standing rules, long-term, quoted: what a finished check is (only SAT or UNSAT, a right `.smt`), symbolic scope first, general fixes only, no fallback code, a large closure converges (a bound is a rare last resort), workarounds with measure, system by system, git and safety. |
 | 3b | [docs/handover/CHECKING.md](docs/handover/CHECKING.md) | How every verdict and `.smt` is checked before it counts (round-verify's columns, the hand check with the legend) and the traps the leads fell into (cut searches, unbound handoffs, bounded rounds, constant fatal arms, unreached arms, one-value domains, HELD values, the let-binding trap, NO-SYMBOL, a sweep's default budget, run-to-run open arms, read-order divergence, residue that cannot move a constant phi, ...). |
 | 4 | [docs/handover/AGENTS.md](docs/handover/AGENTS.md) | How to work with agents: at most 5 coding agents, reviews at key complex places, briefs, design gates, worktrees, merges, stopping; how each lead ran them and the lessons. |
@@ -119,7 +135,7 @@ that works on this project takes [RULES.md](docs/handover/RULES.md),
 | 8 | [docs/design/README.md](docs/design/README.md) | The design at a glance, stage by stage, and the index of the design specs (PIPELINE, SYMBOL-SCOPE, IDENTITY, CONTRACT-SPEC, VM, PERFORMANCE). |
 | 9 | [docs/design/PERFORMANCE.md](docs/design/PERFORMANCE.md) | Where a campaign's time goes, how the lifts run many campaigns at once, why cases were slow, how to debug a slow case, the open speed items. |
 | 10 | [docs/STATUS.md](docs/STATUS.md) | Every capability: done / partial / not done, with code pointers and the per-system surface (adapters, workarounds); every HDFS case's verdict and its `.smt` read by hand ("HDFS checks"); the port onto HBase's engine ("HDFS checks on HBase's engine"); the open defects. |
-| 11 | [docs/REPRODUCE.md](docs/REPRODUCE.md) | From the GitHub branches alone: the machines, this branch's checkout, its VM image, the fork's trees, running one case or all of them, reading the results (§0-§5); the other systems' recipes are on their own branches (§6). |
+| 11 | [docs/REPRODUCE.md](docs/REPRODUCE.md) | From the GitHub branches alone: the machines, the checkout, its VM image, the fork's trees, running one case or all of them, reading the results (§0-§5, the ad hoc cases); the other systems' recipes are on their own branches (§6); the old HDFS bugs of this branch (§7). |
 The sections below are the user-level reference: the pipeline, running one case, running the bug
 checks, outputs, and the repository map.
 
@@ -306,7 +322,8 @@ experiments/hadoop/               trees.tsv (the HDFS trees: fork branches), pre
                                   hdfs-cases.tsv (the 46 cases: branch, budget, EX1's result)
 experiments/{hadoop,solr,hbase,zookeeper}/  per-system scripts and cases (hadoop/hdfs-adhoc: the 36 HDFS study
                                   checks, checks.tsv; hadoop/hdfs-bugs, zookeeper/zk-bugs: the bug_study
-                                  checks; the Solr and HBase cases as their branches had them when merged here)
+                                  checks; hadoop/hdfs-buggy-<jira>, hdfs-buggy-cases.tsv: the old bugs put back;
+                                  the Solr and HBase cases as their branches had them when merged here)
 results/hdfs/                     every HDFS case's final .smt and claim, the time table (series H1), the readings
 tools/onlift.sh, pick-lift.sh     run a command on the host of LIFTS with the most room (Java 8 + Maven)
 tools/vm/build-image.sh           the concolic VM image from third_party/, then its smoke suite

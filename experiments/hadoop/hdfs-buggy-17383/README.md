@@ -71,6 +71,10 @@ recording's heartbeats are the workload's own, as in the precedents' `refreshKey
 
 ## Result: SAT, confirmed, reproduced 10/10 (round B17383a)
 
+On liftlab, round B1 (2026-10-28, `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-buggy-17383`, snapshot
+`/u/vnr3ne/gc-run/bd-hdfs-1`, tree set `/bigtemp/vnr3ne/wt/bd-trees-1`): B1 (lead fills in). The rounds below ran on
+CloudLab (their `/bulk` paths are that cluster's, no longer used); they stay as the record.
+
 Round B17383a (2026-10-25, `/bulk/gc-out/hdfs-buggy/17383/accept-B17383a-buggy-17383`; snapshot `/bulk/gc-run/hb17383-1` =
 d1fab3b34, tree set `/bulk/trees/b17383` = 1e519fa598a): `SAT_CANDIDATE`, `FINAL_READY`, 734 s (seed replay 3 min, 44
 schedule slots, none given up; EXPLORE 19 obligations: 1 admitted, 7 unsat, 11 not admitted; the first claim confirmed).

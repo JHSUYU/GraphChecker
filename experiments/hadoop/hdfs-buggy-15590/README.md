@@ -1,5 +1,9 @@
 # HDFS-15590
 
+**Dropped by the owner: its witness fires another throw than its point's own (hdfs-adhoc-52's), so it is
+in no case list; its tree branch `graphchecker/hdfs-bug-15590` was never pushed, so it does not run from GitHub. The
+CloudLab rounds below are its record.**
+
 ## The bug
 
 [HDFS-15590](https://issues.apache.org/jira/browse/HDFS-15590), "namenode fails to start when ordered snapshot deletion

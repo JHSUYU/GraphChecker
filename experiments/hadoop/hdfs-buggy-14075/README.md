@@ -52,6 +52,10 @@ fixed code (`graphchecker/hdfs-checks`) roll 1 terminates the NameNode. The work
 
 ## Result: SAT, confirmed, reproduced 10/10 natively, report.py PASS (round B14075c)
 
+On liftlab, round B1 (2026-10-28, `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-buggy-14075`, snapshot
+`/u/vnr3ne/gc-run/bd-hdfs-1`, tree set `/bigtemp/vnr3ne/wt/bd-trees-1`): B1 (lead fills in). The rounds below ran on
+CloudLab (their `/bulk` paths are that cluster's, no longer used); they stay as the record.
+
 Round B14075c (2026-10-26, `/bulk/gc-out/hdfs-buggy/14075/accept-B14075c-buggy-14075`; snapshot `/bulk/gc-run/hb14075-2` =
 8936331be, tree set `/bulk/trees/b14075-2` = fork 7e8681a724d): `SAT_CANDIDATE`, `FINAL_READY`, 743 s; EXPLORE 2 rounds, 12
 obligation verdicts, WITNESSED by the replay of obligation e1bcef8f8fb99839. round-verify: `end=(WITNESSED) z3=sat

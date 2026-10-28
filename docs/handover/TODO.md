@@ -1,11 +1,12 @@
-# TODO: HDFS (system/hdfs-liftlab, THE HDFS branch)
+# TODO: the old HDFS bugs (system/hdfs-buggy-detect) and HDFS (system/hdfs-liftlab, THE HDFS branch)
 
 Order:
-0. HDFS on liftlab (section "HDFS on liftlab"): the series H1 is done (2026-10-27, STATE §L, `results/hdfs/`) and the
+0. The old bugs (section "Buggy-detect"): round B1 on liftlab, then what HDFS-14311 and the dropped case leave.
+1. HDFS on liftlab (section "HDFS on liftlab"): the series H1 is done (2026-10-27, STATE §L, `results/hdfs/`) and the
    branch is pushed (a3e1881d5); what is left are the port's open items below.
-1. HDFS's former bodies (STATE §0): their follow-up items below are optional engine work, done when a case needs them or
+2. HDFS's former bodies (STATE §0): their follow-up items below are optional engine work, done when a case needs them or
    before a clean final acceptance run; any change goes on this branch and is judged by its cases.
-2. The cross-cutting engine items (last section), when a system needs them.
+3. The cross-cutting engine items (last section), when a system needs them.
 
 HBase, ZooKeeper and Solr are finished; each one's plan is its own branch's TODO (`system/hbase`, `system/zookeeper`,
 `system/solr`), and each old-bug branch's open items are in its START-HERE (`system/<x>-buggy-detect`); a "TODO HBase
@@ -16,6 +17,25 @@ HBase, ZooKeeper and Solr are finished; each one's plan is its own branch's TODO
 details are in [STATE.md](STATE.md); every check with its state in [../checks/README.md](../checks/README.md) and its
 reading in [../STATUS.md](../STATUS.md); commands in [OPERATIONS.md](OPERATIONS.md); speed and the cluster in
 [../design/PERFORMANCE.md](../design/PERFORMANCE.md).
+
+## Buggy-detect (this branch, `system/hdfs-buggy-detect`)
+
+STATE §B and START-HERE §0 have where everything is; [BUGGY-DETECT.md](BUGGY-DETECT.md) the table and the owner's
+decisions. The other systems' old-bug items are on their own `system/<x>-buggy-detect` branches.
+1. **Round B1** (liftlab, from 2026-10-28 00:07: the seven cases at once, `accept-B1-buggy-<jira>`): B1 (lead fills in).
+   Read each by BUGGY-DETECT's standard (CONFIRM in the VM, native k/N with control 0/N, report.py PASS, the chain against
+   the case README's), then fill BUGGY-DETECT's B1 column and each case README's result; a verdict that differs from the
+   CloudLab row is read before it counts.
+2. **HDFS-14311's remaining blockers** (closed by the owner as a capability limit, 2026-10-27; reopen only with the
+   owner's OK): the carried-anchor concurrency that offers the reader's own task, created after the read, as a writer;
+   CONFIRM's pairing hold sitting after the reads that decide the guard; an ORDER timeout after the fatal refutes in
+   Confirmation (changing it needs the owner's sign-off). Evidence: the case README (B14311a-f).
+3. **`hdfs-buggy-15590`**, dropped by the owner (its witness fires another throw than the point's own), is still a case
+   directory and a `report.py` row on this branch; its tree branch `graphchecker/hdfs-bug-15590` was never pushed, so it
+   cannot run from GitHub. Delete it, or keep it as a record (the owner's call).
+4. **`hdfs-buggy-cases.tsv`'s header** names the source list by its CloudLab path; fix it with the next change to that file.
+5. **A fresh clone runs the old bugs**: check REPRODUCE §7 from GitHub alone, as TODO "HDFS on liftlab" 4 for the ad hoc
+   cases.
 
 ## HDFS on liftlab (`system/hdfs-liftlab`)
 

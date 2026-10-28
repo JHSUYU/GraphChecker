@@ -94,6 +94,10 @@ Rationale, tests and the review: `/bulk/analysis/buggy-detect-2026-10-26/14311-n
 
 ## Result
 
+On liftlab, round B1 (2026-10-28, `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-buggy-14311`, snapshot
+`/u/vnr3ne/gc-run/bd-hdfs-1`, tree set `/bigtemp/vnr3ne/wt/bd-trees-1`): B1 (lead fills in). The rounds below ran on
+CloudLab (their `/bulk` paths are that cluster's, no longer used); they stay as the record.
+
 **Not detected; recorded as a capability limit** (the owner, 2026-10-26: a check truly beyond GraphChecker is not
 forced). GraphChecker's only witness was the race happening by timing in one replay (B14311d). The last round, B14311f,
 hit blocker 1 below and was stopped there.

@@ -1,15 +1,71 @@
-# START HERE: THE HDFS branch (system/hdfs-liftlab, 2026-10-27)
+# START HERE: system/hdfs-buggy-detect -- the old HDFS bugs, on THE HDFS branch (liftlab)
 
-You take over GraphChecker's HDFS group: every HDFS case on HBase's final engine, run on liftlab with the memory-ledger
-scheduling of `system/hbase` and `system/solr`. This one branch replaces `system/hdfs` and `system/hdfs1` (the owner,
-2026-10-26: "最终system/hdfs-liftlab一个分支就能彻底取代原先的system/hdfs和system/hdfs1了哈"). This file is self-contained: the
-goal, what the branch holds, the cluster, the trees, the results, how to run a case and the whole series, what is left,
-and the rules. The other systems' takeover files are their own branches' START-HERE (README "The branches"); HDFS's
-earlier bodies are STATE §0. The old HDFS bugs put back by hand run on `system/hdfs-buggy-detect` (this branch plus those
-cases; its START-HERE).
+You take over `system/hdfs-buggy-detect`: `system/hdfs-liftlab` (THE HDFS branch: every HDFS ad hoc case on HBase's final
+engine, run on liftlab with the memory-ledger scheduling of `system/hbase` and `system/solr`) plus seven old HDFS bugs
+put back by hand, each making one of its ad hoc checks fail (§0). This file is self-contained: §0 is this branch's own
+work; §1-§5 are `system/hdfs-liftlab`'s (the goal, what it holds, the cluster, the trees, the results, how to run a case
+and the whole series, the rules), all of which hold here. The other systems' takeover files are their own branches'
+START-HERE (README "The branches"); HDFS's earlier bodies are STATE §0.
 
-- **Repo:** `git@github.com:JHSUYU/GraphChecker.git`, branch **`system/hdfs-liftlab`** (local repository
-  `/u/vnr3ne/GraphChecker`, `GC_REPO`; integration worktree `/bigtemp/vnr3ne/wt/gc-hdfs-liftlab`).
+## 0. The old HDFS bugs (this branch)
+
+The owner's goal (2026-10-26): put back by hand, on today's trees, the old bugs that make an ad hoc check's OWN
+declared throw fail, and detect each on the system's branch; a check truly beyond GraphChecker's capability is not
+forced. The table of all four systems, the owner's decisions and the engine support: [BUGGY-DETECT.md](BUGGY-DETECT.md).
+`system/hdfs-buggy-detect` is the CloudLab experiment's branch (2026-10-25..27, 01a320d58) with `system/hdfs-liftlab`
+merged in (c9aece5af): liftlab's scheduling, the engine support for HDFS-14311 kept (STATE §B).
+
+| case (`experiments/hadoop/`) | bug | point | tree = the fork `JHSUYU/hadoop` branch | CloudLab, 2026-10-26 | B1 (liftlab) |
+| --- | --- | --- | --- | --- | --- |
+| `hdfs-buggy-11741` | HDFS-11741 | hdfs-adhoc-11 | `graphchecker/hdfs-bug-11741` c0af4cbcfe5 | SAT, CLOCK_SKEW, native 10/10 | B1 (lead fills in) |
+| `hdfs-buggy-17383` | HDFS-17383 | hdfs-adhoc-12 | `graphchecker/hdfs-bug-17383` 1e519fa598a | SAT, lost heartbeat reply, 10/10 | B1 (lead fills in) |
+| `hdfs-buggy-12931` | HDFS-12931 | hdfs-adhoc-11 | `graphchecker/hdfs-bug-12931` d9fde9f9480 | SAT, lost key-update reply, 10/10 (caveat) | B1 (lead fills in) |
+| `hdfs-buggy-5766` | HDFS-5766 | hdfs-adhoc-11 | `graphchecker/hdfs-bug-5766` a8f16edc154 | SAT, lost key-update request, 10/10 (caveat) | B1 (lead fills in) |
+| `hdfs-buggy-10609` | HDFS-10609 | hdfs-adhoc-11 | `graphchecker/hdfs-bug-10609` bec4a7e0e52 | SAT, lost key-update request, 10/10 (caveat) | B1 (lead fills in) |
+| `hdfs-buggy-14075` | HDFS-14075 | hdfs-adhoc-45 | `graphchecker/hdfs-bug-14075` 7e8681a724d | SAT, LOCAL_IO fault, 10/10 | B1 (lead fills in) |
+| `hdfs-buggy-14311` | HDFS-14311 | hdfs-adhoc-24 | `graphchecker/hdfs-bug-14311` be29cd3c074 | not detected: a capability limit | B1 (lead fills in) |
+
+Each tree is `graphchecker/hdfs-checks` 899c200cc8e with one bug put back (its own commit) and a workload for it; the
+tree name is `hadoop-hdfs-bug-<jira>` (`experiments/hadoop/trees.tsv`), the list of cases
+`experiments/hadoop/hdfs-buggy-cases.tsv` (budget 21600 s each), each case's README the bug, what was put back, the
+workload, the declarations, the runs and the reading. `report.py` holds each case's expected mechanism
+(`EXPECTED_MECHANISM`). `hdfs-buggy-15590` is a case the owner dropped (its witness fires another throw): it is in no
+list and its tree branch was never pushed.
+
+- **The tree set** (liftlab: `/bigtemp/vnr3ne/wt/bd-trees-1`, Maven repositories `/bigtemp/vnr3ne/m2/bd-1`; built
+  2026-10-27/28, every workload PASSED: `/bigtemp/vnr3ne/analysis/buggy-detect-liftlab-2026-10-28/trees/`), from a built
+  checkout of this branch, on a Maven host:
+  `tools/onlift.sh -h <lift02-06 or lift08-10> -g 8 env GC_TREES=/bigtemp/vnr3ne/wt/bd-trees-1 GC_M2=/bigtemp/vnr3ne/m2/bd-1
+  experiments/hadoop/prepare-trees.sh hadoop-hdfs-bug-11741 hadoop-hdfs-bug-17383 hadoop-hdfs-bug-12931
+  hadoop-hdfs-bug-5766 hadoop-hdfs-bug-10609 hadoop-hdfs-bug-14075 hadoop-hdfs-bug-14311` (each tree cloned from the fork,
+  built against the checkout's jar, its workload run once natively: its log line `PASSED`/`FAILED`/`MISSING`). The lead's
+  wrapper: `/bigtemp/vnr3ne/analysis/buggy-detect-liftlab-2026-10-28/build-tree.sh <checkout> hadoop <tree...>`.
+- **The snapshot:** `/u/vnr3ne/gc-run/bd-hdfs-1` (c9aece5af, built): `bash tools/lib/worktree-add.sh
+  /u/vnr3ne/gc-run/<name> <commit> --detach`, then `tools/onlift.sh -h <a Maven host> -g 6 mvn -q -o package
+  -DskipTests` in it.
+- **One case, or all of them at once** (round B1 ran them together, the shared ledger spreading every replay over the 12
+  workers): from the snapshot, `env GC_OUT=/bigtemp/vnr3ne/gc-out/buggy-detect GC_TREES=/bigtemp/vnr3ne/wt/bd-trees-1
+  GC_M2=/bigtemp/vnr3ne/m2/bd-1 LIFTS="lift02 lift03 lift04 lift05 lift06 lift08 lift09 lift10 lift12 lift13 lift14
+  lift15" CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force12/j2sdk-image CASE_TIMEOUT_SECONDS=21600 PRUNE=0
+  CASES="hdfs-buggy-11741 ..." tools/rounds/launch-round.sh /u/vnr3ne/gc-run/bd-hdfs-1 <ROUND>` (`DRY=1` prints the heads
+  it would choose). Each case writes `$GC_OUT/accept-<ROUND>-buggy-<jira>`. The heads come from `LIFTS` by room: a head
+  on lift02 or lift03 fails PREFLIGHT when it cannot reach lift15 (B1's first 10609 and 14311 did: kept as
+  `accept-B1STOP-*`, relaunched). The lead's wrapper: `/bigtemp/vnr3ne/analysis/buggy-detect-liftlab-2026-10-28/launch-b1.sh
+  hdfs <case...>`; its log `RUNS.txt` beside it.
+- **Reading a case:** `GC_OUT=... tools/rounds/round-verify.sh <ROUND>` (how EXPLORE ended, z3 on the file, gaps, moved
+  roots, CONFIRM); the report `$run/report/<case>/report.md` (PASS = the expected mechanism, confirmed, reproduced
+  natively; again by hand: `python3 experiments/accept/report.py <case> $run/out/<case> <work dir>`);
+  `python3 tools/analysis/vacuity.py --latest --detail $run` on every UNSAT; `tools/analysis/smt-legend.py --repo
+  <tree> $run/out/<case>` on every SAT, against the case README's chain; native k/N and control in
+  `out/<case>/schedule/final/reproduce.json`.
+
+What is left for the old bugs: [TODO.md](TODO.md) "Buggy-detect".
+
+## The HDFS branch underneath (system/hdfs-liftlab)
+
+- **Repo:** `git@github.com:JHSUYU/GraphChecker.git`, branches **`system/hdfs-buggy-detect`** (this one; worktree
+  `/bigtemp/vnr3ne/wt/gc-hdfs-bd`) and **`system/hdfs-liftlab`** (integration worktree `/bigtemp/vnr3ne/wt/gc-hdfs-liftlab`);
+  local repository `/u/vnr3ne/GraphChecker`, `GC_REPO`.
 - **The trees:** the Hadoop fork `https://github.com/JHSUYU/hadoop.git`: `graphchecker/hdfs-checks` (899c200cc8e: every case
   but hdfs-adhoc-21 and hdfs-11741), `graphchecker/hdfs-checks-adhoc21` (25b4f1e531f: 21), `graphchecker/hdfs-11741`
   (6c86fca9a2b: 11741); `experiments/hadoop/trees.tsv`. The current tree set is `/bigtemp/vnr3ne/wt/hl-trees-1`

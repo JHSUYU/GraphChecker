@@ -1,4 +1,4 @@
-# Reproducing the HDFS checks from GitHub (`system/hdfs-liftlab`, §0-§5); the other systems (§6)
+# Reproducing the HDFS checks from GitHub (`system/hdfs-liftlab`, §0-§5); the other systems (§6); the old HDFS bugs (§7, `system/hdfs-buggy-detect`)
 
 Everything a run needs is on GitHub: GraphChecker's branch of the system (the engine, the case settings, the VM
 sources) and the system's fork, whose `graphchecker/*` branch is the tree under test (the adapter, the target markers,
@@ -9,12 +9,12 @@ its own branch's REPRODUCE (§6). Nothing on the cluster's disks is assumed besi
 | repository | branch | what it holds |
 | --- | --- | --- |
 | `git@github.com:JHSUYU/GraphChecker.git` (private) | `system/hdfs-liftlab` | **THE HDFS branch**: every HDFS case on HBase's engine with liftlab's scheduling (§0-§5), `results/hdfs/` |
-| | `system/hdfs-buggy-detect` | this branch plus the old HDFS bugs put back by hand (its own REPRODUCE) |
+| | `system/hdfs-buggy-detect` | `system/hdfs-liftlab` plus the old HDFS bugs put back by hand (§7) |
 | | `system/solr`, `system/hbase`, `system/zookeeper` | the other systems' cases, each with its `-buggy-detect` branch (§6) |
 | `https://github.com/JHSUYU/hadoop.git` (public fork) | `graphchecker/hdfs-checks` | the HDFS tree of every case but hdfs-adhoc-21 and hdfs-11741 (tree `hadoop-hdfs-study-r7`) |
 | | `graphchecker/hdfs-checks-adhoc21` | hdfs-adhoc-21's tree (`hadoop-hdfs-21`) |
 | | `graphchecker/hdfs-11741` | hdfs-11741's tree (`hadoop-hdfs-11741-r6`): trunk with HDFS-11741's fix reverted |
-| | `graphchecker/hdfs-bug-<jira>` | the old-bug trees of `system/hdfs-buggy-detect` (`hadoop-hdfs-bug-<jira>`) |
+| | `graphchecker/hdfs-bug-<jira>` | the old-bug trees of `system/hdfs-buggy-detect` (`hadoop-hdfs-bug-<jira>`, §7) |
 
 `system/hdfs-liftlab` replaces the two former HDFS branches, `system/hdfs` (the locked body, 39 cases) and `system/hdfs1`
 (the other 7), which stay on the remote for history: their checkouts ran the 46 cases as series EX1 (each case's
@@ -164,3 +164,56 @@ Each system's cases run from its own GraphChecker branch and its fork's tree, by
 back by hand run from each `system/<x>-buggy-detect` and the fork's `graphchecker/<x>-bug-<jira>` branches (zookeeper:
 `graphchecker/zk-bug-<jira>`, with `-control` beside each), HDFS's from `system/hdfs-buggy-detect`. The CloudLab record of
 the HDFS port is the tag `archive/system/hdfs-cloudlab`.
+
+## 7. The old HDFS bugs put back by hand (`system/hdfs-buggy-detect`)
+
+Seven cases, `experiments/hadoop/hdfs-buggy-<jira>` (HDFS-11741, -17383, -12931, -5766, -10609, -14075, -14311; list and
+budgets `experiments/hadoop/hdfs-buggy-cases.tsv`), each on its own tree `hadoop-hdfs-bug-<jira>` = the fork's
+`graphchecker/hdfs-bug-<jira>` (`experiments/hadoop/trees.tsv`: `graphchecker/hdfs-checks` with that one bug put back by
+hand and its workload). One branch holds everything, on liftlab as §0-§5:
+
+1. **GraphChecker** as §1, on the branch `system/hdfs-buggy-detect`:
+
+   ```bash
+   git clone -q --no-checkout -b system/hdfs-buggy-detect git@github.com:JHSUYU/GraphChecker.git ~/GraphChecker-hdfs-bd
+   git -C ~/GraphChecker-hdfs-bd sparse-checkout set --no-cone '/*' '!/third_party/'
+   git -C ~/GraphChecker-hdfs-bd checkout -q system/hdfs-buggy-detect
+   (cd ~/GraphChecker-hdfs-bd && tools/onlift.sh -h <a Maven host> -g 6 mvn -q package -DskipTests)
+   source ~/GraphChecker-hdfs-bd/tools/lib/gc-env.sh
+   ```
+
+2. **The image** as §2 (the VM sources are `system/hbase`'s; on liftlab `/bigtemp/vnr3ne/vm-force12/j2sdk-image`).
+
+3. **The trees**, into a tree set of their own:
+
+   ```bash
+   cd ~/GraphChecker-hdfs-bd
+   tools/onlift.sh -h <a Maven host> -g 8 env GC_TREES=$GC_BULK/wt/bd-trees GC_M2=$GC_BULK/m2/bd \
+     experiments/hadoop/prepare-trees.sh hadoop-hdfs-bug-11741 hadoop-hdfs-bug-17383 hadoop-hdfs-bug-12931 \
+     hadoop-hdfs-bug-5766 hadoop-hdfs-bug-10609 hadoop-hdfs-bug-14075 hadoop-hdfs-bug-14311 > $GC_BULK/prepare-hdfs-bd.log 2>&1
+   ```
+
+   As §3: each tree cloned from the fork, built against this checkout's jar, its workload run once natively (one
+   `PASSED`/`FAILED`/`MISSING` line each). On liftlab the set is `/bigtemp/vnr3ne/wt/bd-trees-1` (`GC_M2=/bigtemp/vnr3ne/m2/bd-1`),
+   every workload PASSED (2026-10-28).
+
+4. **The cases**, all at once (the shared ledger spreads every replay over `LIFTS`), from a frozen snapshot
+   (`tools/lib/worktree-add.sh <dir> <commit> --detach`, built as in step 1):
+
+   ```bash
+   export GC_OUT=$GC_BULK/gc-out/repro-hdfs-bd GC_TREES=$GC_BULK/wt/bd-trees GC_M2=$GC_BULK/m2/bd \
+     CAUSYNTH_CUSTOM_JDK_HOME=$GC_BULK/vm/hdfs-liftlab/j2sdk-image CASE_TIMEOUT_SECONDS=21600 PRUNE=0
+   mkdir -p $GC_OUT
+   CASES="$(awk -F'\t' '$1 !~ /^#/ && NF {print $1}' experiments/hadoop/hdfs-buggy-cases.tsv | tr '\n' ' ')" \
+     tools/rounds/launch-round.sh <snapshot> R1
+   ```
+
+   Each case writes `$GC_OUT/accept-R1-buggy-<jira>/` (`DRY=1` first prints the head each would get; on liftlab a head on
+   lift02 or lift03 cannot reach lift15 and fails PREFLIGHT: relaunch that case). One case: `CASES=hdfs-buggy-17383`, or
+   `tools/rounds/launch-run.sh <snapshot> hdfs-buggy-17383 R1-buggy-17383` as §4.
+
+5. **Reading them**, as §5: `tools/rounds/round-verify.sh R1`; each run's `report/<case>/report.md` (PASS: the case's
+   expected mechanism in `experiments/accept/report.py`, confirmed in the VM, reproduced natively with control 0/N);
+   `tools/analysis/vacuity.py --latest --detail <run>` on an UNSAT; `tools/analysis/smt-legend.py --repo <tree>
+   <run>/out/<case>` against the chain in the case's README. The verdicts to compare with are
+   [handover/BUGGY-DETECT.md](handover/BUGGY-DETECT.md) (six SAT, HDFS-14311 not detected).

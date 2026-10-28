@@ -1,17 +1,49 @@
-# State: HDFS on liftlab (system/hdfs-liftlab, THE HDFS branch); the former HDFS bodies; the other systems' branches
+# State: the old HDFS bugs (system/hdfs-buggy-detect) on THE HDFS branch (system/hdfs-liftlab); the former HDFS bodies
 
-This branch, `system/hdfs-liftlab`: section L below (THE HDFS branch, replacing `system/hdfs` and `system/hdfs1`: every
-HDFS case on HBase's engine with liftlab's memory-ledger scheduling; the trees the Hadoop fork's `graphchecker/hdfs-checks*`
-and `graphchecker/hdfs-11741`; the final series H1; [../REPRODUCE.md](../REPRODUCE.md) §0-§5). The HDFS group on its
+This branch, `system/hdfs-buggy-detect`: section B below (seven old HDFS bugs put back by hand, each making one ad hoc
+check fail; [../REPRODUCE.md](../REPRODUCE.md) §7), on top of `system/hdfs-liftlab`: section L (THE HDFS branch,
+replacing `system/hdfs` and `system/hdfs1`: every HDFS case on HBase's engine with liftlab's memory-ledger scheduling; the
+trees the Hadoop fork's `graphchecker/hdfs-checks*` and `graphchecker/hdfs-11741`; the final series H1;
+[../REPRODUCE.md](../REPRODUCE.md) §0-§5). The HDFS group on its
 earlier bodies (`system/hdfs`, `system/hdfs1`; §0, history) is finished: all 46 cases have an exported `.smt` read by
 hand against the HDFS code, one row each in [../STATUS.md](../STATUS.md) "HDFS checks" (07, the last, closed on
 2026-10-07: EX1-adhoc-07e on `system/hdfs1` 8c446418b). Every case then ran alone on the ten lifts for its time breakdown
 (series EX1, `/bigtemp/vnr3ne/gc-out/hdfs-excl`; the 46 rows are [../design/PERFORMANCE.md](../design/PERFORMANCE.md) §6).
-The other systems (HBase, ZooKeeper, Solr) and the old-bug branches are on their own branches (§O, §2). Read this file,
+The other systems (HBase, ZooKeeper, Solr) and their old-bug branches are on their own branches (§O, §2). Read this file,
 then [TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [CHECKING.md](CHECKING.md),
 [AGENTS.md](AGENTS.md), [OPERATIONS.md](OPERATIONS.md) and [PARALLEL.md](PARALLEL.md). The design is in
 [../design/](../design/README.md); every check's state is in [../checks/README.md](../checks/README.md); done / partial /
 missing per requirement in [../STATUS.md](../STATUS.md).
+
+## B. The old HDFS bugs (system/hdfs-buggy-detect, 2026-10-25..28) -- read this first if you take over the old bugs
+
+The owner's goal (2026-10-26): from the owner's list of old bugs, those that make an ad hoc check's OWN declared throw
+fail, put back with small changes on today's trees and detected on each system's branch; a check truly beyond
+GraphChecker's capability is not forced. The table of all four systems, the owner's decisions (2026-10-27/28) and every
+branch's engine support: [BUGGY-DETECT.md](BUGGY-DETECT.md).
+
+**`system/hdfs-buggy-detect`** = the experiment's branch as run on CloudLab (01a320d58: the seven cases, `report.py`'s
+expected mechanisms, `hdfs-buggy-cases.tsv` and the `trees.tsv` rows, `prepare-trees.sh` reading every
+`hdfs-*cases.tsv`, BUGGY-DETECT.md, HANDOVER-2026-10-28.md) with `system/hdfs-liftlab` a3e1881d5 merged in (c9aece5af), so
+its scheduling, gc-env and cluster are §L's. The engine support it adds, for HDFS-14311 (each independently reviewed):
+ba6580331, 131bf16d9, 7f562ef37, 252ed18da, 6a7c74e61, 838b0c888 -- an earlier or later concurrent writer may move past a
+write the reader cannot pass (`Arms#eligible`, IDENTITY), one FlipQuery choice per observed version, CONFIRM holding the
+reader after the passed write's activation exits (`StateClosure#holdAfter`, PIPELINE §10). The lead's worktree:
+`/bigtemp/vnr3ne/wt/gc-hdfs-bd`.
+
+**The cases** (`experiments/hadoop/hdfs-buggy-<jira>/`, list `hdfs-buggy-cases.tsv`, budget 21600 s each): HDFS-11741,
+-17383, -12931, -5766, -10609, -14075, -14311 at the points hdfs-adhoc-11 (11741, 12931, 5766, 10609), -12 (17383), -45
+(14075) and -24 (14311). Each runs on its own tree `hadoop-hdfs-bug-<jira>` = the fork's `graphchecker/hdfs-bug-<jira>`
+(`graphchecker/hdfs-checks` 899c200cc8e with one bug put back and its workload; heads in START-HERE §0).
+`hdfs-buggy-15590` (dropped by the owner: its witness fires another throw) is in no list; its tree branch was never pushed.
+
+**On liftlab** (the lead, 2026-10-28): tree set `/bigtemp/vnr3ne/wt/bd-trees-1` (every bug tree of the four systems, each
+system's `prepare-trees.sh`; Maven repositories `/bigtemp/vnr3ne/m2/bd-1`; build logs
+`/bigtemp/vnr3ne/analysis/buggy-detect-liftlab-2026-10-28/trees/`: the seven HDFS workloads PASSED), snapshot
+`/u/vnr3ne/gc-run/bd-hdfs-1` (c9aece5af), image `/bigtemp/vnr3ne/vm-force12/j2sdk-image`; round B1, all seven at once
+through `tools/rounds/launch-round.sh` on the 12 workers (driver `launch-b1.sh`, log `RUNS.txt`, both in
+`/bigtemp/vnr3ne/analysis/buggy-detect-liftlab-2026-10-28/`), runs `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-buggy-<jira>`:
+B1 (lead fills in). The CloudLab runs' names (B11741b, B17383a, ...) stay in each case's README as the record.
 
 ## L. HDFS on liftlab (system/hdfs-liftlab, 2026-10-26/27) -- read this first if you take over HDFS
 
@@ -75,7 +107,7 @@ their code only as far as `system/hbase` (26910df2a) and `system/solr`'s four fi
   `JHSUYU/zookeeper` `graphchecker/zookeeper-checks`; `system/zookeeper-buggy-detect`.
 - **Solr** (finished 2026-10-26): `system/solr` (its STATE §S, `results/solr/`), the fork `JHSUYU/solr`
   `graphchecker/solr-checks`; `system/solr-buggy-detect`.
-- **The old HDFS bugs put back by hand**: `system/hdfs-buggy-detect` (this branch plus the cases
+- **The old HDFS bugs put back by hand**: `system/hdfs-buggy-detect` (this branch, §B: `system/hdfs-liftlab` plus the cases
   `experiments/hadoop/hdfs-buggy-<jira>`, their trees `hadoop-hdfs-bug-<jira>` = the fork's `graphchecker/hdfs-bug-<jira>`,
   and the engine support they needed; its `docs/handover/BUGGY-DETECT.md`).
 ## 0. The end state: two branches (owner 2026-10-06) -- superseded by §L (2026-10-27)
@@ -139,7 +171,7 @@ branches"). THE HDFS branch is `system/hdfs-liftlab` (§L, 2026-10-27); the two 
 | `system/hdfs-liftlab` | **THE HDFS branch** (§L): every HDFS case on HBase's engine, liftlab's memory-ledger scheduling, `results/hdfs/`; trees: the fork `JHSUYU/hadoop` `graphchecker/hdfs-checks`, `-adhoc21`, `hdfs-11741`. Replaces the two below |
 | `system/hdfs` | history: the locked HDFS body and its 39 cases (§0) |
 | `system/hdfs1` | history: the newest HDFS body of 2026-10-08 and the other 7 cases (§0) |
-| `system/hdfs-buggy-detect` | this branch plus the old HDFS bugs put back by hand (§O); trees: the fork's `graphchecker/hdfs-bug-<jira>` |
+| `system/hdfs-buggy-detect` | **this branch**: `system/hdfs-liftlab` plus the old HDFS bugs put back by hand (§B); trees: the fork's `graphchecker/hdfs-bug-<jira>` |
 | `system/solr`, `system/solr-buggy-detect` | the Solr group (from `system/hdfs1`) and its old bugs; tree: the fork `JHSUYU/solr` `graphchecker/solr-checks` (§O) |
 | `system/hbase`, `system/hbase-buggy-detect` | the HBase group (from `system/solr`) and its old bugs; tree: the fork `JHSUYU/hbase` `graphchecker/hbase-checks` (§O) |
 | `system/zookeeper`, `system/zookeeper-buggy-detect` | the ZooKeeper group (from `system/hbase`) and its old bugs; tree: the fork `JHSUYU/zookeeper` `graphchecker/zookeeper-checks` (§O) |
@@ -194,7 +226,7 @@ The fork's 16 older `gc/*` branches (the per-bug trees, `gc/hdfs-unified`, `gc/h
 `gc/hdfs-study-r5`/`r6`, `gc/hdfs-11741`/`-r5`) were deleted, bundled first in
 `/bigtemp/vnr3ne/handover/2026-10-08/hadoop-gc-branches.bundle`; `main`'s cases read `gc/hdfs-unified-dtx`
 (`/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx`, local). The old-bug trees (`hadoop-hdfs-bug-<jira>` = the fork's
-`graphchecker/hdfs-bug-<jira>`) are `system/hdfs-buggy-detect`'s (its `trees.tsv`; tree set `/bigtemp/vnr3ne/wt/bd-trees-1`).
+`graphchecker/hdfs-bug-<jira>`) are this branch's (`trees.tsv`; tree set `/bigtemp/vnr3ne/wt/bd-trees-1`, §B).
 
 VM image `/bigtemp/vnr3ne/vm-force12/j2sdk-image` serves `system/hdfs-liftlab` (its VM sources are `system/hbase`'s).
 VM image `/bigtemp/vnr3ne/vm-hg5/j2sdk-image` serves both former HDFS branches (sources `hdfs-vm-hg5` 742f13363, the same in

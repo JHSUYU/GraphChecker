@@ -81,6 +81,10 @@ The run's budget is `hdfs-buggy-cases.tsv`'s 21600 s.
 
 ## Result: SAT, MARKER_FLIPPED by a lost key-update heartbeat request, confirmed and reproduced 10/10 (B5766a, PASS)
 
+On liftlab, round B1 (2026-10-28, `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-buggy-5766`, snapshot
+`/u/vnr3ne/gc-run/bd-hdfs-1`, tree set `/bigtemp/vnr3ne/wt/bd-trees-1`): B1 (lead fills in). The rounds below ran on
+CloudLab (their `/bulk` paths are that cluster's, no longer used); they stay as the record.
+
 Round B5766a (2026-10-26, snapshot `/bulk/gc-run/hb5766-1` = GraphChecker 0c3de7a23, tree set
 `/bulk/trees/b5766` = a8f16edc154, `/bulk/gc-out/hdfs-buggy/5766`): 610 s, `SAT_CANDIDATE`
 `FINAL_READY`, `report.py` **PASS**: `MARKER_FLIPPED` at valuation 1, `polarityDecides` true (the
