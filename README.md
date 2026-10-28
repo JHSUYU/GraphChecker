@@ -58,7 +58,7 @@ on liftlab:
 | --- | --- | --- | --- |
 | HDFS | `system/hdfs-liftlab` (replaces `system/hdfs` and `system/hdfs1`, kept on the remote as history) | `system/hdfs-buggy-detect` (this branch) | `JHSUYU/hadoop`: `graphchecker/hdfs-checks`, `graphchecker/hdfs-checks-adhoc21`, `graphchecker/hdfs-11741` (the ad hoc trees), `graphchecker/hdfs-checks-adhoc07` (`system/hdfs1`'s 07), `graphchecker/hdfs-bug-<jira>` (one old bug each) |
 | HBase | `system/hbase` | `system/hbase-buggy-detect` | `JHSUYU/hbase`: `graphchecker/hbase-checks`, `graphchecker/hbase-bug-<jira>` |
-| ZooKeeper | `system/zookeeper` | `system/zookeeper-buggy-detect` | `JHSUYU/zookeeper`: `graphchecker/zookeeper-checks`, `graphchecker/zk-bug-<jira>`, `graphchecker/zk-bug-<jira>-control` (the same workload on the fixed code) |
+| ZooKeeper | `system/zookeeper` | `system/zookeeper-buggy-detect` | `JHSUYU/zookeeper`: the tag `graphchecker/zookeeper-checks-liftlab` (51b213562, `system/zookeeper`'s tree), `graphchecker/zookeeper-checks`, `graphchecker/zk-bug-<jira>`, `graphchecker/zk-bug-<jira>-control` (the same workload on the fixed code) |
 | Solr | `system/solr` | `system/solr-buggy-detect` | `JHSUYU/solr`: `graphchecker/solr-checks`, `graphchecker/solr-bug-<jira>` |
 
 `main` is the 2026-10-03 body (round V25). Each `system/<x>-buggy-detect` is `system/<x>` plus the old bugs that make one

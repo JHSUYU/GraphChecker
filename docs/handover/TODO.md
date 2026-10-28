@@ -57,8 +57,9 @@ STATUS and `results/hdfs` cite these numbers:
 4. **A fresh clone runs the series** (owner: push so that a clone reproduces): check REPRODUCE §0-§5 from GitHub alone (an
    empty `GC_TREES`, the fork's branches, the build, every case valid, one case to its verdict), as `system/hbase`'s
    REPRODUCE was checked on 2026-10-22. Not yet done for this branch.
-5. **The CloudLab setup scripts left on this branch**: `tools/cloudlab/` and `tools/vm/build-image-docker.sh` serve no
-   liftlab run (delete them); gc-env's default `LIFTS` still names lift07 (export `LIFTS` without it while it is down).
+5. **The CloudLab setup scripts left on this branch** (done 2026-10-28, 294f04cdd): `tools/cloudlab/` and
+   `tools/vm/build-image-docker.sh` are deleted; gc-env's default `LIFTS` is the 11 reachable workers (no lift07, lift11,
+   lift15).
 6. **The own-witness pass and equal planted skews** on consecutive cells of one clock (the second jump is 0 and drops out of
    movedRoots): the own claim is lost, never wrong (PIPELINE §9).
 7. **The canonical witness** (agent D, branch `hdfs-decide` 1d70822bd, built and unit-tested, not reviewed, never pushed:
