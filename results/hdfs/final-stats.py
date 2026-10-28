@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""final-stats.py: the HDFS final table on CloudLab (as results/hbase and results/zookeeper): per case its final run
+"""final-stats.py: the HDFS final table on liftlab (as results/hbase and results/zookeeper): per case its final run
 (the first round of --order whose run accept-<round>-<short> has a summary row), its verdict, time in four parts
 and the final closure's size. seeding = PREFLIGHT..IMPORT (+ZKKEYS); exploration = EXPLORE; compose+solver = COMPOSE +
 SOLVE + DECIDE; other = CONFIRM + EMIT + REPRODUCE; refuted = the wall of the claims CONFIRM refuted before the last;
 regions / occurrences = the final closure; rounds = EXPLORE's obligation generations. A round --alone names ran its
-case alone on the five nodes; any other ran beside other cases.
-Usage: final-stats.py --order F2,F1 --cases experiments/hadoop/hdfs-cases.tsv [--out /bulk/gc-out/hdfs-final]
-       [--alone F2]"""
+case alone on the liftlab workers; any other ran beside other cases.
+Usage: final-stats.py --order H1 --cases experiments/hadoop/hdfs-cases.tsv [--out /bigtemp/vnr3ne/gc-out/hdfs-final]
+       [--alone H1]"""
 import argparse, glob, json, os, re
 
 SEED = ['PREFLIGHT', 'FREEZE_TOOL', 'SETUP', 'FREEZE', 'SEED', 'PLAN', 'INSTRUMENT', 'REPLAY', 'IMPORT', 'ZKKEYS']
