@@ -20,7 +20,7 @@ cluster's disks is assumed besides the operating system packages below (§0).
 | | `graphchecker/hdfs-11741` | hdfs-11741's tree (`hadoop-hdfs-11741-r6`): trunk with HDFS-11741's fix reverted |
 | `https://github.com/JHSUYU/solr.git` (public fork) | `graphchecker/solr-checks` | the Solr tree (`lucene-solr-checks`) |
 | `https://github.com/JHSUYU/hbase.git` (public fork) | `graphchecker/hbase-checks` | the HBase tree (`hbase-checks`) |
-| `https://github.com/JHSUYU/zookeeper.git` (public fork) | `graphchecker/zookeeper-checks` | the ZooKeeper tree (`zookeeper-checks`) |
+| `https://github.com/JHSUYU/zookeeper.git` (public fork) | tag `graphchecker/zookeeper-checks-liftlab` | the ZooKeeper tree (`zookeeper-checks`, 51b213562) |
 | each fork | `graphchecker/<x>-bug-<jira>` | one old bug put back on the system's tree (the buggy-detect branches' cases) |
 
 Which branch runs which case, with the case's budget and what series EX1 ended with, is
@@ -292,7 +292,7 @@ The 16 ZooKeeper cases ([`experiments/zookeeper/zookeeper-cases.tsv`](../experim
 case, branch, budget; each check's target, workload and state: [checks/ZOOKEEPER.md](checks/ZOOKEEPER.md) §E; the
 final series' `.smt`, claims and time table: [`results/zookeeper/`](../results/zookeeper/README.md)) need two branches:
 - **the code:** GraphChecker's `system/zookeeper` (the engine, every case's settings, the VM sources);
-- **the adapter:** the branch `graphchecker/zookeeper-checks` of the public fork `https://github.com/JHSUYU/zookeeper.git`
+- **the adapter:** the tag `graphchecker/zookeeper-checks-liftlab` (51b213562) of the public fork `https://github.com/JHSUYU/zookeeper.git`
   (tree `zookeeper-checks`, [`experiments/zookeeper/trees.tsv`](../experiments/zookeeper/trees.tsv)): Apache ZooKeeper
   master `eab165995` on Java 8, with ZOOKEEPER-5094 and ZOOKEEPER-5088 unfixed (their fixes, PR 2459 and PR 2454, are
   the fork's branches `fix-trunc-sync-shutdown-state` and `fix/observer-master-pending-proposals`), plus the adapter
@@ -328,14 +328,9 @@ final series' `.smt`, claims and time table: [`results/zookeeper/`](../results/z
    tools/onlift.sh -g 8 experiments/zookeeper/prepare-trees.sh > $GC_BULK/prepare-zookeeper.log 2>&1
    ```
 
-   The fork's branch has moved past the final series' tree: it is at 889f0e96 since 2026-10-25 (`QuorumBase` starts its
-   peers from the highest id down; a workload's wait of `CONNECTION_TIMEOUT` or more for a server never times out: the
-   base of the buggy-detect trees), the final series ran on 51b213562 (2b6e17bf8 for every case but 04 and 13, which
-   differ only there). To rebuild that tree exactly, clone it before the script and check the commit out:
-   `git clone -q -b graphchecker/zookeeper-checks https://github.com/JHSUYU/zookeeper.git $GC_TREES/zookeeper-checks &&
-   git -C $GC_TREES/zookeeper-checks checkout -q 51b213562`.
-
-   `prepare-trees.sh` clones the fork's `graphchecker/zookeeper-checks` into `$GC_TREES/zookeeper-checks` (a directory
+   `prepare-trees.sh` clones the fork's tag `graphchecker/zookeeper-checks-liftlab` (51b213562, the final series' tree;
+   2b6e17bf8 for every case but 04 and 13, which differ only there; `trees.tsv`) into `$GC_TREES/zookeeper-checks` (the
+   fork's branch `graphchecker/zookeeper-checks` has moved on to 889f0e96, the buggy-detect trees' base; a directory
    already there is only built), installs the checkout's jar into the tree's Maven repository (`ZOOKEEPER_MAVEN_REPO`,
    by default `$GC_M2/zookeeper<the tree's path, / as _>`; `tools/onlift.sh` passes no environment, so give it inside
    the command, `env ZOOKEEPER_MAVEN_REPO=...`): the tree compiles against GraphChecker's `MessageDoors` and

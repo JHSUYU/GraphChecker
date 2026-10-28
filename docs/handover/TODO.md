@@ -605,7 +605,8 @@ is not stated. Recorded only, not chased.
 
 The 16 cases ran in the final series; `results/zookeeper/README.md` has each verdict and START-HERE.md the takeover.
 Both branches are on GitHub: GraphChecker's `system/zookeeper` (pushed 2026-10-22, owner) and the fork's
-`graphchecker/zookeeper-checks` (the final series' tree 51b213562; the branch is at 889f0e96 since 2026-10-25, STATE §Z);
+tag `graphchecker/zookeeper-checks-liftlab` (51b213562, the final series' tree; the branch is at 889f0e96 since
+2026-10-25, STATE §Z);
 REPRODUCE §8 runs every case from a fresh clone of the two. ZooKeeper's old bugs put back (ZOOKEEPER-710, -2886) and the
 engine work they and the zk-int line added are `system/zookeeper-buggy-detect` (its TODO). Everything below is parked engine or adapter work with its
 evidence; none of it blocks a verdict. The cross-cutting items this session found (a logged event's publication-order

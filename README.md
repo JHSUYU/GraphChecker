@@ -33,7 +33,8 @@ the engine support they needed. The CloudLab record (2026-10-24..28) is the tags
 
 The code under test is each system's fork, `github.com/JHSUYU/{hadoop,hbase,zookeeper,solr}` (never apache):
 `graphchecker/<x>-checks` is the ad hoc tree (hadoop also `graphchecker/hdfs-checks-adhoc07`, `-adhoc21` and
-`graphchecker/hdfs-11741`), `graphchecker/<x>-bug-<jira>` one old bug put back on it (hadoop `hdfs-bug-*`, hbase
+`graphchecker/hdfs-11741`; zookeeper's final series ran on the tag `graphchecker/zookeeper-checks-liftlab`, 51b213562,
+since the branch moved on to the buggy-detect trees' base), `graphchecker/<x>-bug-<jira>` one old bug put back on it (hadoop `hdfs-bug-*`, hbase
 `hbase-bug-*`, zookeeper `zk-bug-*` with the fixed-code controls `zk-bug-*-control`, solr `solr-bug-*`); each
 `experiments/*/trees.tsv` names the branches its system's cases read.
 
