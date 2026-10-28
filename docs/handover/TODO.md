@@ -134,7 +134,7 @@ unpublished rows).
 An activation whose root is still running when the session ends is stranded (`ConcolicResultPublisher#
 strandWithoutTerminal`, TERMINAL_NEVER_REACHED): its path is withheld, only its mints publish, yet the replay's
 verdict can stand ADMITTED (`FocusedReplay` saw the flipped arm taken). A nested path then cut from that session
-inherits a flip the session does not state: W21 (`/bigtemp/vnr3ne/gc-out/hdfs-21w/accept-W21`), BLOCKING EXPLORE
+inherits a flip the session does not state: W21 (`hdfs-21w/accept-W21`, no longer on disk), BLOCKING EXPLORE
 `ADMISSION_GAP`s `updateActorStatesFromHeartbeat` u93#2/#3/#5 at the actor body occurrence 1bc6719160f7e094
 (obligations ce70720a45fc2503, 12f86ac9a0cf4a8a, 97207921c23d9e9c); 4 of W21's 5 sessions stranded that body
 (PS2-21: the same at u93#4). Fix, one of: (a) a stranded activation publishes CUT, as a bounded cut does: the VM
