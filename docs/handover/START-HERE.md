@@ -4,7 +4,7 @@ You are the next lead (a coding agent that may run up to 5 coding agents). This 
 checks, finished 2026-10-21: §1-§5 below) plus the old HBase bugs that make an ad hoc check fail, put back by hand on
 today's tree, and the engine support they needed (§0; the four systems' table: [BUGGY-DETECT.md](BUGGY-DETECT.md)). Repo:
 `/u/vnr3ne/GraphChecker`, GitHub `git@github.com:JHSUYU/GraphChecker.git`, branch `system/hbase-buggy-detect` (local
-`bd-liftlab-hbase`, worktree `/bigtemp/vnr3ne/wt/gc-hbase-bd`). The trees are the HBase fork's
+worktree `/bigtemp/vnr3ne/wt/gc-hbase-bd`). The trees are the HBase fork's
 (`https://github.com/JHSUYU/hbase.git`) `graphchecker/hbase-bug-<jira>`, each `graphchecker/hbase-checks` b5d5cc6a20 with
 one bug put back, its workload and the point's target marker. HDFS, ZooKeeper and Solr are on their own branches
 (README "Branches").

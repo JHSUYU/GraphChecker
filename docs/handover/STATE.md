@@ -18,7 +18,7 @@ hbase-buggy-28533 (HBASE-28533 at hbase-adhoc-15: README only, not reachable at 
 owner closed it as it stands). Each case directory's README has the bug, the put-back commits, the workload, every
 declaration and the runs.
 
-**The branch** (GitHub `system/hbase-buggy-detect`; local `bd-liftlab-hbase`, worktree `/bigtemp/vnr3ne/wt/gc-hbase-bd`):
+**The branch** (GitHub `system/hbase-buggy-detect`; local worktree `/bigtemp/vnr3ne/wt/gc-hbase-bd`):
 `system/hbase` 26910df2a, then the CloudLab work it was made on (the cases, their trees, the engine support below, and
 CloudLab's scheduling layer, `archive/system/hbase-cloudlab`), then b978bacb8: CloudLab's scheduling layer reverted --
 `run_engine.sh`, `tools/` and the case settings are `system/hbase`'s (the host ledger charges memory, 70 % of a lift; a
