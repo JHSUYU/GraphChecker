@@ -37,7 +37,7 @@ kept only as the tags `archive/system/<x>-cloudlab`.
 | --- | --- |
 | `hadoop` | `graphchecker/hdfs-checks` (the HDFS ad hoc tree), `graphchecker/hdfs-checks-adhoc07`, `graphchecker/hdfs-checks-adhoc21`, `graphchecker/hdfs-11741`; `graphchecker/hdfs-bug-<jira>` (11741, 17383, 12931, 5766, 10609, 14075, 14311) |
 | `hbase` | `graphchecker/hbase-checks` (the HBase ad hoc tree); `graphchecker/hbase-bug-<jira>` (15039, 20642, 28533) |
-| `zookeeper` | `graphchecker/zookeeper-checks` (the ZooKeeper ad hoc tree); `graphchecker/zk-bug-<jira>` and `graphchecker/zk-bug-<jira>-control` (710, 2886) |
+| `zookeeper` | the tag `graphchecker/zookeeper-checks-liftlab` (51b213562, the ZooKeeper ad hoc tree `results/zookeeper` was made on), `graphchecker/zookeeper-checks` (it plus CloudLab's three workload workarounds); `graphchecker/zk-bug-<jira>` and `graphchecker/zk-bug-<jira>-control` (710, 2886) |
 | `solr` | `graphchecker/solr-checks` (the Solr ad hoc tree); `graphchecker/solr-bug-<jira>` (9440, 6101, 6197) |
 
 **HDFS** (46 cases, finished): `system/hdfs-liftlab` runs every case on HBase's engine with liftlab's scheduling
@@ -57,8 +57,8 @@ REPRODUCE §8, `results/zookeeper/`); `system/zookeeper-buggy-detect` ZOOKEEPER-
 The owner (long-term, 2026-10-05): "一定要最大化利用10个server。这10个server配有nfs,你只要做好代码隔离等。可以大大加速的。这是你的
 长期记忆"; "我们一个case内oblication当然可以分配到多机"; "我们不必强行要求独占". **A lead or agent that takes over keeps the
 workers full at all times; nothing waits in series except on a real dependency.** The workers are `lift02`-`lift15`
-but `lift11` (the control host where the sessions run) and `lift07` (unreachable since 2026-10-23): set `LIFTS` to the
-other twelve, whatever `tools/lib/gc-env.sh`'s default lists. How the last leads did it (details and lessons:
+but `lift11` (the control host where the sessions run), `lift07` (unreachable since 2026-10-23) and `lift15` (lift02 and
+lift03 cannot reach it): `tools/lib/gc-env.sh`'s default `LIFTS` is these eleven. How the last leads did it (details and lessons:
 [docs/handover/PARALLEL.md](docs/handover/PARALLEL.md)):
 
 1. **Inside one case:** every obligation (a solve, then a replay), GROW re-run, CONFIRM and native reproduction is a
@@ -192,7 +192,7 @@ is written.
 `tools/lib/gc-env.sh` states, once for every tool and for `run_engine.sh`, the output root
 `GC_OUT` (default `/bigtemp/vnr3ne/gc-out`), the host ledger `CAUSYNTH_HOST_LEDGER` (default
 `/bigtemp/vnr3ne/gc-out/hosts`, one for the cluster whatever `GC_OUT` a run writes) and the hosts
-`LIFTS` (its default lists lift02-15; give the twelve workers, without lift07 and lift11).
+`LIFTS` (its default is the 11 reachable workers: lift02-15 without lift07, lift11 and lift15).
 
 Obligations of a campaign (each a solve, then its replay when the solver answers SAT, two starts),
 and GROW's re-runs, fan out over the hosts in

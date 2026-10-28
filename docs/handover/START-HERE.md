@@ -89,9 +89,9 @@ The study checks (`results/hbase/README.md` has each one's reading):
 fork's `graphchecker/hbase-checks` (`GC_TREES=<dir> HBASE_MAVEN_REPO=<repo> experiments/hbase/prepare-trees.sh hbase-checks`;
 pass the variables inside the command when you use `tools/onlift.sh`, which forwards no environment), then
 `CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force12/j2sdk-image GC_TREES=<tree set> tools/rounds/launch-run.sh <snapshot> <case> <tag>`
-on a head that reaches every worker (never lift02/03, which cannot reach lift15), or every case with
-`tools/rounds/run-series.sh`; the workers are lift02-15 but lift07 (unreachable since 2026-10-23) and lift11 (the control
-host): give `LIFTS` the other twelve. OPERATIONS.md §10 has the details.
+on a head that reaches every worker, or every case with `tools/rounds/run-series.sh`; the workers are gc-env's default
+`LIFTS`, lift02-15 but lift07 (unreachable since 2026-10-23), lift11 (the control host) and lift15 (lift02/03 cannot
+reach it). OPERATIONS.md §10 has the details.
 
 ## 2. Read, in this order
 
