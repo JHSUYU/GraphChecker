@@ -49,9 +49,9 @@ START-HERE §3).
 
 | case | CloudLab, 2026-10-26 (the case README's record) | liftlab B1 |
 | --- | --- | --- |
-| solr-buggy-9440 | S9440b: SAT MARKER_FLIPPED by a ZooKeeper SessionExpired on node1's leader-election create during the core CREATE; CONFIRM, native REPRODUCE 10/10, control 0/10, report.py PASS; 821 s | B1 (lead fills in) |
-| solr-buggy-6101 | S6101g: SAT MARKER_FLIPPED, CONFIG `legacyCloud` true -> false cluster-wide (the field plant); CONFIRM, native 10/10, control 0/10, PASS; 1102 s | B1 (lead fills in) |
-| solr-buggy-6197 | S6197g: the same, MIGRATE; CONFIRM, native 10/10, control 0/10, PASS; 754 s | B1 (lead fills in) |
+| solr-buggy-9440 | S9440b: SAT MARKER_FLIPPED by a ZooKeeper SessionExpired on node1's leader-election create during the core CREATE; CONFIRM, native REPRODUCE 10/10, control 0/10, report.py PASS; 821 s | B1: SAT, CONFIRM, native 6/10, control 0/10, report.py PASS, 907 s; CloudLab 10/10 (B1-solr-buggy-9440) |
+| solr-buggy-6101 | S6101g: SAT MARKER_FLIPPED, CONFIG `legacyCloud` true -> false cluster-wide (the field plant); CONFIRM, native 10/10, control 0/10, PASS; 1102 s | B1: SAT, CONFIRM, native 10/10, control 0/10, report.py PASS, 884 s (B1-solr-buggy-6101) |
+| solr-buggy-6197 | S6197g: the same, MIGRATE; CONFIRM, native 10/10, control 0/10, PASS; 754 s | B1: SAT, CONFIRM, native 10/10, control 0/10, report.py PASS, 988 s (B1-solr-buggy-6197) |
 
 ## S. Solr: every case has its `.smt` (the owed cases, 2026-10-22..26) -- read this first if you take over Solr
 

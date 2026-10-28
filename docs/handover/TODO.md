@@ -15,7 +15,7 @@ passes. Branch, tree and path details are in [STATE.md](STATE.md); every check w
 ## Buggy-detect (this branch, liftlab)
 
 1. **Round B1** (the lead, 2026-10-28): the three cases on liftlab (START-HERE §3); each verdict, time and native k/N
-   goes into BUGGY-DETECT.md, STATE §B and the case README beside CloudLab's. B1 (lead fills in). The cases now take
+   goes into BUGGY-DETECT.md, STATE §B and the case README beside CloudLab's. B1: all three SAT again with CONFIRM and report.py PASS (results/solr-buggy/): native 10/10 for SOLR-6101 and -6197, 6/10 for SOLR-9440 (10/10 on CloudLab), the controls 0/10. The cases now take
    solr-adhoc's engine heap, 21504 MB (CloudLab's runs had 65536): check in B1 that their head steps fit it.
 2. **The native getter-CONFIG plant** (e5c894636): a CONFIG root a getter returns is refused natively
    (`NATIVE_PLANT_UNSUPPORTED`), as before 61e881776: planted at the getter, `RecordingPlant` applied it at every call

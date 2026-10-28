@@ -11,9 +11,9 @@ systems' branches are README "Branches"; the experiment across the four systems 
 
 | case | bug | point | fork branch (tree `$GC_TREES/solr-bug-<jira>`) | CloudLab, 2026-10-26 | liftlab B1 |
 | --- | --- | --- | --- | --- | --- |
-| solr-buggy-9440 | SOLR-9440: a node whose watch on a collection was dropped keeps its frozen `DocCollection`, where the killed leader is still ACTIVE: FORCELEADER is refused | solr-adhoc-31 | `graphchecker/solr-bug-9440` 1e7324c461 | SAT, native 10/10 (S9440b) | B1 (lead fills in) |
-| solr-buggy-6101 | SOLR-6101: under `legacyCloud=false` SPLITSHARD's sub-shard core-admin CREATE carries no `coreNodeName` and the node refuses it | solr-adhoc-19 | `graphchecker/solr-bug-6101` 040ae6d4c6 | SAT, native 10/10 (S6101g) | B1 (lead fills in) |
-| solr-buggy-6197 | SOLR-6197: the same in MIGRATE, for its temporary collection's replica on the target leader | solr-adhoc-19 | `graphchecker/solr-bug-6197` f5d86cbd8a | SAT, native 10/10 (S6197g) | B1 (lead fills in) |
+| solr-buggy-9440 | SOLR-9440: a node whose watch on a collection was dropped keeps its frozen `DocCollection`, where the killed leader is still ACTIVE: FORCELEADER is refused | solr-adhoc-31 | `graphchecker/solr-bug-9440` 1e7324c461 | SAT, native 10/10 (S9440b) | B1: SAT, CONFIRM, native 6/10, control 0/10, report.py PASS, 907 s; CloudLab 10/10 (B1-solr-buggy-9440) |
+| solr-buggy-6101 | SOLR-6101: under `legacyCloud=false` SPLITSHARD's sub-shard core-admin CREATE carries no `coreNodeName` and the node refuses it | solr-adhoc-19 | `graphchecker/solr-bug-6101` 040ae6d4c6 | SAT, native 10/10 (S6101g) | B1: SAT, CONFIRM, native 10/10, control 0/10, report.py PASS, 884 s (B1-solr-buggy-6101) |
+| solr-buggy-6197 | SOLR-6197: the same in MIGRATE, for its temporary collection's replica on the target leader | solr-adhoc-19 | `graphchecker/solr-bug-6197` f5d86cbd8a | SAT, native 10/10 (S6197g) | B1: SAT, CONFIRM, native 10/10, control 0/10, report.py PASS, 988 s (B1-solr-buggy-6197) |
 | (solr-buggy-6763) | SOLR-6763 | solr-adhoc-38 | none | not reachable on today's code (masked by SOLR-7844): a README only, no run | -- |
 
 The list is [`experiments/solr/solr-buggy-cases.tsv`](../../experiments/solr/solr-buggy-cases.tsv), the trees
@@ -56,7 +56,7 @@ branch's VM sources are `system/solr`'s).
    ```bash
    cd /u/vnr3ne/gc-run/bd-solr-1 && env -u BASH_ENV \
      GC_OUT=/bigtemp/vnr3ne/gc-out/buggy-detect GC_TREES=/bigtemp/vnr3ne/wt/bd-trees-1 GC_M2=/bigtemp/vnr3ne/m2/bd-1 \
-     LIFTS="lift02 lift03 lift04 lift05 lift06 lift08 lift09 lift10 lift12 lift13 lift14 lift15" \
+     LIFTS="lift02 lift03 lift04 lift05 lift06 lift08 lift09 lift10 lift12 lift13 lift14" \
      CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force10/j2sdk-image CASE_TIMEOUT_SECONDS=21600 PRUNE=0 \
      CASES="solr-buggy-9440 solr-buggy-6101 solr-buggy-6197" tools/rounds/launch-round.sh /u/vnr3ne/gc-run/bd-solr-1 B1
    ```
