@@ -19,6 +19,10 @@ defaulted.
 
 ## This branch: THE HDFS branch (`system/hdfs-liftlab`)
 
+[docs/handover/HANDOVER-2026-10-28.md](docs/handover/HANDOVER-2026-10-28.md) is the map of everything on liftlab:
+every GraphChecker branch and fork branch (and the archive tags), the tree sets, snapshots, images, the runs of
+record, the buggy-detect results and how to run a case. The same file is on all eight `system/*` branches.
+
 `system/hdfs-liftlab` runs every HDFS case on `system/hbase`'s engine on liftlab (lift02-15, 48 cores and 30 GB each;
 lift11 the control host) and replaces `system/hdfs` and `system/hdfs1`, which stay on the remote as history (the owner,
 2026-10-26: "最终system/hdfs-liftlab一个分支就能彻底取代原先的system/hdfs和system/hdfs1了哈"). It is `system/hbase` (26910df2a)
