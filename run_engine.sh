@@ -119,12 +119,14 @@ workflow_config_keys=(
   "solver_timeout_ms CAUSYNTH_SOLVER_TIMEOUT_MS krp -"
   "replay_timeout_s CAUSYNTH_REPLAY_TIMEOUT_S krp 2400"
   "campaign_budget_s CAUSYNTH_CAMPAIGN_BUDGET_S krp 21600"
+  "explore_budget_s CAUSYNTH_EXPLORE_BUDGET_S krp 0"
   "campaign_reserve_s CAUSYNTH_CAMPAIGN_RESERVE_S krp 600"
   "campaign_max_claims CAUSYNTH_CAMPAIGN_MAX_CLAIMS krp 8"
   "seed_replay_time_factor CAUSYNTH_SEED_REPLAY_TIME_FACTOR krp 40"
   "view_hold_max_ms CAUSYNTH_VIEW_HOLD_MAX_MS krp 3000"
   "recording_max_trace_mb CAUSYNTH_RECORDING_MAX_TRACE_MB krp 4096"
   "compose_max_valuations CAUSYNTH_COMPOSE_MAX_VALUATIONS krp 16"
+  "compose_max_paths CAUSYNTH_COMPOSE_MAX_PATHS krp 0"
   "declared_target_occurrence CAUSYNTH_TARGET_OCCURRENCE krp -"
 )
 
@@ -655,6 +657,12 @@ ${campaign_stop_after}" ;;
   [[ "${causynth_scope_growth_budget}" =~ ^[0-9]+$ ]] \
     || die "causynth_scope_growth_budget must be a non-negative integer: \
 ${causynth_scope_growth_budget}"
+  [[ "${compose_max_paths}" =~ ^[0-9]+$ ]] \
+    || die "compose_max_paths must be a non-negative integer (0: none): \
+${compose_max_paths}"
+  [[ "${explore_budget_s}" =~ ^[0-9]+$ ]] \
+    || die "explore_budget_s must be a non-negative integer (0: none): \
+${explore_budget_s}"
   [[ "${stream_shared_pool}" == true || "${stream_shared_pool}" == false ]] \
     || die "stream_shared_pool must be true or false: ${stream_shared_pool}"
   local worker_host
@@ -869,6 +877,10 @@ do_compose() {
     || selection+=(--root-domains "${causynth_root_domains}")
   [[ -z "${compose_reuse_dir:-}" ]] \
     || selection+=(--reuse "${compose_reuse_dir}")
+  # A case may cap the composed paths from the start (compose_max_paths, 0: none) rather than learn the cap from an
+  # out-of-heap composition: solr-adhoc-14 composed 235 of 260 paths at 16384 MB and again at 21504 MB before each ran
+  # out (R2, 2 h of COMPOSE); the paths left out are named, DIAGNOSTIC (Composer: HEAP_BOUND)
+  (( compose_max_paths == 0 )) || cap=(--max-paths "${compose_max_paths}")
   said=$(mktemp) || return
   while true; do
     status=0
@@ -3694,7 +3706,7 @@ campaign_explore() {
   local stream_waiting="" stream_admitted_host="" stream_admitted_mb=""
   local stream_stop=""
   local stream_share_said="" stream_round_due=false
-  local stream_stop_detail="" stream_anchors="[]"
+  local stream_stop_detail="" stream_anchors="[]" stream_started_s=${SECONDS}
   local stream_step_pid="" stream_step_dir="" stream_steps=0
   local stream_round_pid="" stream_round_dir=""
   local stream_round_returned="" stream_round_dropped=""
@@ -3746,6 +3758,16 @@ campaign_explore() {
         && -z "${stream_grow_pid}${stream_grow_returned}" \
         && -n "${stream_round_returned}" ]]; then
       campaign_stream_round_take
+    fi
+    if [[ "${stream_stop}" != WITNESSED \
+        && "${stream_stop}" != CAMPAIGN_BUDGET_REACHED \
+        && -z "${stream_step_pid}" ]] && ! campaign_explore_room; then
+      stream_stop_detail="${stream_stop:+the exploration stopped \
+${stream_stop} (${stream_stop_detail}) and drained what ran; }\
+the exploration ran its own ${explore_budget_s}s budget \
+(explore_budget_s)"
+      stream_stop=CAMPAIGN_BUDGET_REACHED
+      (( stream_dirty == 0 && stream_hold == 0 )) || stream_round_due=true
     fi
     if [[ "${stream_stop}" != WITNESSED && -z "${stream_step_pid}" ]] \
         && ! campaign_claim_room; then
@@ -6557,6 +6579,13 @@ campaign_refute() {
     >>"${iteration_dir}/refuted_claims.jsonl"
   campaign_log "COMPOSE SAT -> CONFIRM ${outcome}: $(jq -r '.reason' \
 "${claims}/confirm.json") -> excluded"
+}
+
+# The exploration's own cap (explore_budget_s; 0: none), apart from the
+# campaign's whole budget: EXPLORE ends as at the campaign budget once it has
+# run that long (owner 2026-10-22, Solr: "exploration上限给2小时").
+campaign_explore_room() {
+  (( explore_budget_s == 0 || SECONDS - stream_started_s < explore_budget_s ))
 }
 
 campaign_claim_room() {

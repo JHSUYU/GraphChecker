@@ -205,7 +205,9 @@ with the adapter, every case's target marker and the bug checks' workloads.
    (the same `GC_OUT` and image). Many at once: `tools/adhoc/sweep.sh` with `CASE_TIMEOUT_SECONDS=21600`
    ([handover/OPERATIONS.md](handover/OPERATIONS.md) §4).
 
-5. **Reading them**, as §5: `tools/rounds/round-verify.sh S1`. A bug check reproduces when it ends `SAT_CANDIDATE`
+5. **Reading them**, as §5: `tools/rounds/round-verify.sh S1`; each case's final verdict, `.smt`, time and regions to
+   compare with are [`results/solr/`](../results/solr/README.md) (each UNSAT read with
+   `tools/analysis/vacuity.py --latest --detail <run>`). A bug check reproduces when it ends `SAT_CANDIDATE`
    (confirmed by a replay, reproduced natively: `final/reproduce.json`); a study check when its `.smt` is right, SAT
    confirmed or UNSAT at its fixed point with no `BOUNDED`/`UNBOUND` (each case's row: [STATUS.md](STATUS.md) "Solr
    checks"; the checking method and its traps: [handover/CHECKING.md](handover/CHECKING.md)).

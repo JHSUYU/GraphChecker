@@ -1,10 +1,10 @@
-# TODO: HDFS finished; Solr after its final round SGF9 (2026-10-19)
+# TODO: HDFS finished; Solr finished: every case has its `.smt` (2026-10-26)
 
 Order:
 1. HDFS is finished (STATE §0): its follow-up items below are optional engine work, done when a later system needs
    them or before a clean final acceptance run.
-2. Solr: the rewrite and its final round SGF9 are done (2026-10-19, section "Solr: after SGF9"); what is left there is
-   optional: the cases owed a run on the fixed engine, and the speed items with their evidence.
+2. Solr is finished (2026-10-26, section "Solr: after the owed cases"): all 20 cases have their `.smt` (`results/solr/`);
+   what is left there is optional engine work, each item with its evidence.
 3. HBase.
 4. ZooKeeper.
 
@@ -136,23 +136,34 @@ no stranded activation, so either touches only perpetual bodies like 21's actor.
 - `offline-ab.sh` `ab_stage_seed_static` tests `-s GROWN` on the gate host right after another host wrote it; over NFS
   it can miss the file (one spurious SEED.static difference on 2026-10-08): wait for it, or read it on the writer.
 
-## Solr: after SGF9 (2026-10-19) -- the current plan; the Solr sections below are history
+## Solr: after the owed cases (2026-10-26) -- the current plan; the Solr sections below are history
 
-Read [START-HERE.md](START-HERE.md) and STATE.md §S first. `system/solr` (pushed) holds the rewrite and every fix the
-final round SGF9 found; the owner ended the round on 2026-10-19 with 14, 07 and 31 not rerun. Evidence is under
-`/bigtemp/vnr3ne/analysis/solr-2026-10-18/final9/` (named per item). Merge each branch into `solr-int`
-(`/bigtemp/vnr3ne/wt/gc-solr-merge`), gate it (mvn package with tests + `src/test/shell/run_engine_campaign_helpers_test.sh`
-on an idle host), fast-forward `system/solr` (`/bigtemp/vnr3ne/wt/gc-solr`); push only with the owner's OK.
+Read [START-HERE.md](START-HERE.md) and STATE.md §S first. `system/solr` (pushed) holds the rewrite, SGF9's fixes and the
+five the owed cases found (STATE §S); every case's final run, `.smt` and time row is `results/solr/`. Evidence of the
+owed cases: `/bigtemp/vnr3ne/analysis/solr-2026-10-22/lead/` (RUNS.txt, vacuity-<run>.txt). Merge each branch into
+`solr-int` (`/bigtemp/vnr3ne/wt/gc-solr-merge`), gate it (mvn package with tests +
+`src/test/shell/run_engine_campaign_helpers_test.sh` on an idle host), fast-forward `system/solr`
+(`/bigtemp/vnr3ne/wt/gc-solr`).
 
-**1. Cases owed a run on the current `system/solr`** (each alone, the round driver of START-HERE §3; budget 21600 s for
-the big ones). None of the three fixes below has run on a case yet, so the first run of each is also its check:
-- 14, 07, 31: never finished on the rewritten engine (SGF8OOM; SGF8 07 composed 1 of 309, all 309 offline; SGF9KILLED-31).
-- 39, 19, 13, 09: ended with GROW re-run sessions no round planned over (4, 18, 8, 6; 09 also dropped 3 re-runs before they
-  ran): the fixed point beside unlanded re-runs, reverted in b9ecc0ba2 (`c39b/FINDINGS.txt`; 39's SGF8 run planned 77
-  obligations over them, 48 ADMITTED = paths). 05, 10, 21 have 1 such session each.
-- 05: its decide answered nothing in the round (every scoped z3 out of memory at the fixed 1024 MB pair slot); the z3 slot
-  fix (solr-z3slot) re-decided it offline from its frozen inputs (`z3slot/`, STATUS row). A full rerun needs ~4 h
-  (exploration 10701 s).
+**1. The owed cases: done** (2026-10-22..26; owner: "完成剩余几个没跑完case的adhoc check。如果case扩大，控制一下scope，降低我们
+的用时", then "他们都能通过后。你要让他们独占集群再跑一遍，看看每个case的用时是多少"). 05 07 09 13 14 19 31 39 each ran alone
+(X1/X1B/X1C) after the concurrent rounds R1-R4 found five defects: GROW tasked an occurrence twice (19), GROW's plan
+passed the 1024-task bound (31), 14's composition outgrew the engine heap (`compose_max_paths` 117), the report probe's
+serial per-path split (its budget and size bound), and no cap on the exploration (`explore_budget_s` 7200, owner).
+Verdicts: 07 a substantive UNSAT; 05 39 19 vacuous (NO_ROOT); 09 14 vacuous by construction (class C); 13 31 named
+bounds (no composed path reaches the target).
+
+**1b. What the owed cases left open** (none blocks a verdict):
+- Head steps starve under concurrency: eight Solr cases at once left R1-14's planner unstarted for 30 min (each head
+  step wants ~23 GB beside the others' replays; HBase TODO 15 is the same starvation). Run Solr at <= 3 at once, or give
+  a waiting head step priority over new replay starts.
+- The target not reached: 13 (123 paths) and 31 (134 paths, 35 TOPOLOGY_DIVERGENCE) compose no path through the target
+  occurrence; 13's closure is truncated at the task bound, 31's replays diverge from the recording's cluster. Find which
+  occurrence chain leads to the target and why GROW does not task it.
+- 19's unplaced clock cells (item 5 below) still refuse most of its paths (7 composed).
+- 14's COMPOSE: ~50 s a path at 21504 MB (117 paths, 1.5 h); the body per path (`Corpus#holding`) is the cost.
+- 39's counterfactual (re-pairing the `AliasesManager.aliases` reference) is outside its guard's slice: the slice stops
+  at the immutable map it reads.
 
 **2. The decide's z3 on big bodies** (OPTIMIZATIONS 1.52, 1.53; `z3slot/`). A memout now doubles every pair's slot
 while the host holds it (05's shared part needs 2662 MB a z3, reads in 89 s at 4096 MB against the 120 s remote read

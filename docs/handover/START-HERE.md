@@ -1,40 +1,39 @@
-# START HERE: GraphChecker's Solr work after the final round SGF9 (2026-10-19)
+# START HERE: GraphChecker's Solr work -- every case has its `.smt` (2026-10-26)
 
 You are the next lead (a coding agent that may run up to 5 coding agents). This file is self-contained: where Solr
 stands, what to read, what is left, how to run a case, and where everything is. Repo: `/u/vnr3ne/GraphChecker`, GitHub
-`git@github.com:JHSUYU/GraphChecker.git`; Solr's branch is `system/solr` (pushed; integration worktree
-`/bigtemp/vnr3ne/wt/gc-solr-merge` on `solr-int` = `system/solr`, worktree `/bigtemp/vnr3ne/wt/gc-solr`). The Solr tree
-is the fork's `graphchecker/solr-checks` (`https://github.com/JHSUYU/solr.git`, 12d23091d1). Nothing runs on any lift.
+`git@github.com:JHSUYU/GraphChecker.git`; Solr's code is the branch `system/solr` (pushed; integration worktree
+`/bigtemp/vnr3ne/wt/gc-solr-merge` on `solr-int` = `system/solr`, worktree `/bigtemp/vnr3ne/wt/gc-solr`). The adapter
+(the Solr tree) is the fork's `graphchecker/solr-checks` (`https://github.com/JHSUYU/solr.git`, 12d23091d1). From GitHub:
+clone the two; [../REPRODUCE.md](../REPRODUCE.md) §6 builds the image and the tree and runs every case. Nothing runs on
+any lift.
 
 ## 1. Where Solr stands
 
-The 2026-10-18 rewrite (REFACTOR-PLAN workstreams A-H) is merged into `system/solr`, and the final round SGF9 ran the
-12 study checks each alone on lift02-10 + lift12-15 at world depth 0 (the 8 bug checks keep their SGF7 results: SAT,
-confirmed, native 10/10). The owner ended the round on 2026-10-19 ("剩余的case我们不跑了，不要了"): 14, 07 and 31 were
-not rerun. Each case's latest result and time is STATUS "Solr checks"; the round's per-case notes are
-`/bigtemp/vnr3ne/analysis/solr-2026-10-18/final9/RESULTS.txt`.
+All 20 cases have their final `.smt`, claim and time row in [`results/solr/`](../../results/solr/README.md):
+- the 8 bug checks PASS (SGF7: SAT, confirmed in the VM, native 10/10; 18413 fatal 10/10);
+- the 12 study checks: 38 SAT (confirmed in the VM, native 0/10), 21 UNSAT_CLOSED, 07 a substantive UNSAT, and 05 09 10 13
+  14 19 31 39 40 UNSAT with their limits named (vacuous by construction, NO_ROOT, or a truncated closure; one reading
+  each in `results/solr/README.md` and STATUS "Solr checks").
 
-- Results on the rewritten engine: 38 SAT, confirmed in the VM (922 s); 21 UNSAT_CLOSED (994 s); 39 UNSAT_CLOSED
-  (1200 s); 09, 13, 10, 40, 19 formula UNSAT at FIXED_POINT with named blockers (1417, 1762, 5532, 8731, 2672 s); 05
-  composed all 340 paths but its decide answered nothing (every scoped z3 out of memory at the fixed pair slot) and it
-  ended at its 14400 s budget.
-- The round found three defects whose fixes are on `system/solr` but which no case has run on yet: the z3 pair slot
-  (a memout re-asks at twice the slot while the host holds it), COMPOSE's hold let go before it lowers the body (05
-  out of heap otherwise), and the fixed point beside unlanded GROW re-runs (reverted: 39 composed 8 paths where SGF8
-  composed 57; 19, 13, 09 also ended with re-run sessions no round planned over). The cases whose results they affect
-  are listed in TODO "Solr: after SGF9".
+The eight cases SGF9 left without a clean result (05 07 09 13 14 19 31 39) were finished on 2026-10-22..26 (owner: "完成剩余
+几个没跑完case的adhoc check。如果case扩大，控制一下scope，降低我们的用时"): they found five engine defects, fixed on
+`system/solr` (STATE §S), and then each ran alone for its time (series X1/X1B/X1C). The owner's caps: the exploration runs
+at most 2 h (`explore_budget_s` 7200), 05 07 14 31 run without client faults and with one claim, 14 composes at most
+117 paths.
 
 ## 2. Read, in this order
 
 1. This file.
-2. [STATE.md](STATE.md) §S -- what is on `system/solr`, the fork, the images, the round.
-3. [TODO.md](TODO.md) "Solr: after SGF9" -- what is left, in order, each with its evidence.
-4. [LESSONS.md](LESSONS.md) -- the traps (shell, zombies and hung agents, NFS, heaps, Java 8 concurrency), how to
+2. [STATE.md](STATE.md) §S -- what is on `system/solr`, the fork, the images, how the owed cases ran.
+3. `results/solr/README.md` -- every case's verdict, time and regions, one reading each.
+4. [TODO.md](TODO.md) "Solr: after the owed cases" -- what is left, each with its evidence.
+5. [LESSONS.md](LESSONS.md) -- the traps (shell, zombies and hung agents, NFS, heaps, Java 8 concurrency), how to
    measure, how to debug. Read all of it before running anything.
-5. [RULES.md](RULES.md), [AGENTS.md](AGENTS.md), [OPERATIONS.md](OPERATIONS.md), [PARALLEL.md](PARALLEL.md),
+6. [RULES.md](RULES.md), [AGENTS.md](AGENTS.md), [OPERATIONS.md](OPERATIONS.md), [PARALLEL.md](PARALLEL.md),
    [CHECKING.md](CHECKING.md), [OPTIMIZATIONS.md](OPTIMIZATIONS.md) (every optimization, done, reverted and owed),
    [REFACTOR-PLAN.md](REFACTOR-PLAN.md) (the rewrite's plan, done).
-6. `docs/design/PIPELINE.md` for the stage you touch; `docs/REPRODUCE.md` §6 to run the Solr cases from a fresh clone.
+7. `docs/design/PIPELINE.md` for the stage you touch; `docs/REPRODUCE.md` §6 to run the Solr cases from a fresh clone.
 
 ## 3. Running a case
 
@@ -43,12 +42,14 @@ branch -- the runtime refuses an older image by name --, the fork's tree, one ca
 
 1. A snapshot of the head: `tools/lib/worktree-add.sh /u/vnr3ne/gc-run/<name> <commit> --detach`, then
    `mvn -q -o package -DskipTests` on a lift (`tools/onlift.sh -g 4`); never rebuild a snapshot a run reads.
-2. One case at a time, detached on lift06, with the round driver
-   `/bigtemp/vnr3ne/analysis/solr-2026-10-18/final9/final-seq9.sh <snapshot> /bigtemp/vnr3ne/wt/sg3j-trees lift06 <case:budget>...`
-   (`PREFIX=<round>`, `VM_IMAGE=/bigtemp/vnr3ne/vm-force10/j2sdk-image`; check the first case's `.job` names that
-   image). Give the big cases (05, 07, 14) 21600 s: 05's exploration alone took 10701 s.
-3. Arm `/bigtemp/vnr3ne/analysis/solr-2026-10-18/final9/watchdog9p.sh` and a case-end waiter on the round log; after
-   each case `analysis/solr-2026-10-14/final-stats.py <round>`, a reading, the STATUS row.
+2. The cases, with the series driver of 2026-10-22: `SNAP=<snapshot> TREES=/bigtemp/vnr3ne/wt/sg3j-trees MAX_CLAIMS=3
+   WORKERS='<lifts, never lift11>' HEADS=lift10 /bigtemp/vnr3ne/analysis/solr-2026-10-22/lead/final/series2.sh <round>
+   <concurrency> <case>...` (each run detached on its head, `gc-out/solr-final/accept-<round>-<case>`; image
+   `VM_IMAGE`, default vm-force10). Run Solr cases one at a time for their time, at most 3 at once otherwise: the 21.5 GB
+   head steps starve beside more (R1-14's planner never started among 8). The last snapshot is `/u/vnr3ne/gc-run/sr-6`.
+3. Watch with `/bigtemp/vnr3ne/analysis/solr-2026-10-22/lead/lead-watch3.sh` (run ends, series lines, a log quiet 25
+   min, a lift past 80 %) and `lead/watchdog.sh`; after each case `tools/analysis/vacuity.py --latest --detail <run>`, a
+   reading, the STATUS row; `results/solr/final-stats.py` prints the table over `results/solr/index.tsv`.
 
 ## 4. Rules you must keep (each in RULES.md or LESSONS.md)
 
@@ -67,9 +68,14 @@ branch -- the runtime refuses an older image by name --, the fork's tree, one ca
 
 ## 5. Where things are
 
-- Evidence: `/bigtemp/vnr3ne/analysis/solr-2026-10-18/` -- final9/ (the round: RESULTS.txt, c19, c39, c39b, growchain,
+- The owed cases (2026-10-22..26): `/bigtemp/vnr3ne/analysis/solr-2026-10-22/lead/` (RUNS.txt: every run and
+  decision; vacuity-<run>.txt; final/: the series drivers and their logs); runs
+  `/bigtemp/vnr3ne/gc-out/solr-final/accept-<round>-<case>` (X1/X1B/X1C the records; R1-R4 concurrent, *STOP*: lost or
+  stopped).
+- Evidence before: `/bigtemp/vnr3ne/analysis/solr-2026-10-18/` -- final9/ (the round: RESULTS.txt, c19, c39, c39b, growchain,
   growshape, fixedpoint, z3slot), resume/ (the agents' briefs), and the rewrite's studies (redundancy, world-dedup,
   gen1, hold, ...).
-- Runs: `/bigtemp/vnr3ne/gc-out/solr/accept-<round>-<case>` (SGF9: the round; SGF9KILLED/STOP/REGR/VM8: evidence).
+- Runs: `/bigtemp/vnr3ne/gc-out/solr/accept-<round>-<case>`: the SGF7 bug checks and SGF9 38 21 10 40 of record
+  (the superseded runs were deleted in the 2026-10-22 cleanup).
 - Tools: final-stats.py, the driver and watchdog under final9/, GzCopy, HeapOwners, the offline COMPOSE recipe
   `analysis/solr-2026-10-18/hold/compose-run.sh`.
