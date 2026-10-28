@@ -4,7 +4,8 @@
 the bug, the ad hoc point, the verdict, CONFIRM, native REPRODUCE (reproduced / runs, by IDENTITY 9 shape where it
 answered so, the control's fatal at the anchor / runs), time in four parts and the final closure's size.
 seeding = PREFLIGHT..IMPORT (+ZKKEYS); exploration = EXPLORE; compose+solver = COMPOSE + SOLVE + DECIDE;
-other = CONFIRM + EMIT + REPRODUCE; regions / occurrences = the final closure; rounds = EXPLORE's generations.
+other = CONFIRM + EMIT + REPRODUCE; refuted claims = the wall of the claims CONFIRM refuted before the last (their
+count in brackets); regions / occurrences = the final closure; rounds = EXPLORE's generations.
 Usage: final-stats.py --cases experiments/<sys>/<sys>-buggy-cases.tsv [--round B1] [--out /bigtemp/vnr3ne/gc-out/buggy-detect]"""
 import argparse, glob, json, os
 SEED = ['PREFLIGHT', 'FREEZE_TOOL', 'SETUP', 'FREEZE', 'SEED', 'PLAN', 'INSTRUMENT', 'REPLAY', 'IMPORT', 'ZKKEYS']
@@ -69,20 +70,24 @@ def main():
             c = rep.get('control', {})
             native += '; control %d/%d' % (c.get('atAnchor', 0), c.get('runs', 0))
         finding = last[12] if len(last) > 12 else ''
+        refuted = len(glob.glob(os.path.join(sched, 'final', 'refuted', '*')))
+        wall = int(last[2])
+        parts = sec(SEED + ['EXPLORE'] + COMPOSE + OTHER)
         rows.append(dict(case=case, jira=jira, point=point, run=tag, claim=last[3], verdict=last[10] if len(last) > 10 else '-',
                          mech=finding.split('|')[0].split(' at ')[0].strip() or '-',
-                         confirm='yes' if conf.get('confirmed') else 'no', native=native, wall=int(last[2]),
+                         confirm='yes' if conf.get('confirmed') else 'no', native=native, wall=wall,
+                         ref='%d (%d)' % (wall - parts, refuted) if refuted else '-',
                          seeding=sec(SEED), exploration=sec(['EXPLORE']), compose=sec(COMPOSE), other=sec(OTHER),
                          regions=len(regions), occ=occ, rounds=len(glob.glob(os.path.join(it, 'obligations-*')))))
     print('| case | bug | point | run | claim | report.py | mechanism | CONFIRM | native REPRODUCE | wall (s) '
-          '| seeding (s) | exploration (s) | compose+solver (s) | other (s) | regions | occurrences | rounds |')
-    print('| --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
+          '| seeding (s) | exploration (s) | compose+solver (s) | other (s) | refuted claims (s) | regions | occurrences | rounds |')
+    print('| --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
     for r in rows:
         if r['run'] == '-':
-            print('| %(case)s | %(jira)s | %(point)s | no run |  |  |  |  |  |  |  |  |  |  |  |  |  |' % r)
+            print('| %(case)s | %(jira)s | %(point)s | no run |  |  |  |  |  |  |  |  |  |  |  |  |  |  |' % r)
             continue
         print('| %(case)s | %(jira)s | %(point)s | %(run)s | %(claim)s | %(verdict)s | %(mech)s | %(confirm)s | %(native)s '
-              '| %(wall)d | %(seeding)d | %(exploration)d | %(compose)d | %(other)d | %(regions)d | %(occ)d | %(rounds)d |' % r)
+              '| %(wall)d | %(seeding)d | %(exploration)d | %(compose)d | %(other)d | %(ref)s | %(regions)d | %(occ)d | %(rounds)d |' % r)
     done = [r for r in rows if r['run'] != '-']
     if done:
         tot = {k: sum(r[k] for r in done) for k in ['wall', 'seeding', 'exploration', 'compose', 'other']}

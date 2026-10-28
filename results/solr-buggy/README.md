@@ -15,10 +15,10 @@ Again: `GC_OUT=<dir> results/solr-buggy/collect-results.sh experiments/solr/solr
 (seeding = PREFLIGHT..IMPORT and ZKKEYS; exploration = EXPLORE; compose+solver = COMPOSE + SOLVE + DECIDE; other =
 CONFIRM + EMIT + REPRODUCE; regions / occurrences = the final closure; rounds = EXPLORE's generations).
 
-| case | bug | point | run | claim | report.py | mechanism | CONFIRM | native REPRODUCE | wall (s) | seeding (s) | exploration (s) | compose+solver (s) | other (s) | regions | occurrences | rounds |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| solr-buggy-6101 | SOLR-6101 | solr-adhoc-19 | B1-solr-buggy-6101 | SAT_CANDIDATE | PASS | MARKER_FLIPPED | yes | 10/10; control 0/10 | 884 | 539 | 302 | 6 | 33 | 4 | 42 | 16 |
-| solr-buggy-6197 | SOLR-6197 | solr-adhoc-19 | B1-solr-buggy-6197 | SAT_CANDIDATE | PASS | MARKER_FLIPPED | yes | 10/10; control 0/10 | 988 | 653 | 291 | 5 | 35 | 4 | 32 | 16 |
-| solr-buggy-9440 | SOLR-9440 | solr-adhoc-31 | B1-solr-buggy-9440 | SAT_CANDIDATE | PASS | MARKER_FLIPPED | yes | 6/10; control 0/10 | 907 | 657 | 158 | 5 | 81 | 6 | 36 | 4 |
+| case | bug | point | run | claim | report.py | mechanism | CONFIRM | native REPRODUCE | wall (s) | seeding (s) | exploration (s) | compose+solver (s) | other (s) | refuted claims (s) | regions | occurrences | rounds |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| solr-buggy-6101 | SOLR-6101 | solr-adhoc-19 | B1-solr-buggy-6101 | SAT_CANDIDATE | PASS | MARKER_FLIPPED | yes | 10/10; control 0/10 | 884 | 539 | 302 | 6 | 33 | - | 4 | 42 | 16 |
+| solr-buggy-6197 | SOLR-6197 | solr-adhoc-19 | B1-solr-buggy-6197 | SAT_CANDIDATE | PASS | MARKER_FLIPPED | yes | 10/10; control 0/10 | 988 | 653 | 291 | 5 | 35 | - | 4 | 32 | 16 |
+| solr-buggy-9440 | SOLR-9440 | solr-adhoc-31 | B1-solr-buggy-9440 | SAT_CANDIDATE | PASS | MARKER_FLIPPED | yes | 6/10; control 0/10 | 907 | 657 | 158 | 5 | 81 | - | 6 | 36 | 4 |
 
 3 of 3 cases ran (B1, beside each other on liftlab); wall 2779 s; seeding 1849, exploration 751, compose+solver 16, other 149
