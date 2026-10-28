@@ -1,4 +1,4 @@
-# Parallel development: keep ten lifts full (long-term)
+# Parallel development: keep every lift full (long-term)
 
 Part of every agent's long-term memory ([RULES.md](RULES.md)). The owner, 2026-10-05: "一定要最大化利用10个server。这10个
 server配有nfs,你只要做好代码隔离等。可以大大加速的。这是你的长期记忆", "我们一个case内oblication当然可以分配到多机。你也可以合理
@@ -120,8 +120,8 @@ jam (fixed) and budget cuts (rerun at 3 h).
 
 ## 6. The recipe as run on 2026-10-12 (Solr): copy it
 
-What one lead and four coding agents did to keep ten lifts busy without NFS or the control host becoming the
-bottleneck. Every command here is current; the numbers are measured.
+What one lead and four coding agents did to keep the lifts busy without NFS or the control host becoming the
+bottleneck. Every command here is current (the host list and image updated to 2026-10-28); the numbers are measured.
 
 **1. The control host (lift11) stays light.** Claude Code sessions -- the lead and every agent -- run on lift11, and
 every tool call starts a shell there.
@@ -149,9 +149,9 @@ every tool call starts a shell there.
 verdict; OPTIMIZATIONS 1.32):
 ```bash
 cd ~/gc-run/<snap> && env -u BASH_ENV \
-  LIFTS="lift06 lift07 lift08 lift09 lift10 lift12 lift13 lift14 lift15" \
+  LIFTS="lift02 lift03 lift04 lift05 lift06 lift08 lift09 lift10 lift12 lift13 lift14 lift15" \
   CASES="solr-18406 solr-18413" CASE_TIMEOUT_SECONDS=10800 PRUNE=0 GC_OUT=/bigtemp/vnr3ne/gc-out/<agent or round> \
-  CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force8/j2sdk-image tools/rounds/launch-round.sh ~/gc-run/<snap> <ROUND>
+  CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force10/j2sdk-image tools/rounds/launch-round.sh ~/gc-run/<snap> <ROUND>
 ```
 `CASE_TIMEOUT_SECONDS`, `PRUNE` and `CAUSYNTH_CAMPAIGN_STOP_AFTER` reach the heads on the command line (ssh carries no
 environment). A case that needs another Solr tree: its `case.sh` `repo=` lines edited in the snapshot only, or a
@@ -214,65 +214,7 @@ may be idle).
 
 - The head's memory is no longer the limit: compaction (OPTIMIZATIONS 1.26, 1.28-1.30) and the holding composer (1.27)
   keep the planner at ~3.5 GB and the composer at ~1.9 GB on 05 r5 / 07, so session sharding of the planner is shelved
-  (branches solr-parplan 3df494a3a, solr-shard d3b663462 kept, not merged).
+  (local tags `archive/local/solr-parplan` 3df494a3a and `archive/local/solr-shard` d3b663462, not merged).
 - Measured on 07 (idle-pool/): the pool idles because of the head's serial chain (landing, the import gate, GROW in
   the head's hands, one solver at a time) and a dispatch cursor that piles replays on one host -- not capacity; the
   scheduler rewrite (branch solr-stream2) addresses each. During a final round, agents keep off the pool.
-
-## 8. CloudLab: five big-memory nodes, filled by their cores (branch system/hdfs-cloudlab, 2026-10-25)
-
-**On CloudLab, branch `system/hdfs-cloudlab` (and `system/zookeeper-cloudlab`): the code of this branch does not carry
-it.** `system/hdfs-liftlab` (THE HDFS branch, 2026-10-27; the owner: "所以为了我们liftlab的并行，你要把system./solr等的并行，
-弄到system/hdfs-liftlab") reverted every step below (2acb6e9f7, 3a9b0a688, 76828e529 with `run-pool.sh`, 3ed666321,
-c3f820ed1): its `run_engine.sh` and shell test equal `system/hbase`'s, the ledger charges memory at 70 % and every choice
-among hosts takes the one with the most memory room, as §1-§7 and PIPELINE §7.7 describe. On liftlab memory binds first,
-so a final series runs each case alone on the cluster (the HDFS series H1, 2026-10-26: the 45 cases but hdfs-11741 one at
-a time on the 12 reachable lifts, for each case's time breakdown, STATE §L). What follows is the other cluster's record.
-
-The owner, 2026-10-25: "我们的cloudlab一般是5个节点，是大内存。这点和之前的liftlab不同。所以在system/hdfs-cloudlab和
-system/zookeeper-cloudlab上，我们的并行策略要最大化cloudlab集群的使用。" The two clusters bind on different resources:
-
-| | liftlab (lift02-15) | CloudLab (node0-4) |
-| --- | --- | --- |
-| hosts x cores x memory | 14 x 48 x 30 GB: 672 cores, 420 GB | 5 x 40 x 251 GB: 200 cores, 1255 GB |
-| replays a host holds (4-8 GB, 1-2 cores each) | 3-5, by memory (70 % of 30 GB) | 20-40 by cores, 20-40 by memory |
-| what binds a round | memory | cores |
-| a case over 30 min | ran again alone on all 14 lifts, to have their memory | runs beside every other case: no node's memory fills |
-
-So the strategy on both CloudLab branches is to keep every core charged with useful work and to charge cores as they are
-used:
-1. **Hundredths of a core.** The ledger charges a replay its measured mean cores (`workload_cores_x100` over the
-   replays it returned, recomputed every eight; the seed's own before that; at least 0.10), a solver 2.00, an engine JVM
-   1.00, a native run 1.00, a fan-out job 1.00, all in hundredths (`<mb>.<cores x 100>.<host>...`). The liftlab rule, the
-   90th percentile rounded up to whole cores, cost nothing where memory bound first; on CloudLab it left a third of the
-   CPUs idle: HDFS's final series' 768 replays averaged 1.63 cores (p50 1.50, p90 2.46) and were charged 2 or 3, so a
-   node showed 40 cores charged under a load of 25-55. With 20-40 replays on a node their sum is their mean times their
-   number, so the mean is the charge. Where charges still overstate the cores, the load decides: a resident solver
-   keeps the 2.00 cores of the solve it took over for its life, idle, and each seated question charges 2.00 more, so
-   with 14 ZooKeeper and 9 HDFS campaigns at once (rounds Z1 and P1) node1 read 40 cores charged under a load of 13-16,
-   77 % idle. Cores oversubscribe gracefully where memory does not, so admission and every host order count a node
-   busy as the lesser of its charged cores and its load plus the cores charged in the last 120 s, which the 1-minute
-   load has not caught up with (`campaign_host_busy_cores`; the memory reading carries `/proc/loadavg`). A build
-   before it writes readings without the load, so while one runs beside it the charges stand.
-2. **One pool per round.** `tools/rounds/run-pool.sh <round> <cases.tsv> <branch>=<snapshot>... [case...]` replaces
-   fixed lanes and the alone reruns: it starts the case with the longest expected wall first (`POOL_EXPECTED`, rows
-   `case<TAB>seconds`, e.g. the results table's wall column; else the case budget), whenever 10 % of the cluster's cores
-   are free both by the ledger and by `/proc/loadavg` (`POOL_FREE_CORES`, hundredths), at least `POOL_GAP_S` (30 s) after
-   the last start (`POOL_MAX` caps the cases at once; 0, none), its head on the node heading the fewest of the pool's
-   cases (ties: the most free cores, then memory room). A case's obligations still go to every node (level 1). A
-   case's pool run is its record. `series-<round>.log` has START/END rows as `run-series.sh` writes them, and
-   `pool-<round>.tsv` a row per poll: time, cases running, the cluster's free cores, and per node load, free cores
-   (hundredths) and memory room (MB). Stop starting new cases: `touch $GC_OUT/series-<round>.STOP`. Run the pool from
-   a snapshot, not a worktree you edit: bash reads its script as it runs.
-3. **Memory is spent, not rationed.** Heads keep their heaps for life and nothing else changes: a round of every case
-   at once stays far under a node's 70 % ceiling (175 GB), so the only memory rule left is the ledger's.
-
-4. **Measured (2026-10-25, ZooKeeper rounds Z1-Z5 beside the HDFS named cases' pools P1-P4).** The ledger's steps cut
-   the nine HDFS named cases' summed walls from 15710 s (P1, whole cores by the mean, the pool gating by charges
-   alone) to 10099 s (P3, the load and a start's decayed cores), 9 of 9 PASS, beside 16 ZooKeeper cases at once; the
-   final series ran the same nine in 9472 s on fewer campaigns. Z4's whole round of 16 cases, 13 of them in 58
-   minutes, kept 54-59 % of the 200 logical CPUs busy (`/proc/stat`, `cpu-Z4.txt`): a node's 40 logical cores are 20
-   physical ones, so that is the physical cores full. Admitting by idle logical CPUs instead (Z5, P4: the busy cores
-   from `/proc/stat`) packed more replays, kept the CPUs no busier and ran 11 of 12 ZooKeeper cases 1-25 % slower and
-   the HDFS nine in 13376 s, so it was reverted: on these nodes the physical cores bind, and the load (which counts a
-   thread waiting for one) is the better gauge.
