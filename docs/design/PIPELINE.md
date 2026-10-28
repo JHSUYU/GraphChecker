@@ -1966,8 +1966,7 @@ both `Σ live charges + held + need ≤ L` and `MemTotal − MemAvailable + held
 is `CAUSYNTH_HOST_MAX_USED_PCT` (70) percent of `MemTotal` and `held` the room a head holds there
 (below): no start leaves a host more than 70 % charged or used. This ledger charges memory alone, as
 on liftlab's 30 GB hosts memory binds first (`system/hdfs-liftlab` = `system/hbase`'s and `system/solr`'s
-scheduling); the core charges and the host order by free cores that CloudLab's 251 GB nodes needed are on branch
-`system/hdfs-cloudlab` only (PARALLEL §8), not in this code. A charge holds for the whole life
+scheduling). A charge holds for the whole life
 of what it started: a JVM below its charge grows into it later, so its unused charge is room no
 other start may take (counted only for a 60 s ramp, the Solr replays of rounds SB11 and SB13,
 growing for minutes toward their 6000 MB, filled lift12-15 and lift06 to 29-30 GB). It lives by a

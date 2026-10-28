@@ -3,7 +3,7 @@
 Each case's final formula (`<case>.smt2.gz`, gzip of the run's `schedule/final/candidate.smt2`) and its claim
 (`<case>.claim.json`); `index.tsv` names the run each came from (`/bigtemp/vnr3ne/gc-out/hdfs-final/<run>`).
 `system/hdfs-liftlab` is the one HDFS branch (owner 2026-10-26: it replaces `system/hdfs` and `system/hdfs1`): HBase's
-engine with the Hadoop shim restored, from `system/hdfs-cloudlab` with CloudLab's scheduling replaced by liftlab's
+engine with the Hadoop shim restored, from `system/hdfs-cloudlab` (now the tag `archive/system/hdfs-cloudlab`) with CloudLab's scheduling replaced by liftlab's
 (the memory ledger and stream scheduler of `system/hbase`/`system/solr`). The tree is the Hadoop fork's
 `graphchecker/hdfs-checks` 899c200cc8e (`-adhoc21` 25b4f1e531f for 21), the image vm-force12.
 
@@ -12,7 +12,7 @@ hdfs-11741 ran alone, one at a time, on 12 lifts (lift02-06, 08-10, 12-15: lift1
 the head on lift10. Snapshots: `/u/vnr3ne/gc-run/hl-1` (e2a6aebf9) for the first 25 (17897 .. adhoc-26), `hl-2`
 (f7c095f00: plus system/solr's four general fixes -- one task per exposed occurrence, a GROW plan within the task bound,
 the report probe's budget and split bound -- none of which a case's verdict rests on) for the other 20. Tree set
-`/bigtemp/vnr3ne/wt/hl-trees-1`. **All 45 verdicts equal CloudLab's final rounds** (`system/hdfs-cloudlab`, F1-F7): the 9
+`/bigtemp/vnr3ne/wt/hl-trees-1`. **All 45 verdicts equal CloudLab's final rounds** (`archive/system/hdfs-cloudlab`, F1-F7): the 9
 named bugs but 11741 PASS (SAT, confirmed in the VM, native 10/10), 10 and 12 SAT (native 10/10), 52 a named bound (z3
 did not decide its formula in its budget), the other 33 UNSAT_CLOSED. hdfs-11741 was not run on liftlab (owner); its row
 is CloudLab's F7.

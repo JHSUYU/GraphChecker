@@ -1,15 +1,15 @@
-# START HERE: THE HDFS branch, on liftlab (system/hdfs-liftlab, 2026-10-27)
+# START HERE: THE HDFS branch (system/hdfs-liftlab, 2026-10-27)
 
 You take over GraphChecker's HDFS group: every HDFS case on HBase's final engine, run on liftlab with the memory-ledger
 scheduling of `system/hbase` and `system/solr`. This one branch replaces `system/hdfs` and `system/hdfs1` (the owner,
 2026-10-26: "最终system/hdfs-liftlab一个分支就能彻底取代原先的system/hdfs和system/hdfs1了哈"). This file is self-contained: the
 goal, what the branch holds, the cluster, the trees, the results, how to run a case and the whole series, what is left,
-and the rules. The takeover files of the other systems are [hbase-START-HERE.md](hbase-START-HERE.md) (HBase,
-`system/hbase`) and STATE §S (Solr); HDFS's earlier bodies are STATE §0 and the CloudLab port STATE §C.
+and the rules. The other systems' takeover files are their own branches' START-HERE (README "The branches"); HDFS's
+earlier bodies are STATE §0. The old HDFS bugs put back by hand run on `system/hdfs-buggy-detect` (this branch plus those
+cases; its START-HERE).
 
 - **Repo:** `git@github.com:JHSUYU/GraphChecker.git`, branch **`system/hdfs-liftlab`** (local repository
-  `/u/vnr3ne/GraphChecker`, `GC_REPO`; integration worktree `/bigtemp/vnr3ne/wt/gc-hdfs-cloudlab`, on branch
-  `system/hdfs-liftlab` despite its name).
+  `/u/vnr3ne/GraphChecker`, `GC_REPO`; integration worktree `/bigtemp/vnr3ne/wt/gc-hdfs-liftlab`).
 - **The trees:** the Hadoop fork `https://github.com/JHSUYU/hadoop.git`: `graphchecker/hdfs-checks` (899c200cc8e: every case
   but hdfs-adhoc-21 and hdfs-11741), `graphchecker/hdfs-checks-adhoc21` (25b4f1e531f: 21), `graphchecker/hdfs-11741`
   (6c86fca9a2b: 11741); `experiments/hadoop/trees.tsv`. The current tree set is `/bigtemp/vnr3ne/wt/hl-trees-1`
@@ -18,25 +18,24 @@ and the rules. The takeover files of the other systems are [hbase-START-HERE.md]
 - **The cluster:** liftlab, lift02-15 (48 cores and 30 GB each; `/bigtemp/vnr3ne` and the home over NFS). lift11 is the
   control host (`GC_CONTROL_HOST`: the lead's sessions, neither a worker nor a head); lift07 has been unreachable since the
   servers went down on 2026-10-23; lift02 and lift03 cannot reach lift15, so they are workers, never heads. The 12
-  workers: lift02-06, lift08-10, lift12-15.
+  workers: lift02-06, lift08-10, lift12-15. Maven and Ant are only on lift02-06 and lift08-10 (builds go there).
 - **The image:** `/bigtemp/vnr3ne/vm-force12/j2sdk-image` (this branch's VM sources are `system/hbase`'s).
 - **From GitHub:** [../REPRODUCE.md](../REPRODUCE.md) §0-§5 clones the branch and the fork, builds the image and the
   trees, and runs one case or the series.
 
 ## 1. The goal and what the branch is
 
-The owner's goal (2026-10-26, verbatim in STATE §L): run every HDFS ad hoc check but hdfs-11741 again, on
-`system/hdfs-cloudlab`'s code with liftlab's parallel scheduling instead of CloudLab's ("你要把system./solr等的并行，弄到
-system/hdfs-liftlab"), and measure the 45 cases' time breakdown -- seeding, exploration, compose + solver -- each case
-alone on the cluster ("每个独占集群").
+The owner's goal (2026-10-26, verbatim in STATE §L): run every HDFS ad hoc check but hdfs-11741 again, on the HDFS
+port's code with liftlab's parallel scheduling ("你要把system./solr等的并行，弄到system/hdfs-liftlab"), and measure the 45
+cases' time breakdown -- seeding, exploration, compose + solver -- each case alone on the cluster ("每个独占集群").
 
-`system/hdfs-liftlab` is `origin/system/hdfs-cloudlab` 3411a49f8 (the HDFS port onto `system/hbase`, below) with
-CloudLab's scheduling reverted (2acb6e9f7, 3a9b0a688, 76828e529 with `tools/rounds/run-pool.sh`, 3ed666321, c3f820ed1)
-and e2a6aebf9, gc-env's liftlab defaults (`GC_BULK=/bigtemp/vnr3ne`, `GC_REPO=~/GraphChecker`, z3 in `~/.local/bin`,
-`LIFTS` lift02-15 but lift11, `GC_CONTROL_HOST=lift11`). **Scheduling is `system/hbase`'s**: `run_engine.sh` and its
-shell test equal `system/hbase`'s; every start is charged on the host ledger by its memory and no host passes 70 %; every
-choice among hosts takes the most memory room (PIPELINE §7.7, PARALLEL §1-§7). CloudLab's core charges, host order by
-free cores and pool of every case are on `system/hdfs-cloudlab` only (PARALLEL §8).
+`system/hdfs-liftlab` is the HDFS port onto `system/hbase` (below; first run on CloudLab, whose head is the tag
+`archive/system/hdfs-cloudlab`, 3411a49f8) with liftlab's scheduling (2acb6e9f7, 3a9b0a688, 76828e529, 3ed666321,
+c3f820ed1 revert the CloudLab one) and e2a6aebf9, gc-env's liftlab defaults (`GC_BULK=/bigtemp/vnr3ne`,
+`GC_REPO=~/GraphChecker`, z3 in `~/.local/bin`, `LIFTS` lift02-15 but lift11, `GC_CONTROL_HOST=lift11`), then four
+general fixes of `system/solr` (43ac04c1e, b4c24f9e3, 6a1d5fd6a, f7c095f00). **Scheduling is `system/hbase`'s**:
+`run_engine.sh` and its shell test equal `system/hbase`'s; every start is charged on the host ledger by its memory and
+no host passes 70 %; every choice among hosts takes the most memory room (PIPELINE §7.7, PARALLEL).
 
 What the HDFS port changed against `system/hbase` (git log has each commit; STATUS "Per-system surface" and LESSONS §10
 the why), all kept here:
@@ -60,23 +59,22 @@ the why), all kept here:
   `graphchecker/hdfs-checks-adhoc21` (25b4f1e531f) is that plus 21's workload with its post-target skip loop trimmed.
 - **Case declarations** (`experiments/hadoop/*/case.sh`, `hdfs-cases.tsv`, whose `branch` column is `system/hdfs-liftlab`
   for every case): the ad hoc family's closures up to 128 tasks (14 at 256), 11 up to 24 waves, `replay_timeout_s=7200`
-  for 24/26/37 (their whole workloads replay in ~1 h on CloudLab).
+  for 24/26/37 (their focused replays run the whole upgrade or rollback test).
 
 ## 2. Results
 
-**The series H1** (from 2026-10-26 23:55; STATE §L): the 45 cases of `experiments/hadoop/hdfs-cases.tsv` but hdfs-11741,
-one at a time, each alone with the 12 lifts as workers (head lift10), snapshot `/u/vnr3ne/gc-run/hl-1` (e2a6aebf9), tree
-set `hl-trees-1`, image `vm-force12`; runs `/bigtemp/vnr3ne/gc-out/hdfs-final/accept-H1-<case without hdfs->`. Each
-case's verdict, native k/N, time breakdown (seeding / exploration / compose + solver) and closure: `results/hdfs/README.md`. H1 (2026-10-26/27):
-the 45 cases alone in 62555 s (17.4 h): the 9 named bugs but 11741 PASS (native 10/10), 10 and 12 SAT, 52 a named
-bound (z3 undecided in its budget), 33 UNSAT_CLOSED -- every verdict as CloudLab's F1-F7.
+**The series H1** (2026-10-26 23:55 to 2026-10-27 17:34; STATE §L): the 45 cases of `experiments/hadoop/hdfs-cases.tsv`
+but hdfs-11741, one at a time, each alone with the 12 lifts as workers (head lift10), snapshots `/u/vnr3ne/gc-run/hl-1`
+(e2a6aebf9, the first 25) and `hl-2` (f7c095f00, the other 20), tree set `hl-trees-1`, image `vm-force12`; runs
+`/bigtemp/vnr3ne/gc-out/hdfs-final/accept-H1-<case without hdfs->`. Each case's verdict, native k/N, time breakdown
+(seeding / exploration / compose + solver) and closure: `results/hdfs/README.md`. The 45 alone in 62555 s (17.4 h): the 9
+named bugs but 11741 PASS (native 10/10), 10 and 12 SAT, 52 a named bound (z3 undecided in its budget), 33 UNSAT_CLOSED;
+no new bug. hdfs-11741 was not run on liftlab (owner): its row is the port's CloudLab run F7 (CLOCK_SKEW confirmed in the
+VM, native 0/10: TODO "HDFS on liftlab" 12).
 
-**The records it stands beside.** The same code on CloudLab (rounds F1-F8, 2026-10-24, `system/hdfs-cloudlab`): 12 SAT
-confirmed in the VM (every named bug's mandated mechanism; 11 reproduced 10/10 natively, hdfs-11741 0/10), 33 UNSAT at the
-fixed point with z3 unsat on the file, hdfs-adhoc-52 a RUN_DEFECT row over an unsat file; no new bug (STATUS "HDFS checks
-on CloudLab", STATE §C; its pool rounds P1-P3, PARALLEL §8). The former branches' readings, each case's chain against the
-HDFS code: STATUS "HDFS checks"; their time breakdown, every case alone on ten lifts: series EX1, PERFORMANCE §6 and the
-`ex1_*` columns of `hdfs-cases.tsv`.
+**The records it stands beside.** The former branches' readings, each case's chain against the HDFS code: STATUS "HDFS
+checks"; their time breakdown, every case alone on ten lifts: series EX1, PERFORMANCE §6 and the `ex1_*` columns of
+`hdfs-cases.tsv`. The port onto HBase's engine, per case: STATUS "HDFS checks on HBase's engine".
 
 ## 3. Read, in this order
 
@@ -84,7 +82,7 @@ HDFS code: STATUS "HDFS checks"; their time breakdown, every case alone on ten l
 2. [LESSONS.md](LESSONS.md) §10 (the port's traps), §9 (HBase's, which apply), the rest.
 3. [OPERATIONS.md](OPERATIONS.md) §1 and §4 (liftlab, the ledger, rounds), [PARALLEL.md](PARALLEL.md), [RULES.md](RULES.md),
    [CHECKING.md](CHECKING.md), [AGENTS.md](AGENTS.md).
-4. [TODO.md](TODO.md) "HDFS on liftlab" (what is left), STATUS "HDFS checks" and "HDFS checks on CloudLab".
+4. [TODO.md](TODO.md) "HDFS on liftlab" (what is left), STATUS "HDFS checks" and "HDFS checks on HBase's engine".
 5. `docs/design/PIPELINE.md` for the stage you touch (§7.7 the work pool and the ledger, §8/§9 COMPOSE and DECIDE, §10b
    REPRODUCE).
 
@@ -93,7 +91,8 @@ HDFS code: STATUS "HDFS checks"; their time breakdown, every case alone on ten l
 Every command runs with `env -u BASH_ENV` (or `unset BASH_ENV` first), from a lift that reaches every worker (never lift02,
 lift03 or lift11 as a head). Snapshot and tree set are shared read-only once a run reads them.
 - **Snapshot:** `bash tools/lib/worktree-add.sh /u/vnr3ne/gc-run/<name> <commit> --detach` (sparse, no `third_party/`;
-  `GC_REPO` names the repository), then `cd /u/vnr3ne/gc-run/<name> && tools/onlift.sh -g 6 mvn -q -o package -DskipTests`.
+  `GC_REPO` names the repository), then `cd /u/vnr3ne/gc-run/<name> && tools/onlift.sh -h <host> -g 6 mvn -q -o package
+  -DskipTests`, `<host>` one with Maven (lift02-06, lift08-10; the same for every build below).
 - **A tree set:** `tools/onlift.sh -g 8 env GC_TREES=/bigtemp/vnr3ne/wt/<set> GC_M2=/bigtemp/vnr3ne/m2/<set>
   experiments/hadoop/prepare-trees.sh hadoop-hdfs-study-r7 hadoop-hdfs-21` from a built checkout (`onlift.sh` forwards no
   environment, so the variables go inside its command; add `hadoop-hdfs-11741-r6` for 11741): ~20 minutes, its log ends
@@ -104,7 +103,8 @@ lift03 or lift11 as a head). Snapshot and tree set are shared read-only once a r
   detached: `setsid nohup ... > <log> 2>&1 < /dev/null &`). With the branch's own tool: `cd <snapshot> && env
   GC_OUT=<out> GC_TREES=<tree set> CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force12/j2sdk-image
   CAUSYNTH_CAMPAIGN_WORKER_HOSTS="<the 12 lifts>" CASE_TIMEOUT_SECONDS=<budget_s> tools/rounds/launch-run.sh <snapshot>
-  <case> <tag>` (it holds the shell until the case ends; the default workers are `LIFTS`, which still names lift07).
+  <case> <tag>` (it holds the shell until the case ends; the default workers are gc-env's `LIFTS`, which still names
+  lift07: export `LIFTS` without it).
 - **The series, each case alone:** H1's driver, `cd /bigtemp/vnr3ne/analysis/hdfs-2026-10-26/lead/final && SNAP=<snapshot>
   TREES=<tree set> WORKERS='<the 12 lifts>' HEADS='lift10' setsid nohup bash series.sh <round> 1 <case>... &` (started
   on the head with `ssh -f`; log `series-<round>.log`, START/END per case; `touch series-<round>.STOP` stops further

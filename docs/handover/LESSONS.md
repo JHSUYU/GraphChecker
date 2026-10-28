@@ -1,6 +1,6 @@
 # Lessons: the traps we fell into, how we measure, how we debug (2026-10-18)
 
-Read after RULES.md, AGENTS.md, OPERATIONS.md, PARALLEL.md, CHECKING.md and REFACTOR-PLAN.md. Every item below
+Read after RULES.md, AGENTS.md, OPERATIONS.md, PARALLEL.md and CHECKING.md. Every item below
 cost us time at least once; the date or the case it came from is named so it can be checked.
 
 ## 1. How we work (pointers; the rules themselves are in RULES.md)
@@ -261,10 +261,10 @@ hosts (at most 2-3), detached in their own session: heads run from one shell on 
 round's stop ended that shell's ssh clients (HZ14: 24 exit-255 kills; killed replays are now re-queued, at most twice).
 Concurrent `git worktree add` races on `.git/config`: take `/localtmp/vnr3ne/worktree-add.lock` (flock).
 
-## 10. HDFS on HBase's engine, on CloudLab (2026-10-24)
+## 10. HDFS on HBase's engine (2026-10-24)
 
-The port's lessons hold for `system/hdfs-liftlab` too (the same HDFS port, on liftlab); the scheduling ones (CPU-bound,
-charges in hundredths, one pool per round) are CloudLab's and its code is on `system/hdfs-cloudlab` only (PARALLEL §8).
+The port of HDFS onto `system/hbase`'s engine (this branch; first run on CloudLab, whose record is the tag
+`archive/system/hdfs-cloudlab`).
 
 **Porting a system back onto a newer body.** `system/solr`'s cleanup deleted, "system/hdfs keeps them", the Hadoop
 shim (LOC 2a, 980a64b43) and the door entry points only the shim called (LOC 2b, b68e720f0). Read the deletions of the
@@ -287,44 +287,27 @@ nothing and refused; kept for worlds that plant no root (c8d40a5d8), it reproduc
 **World depth 0 is the rule** (RULES, owner 2026-10-19). Run at the engine's default 3, hdfs-17897 asked 993
 obligations over 68 rounds where EX1 asked 30 in 4, and its first claims were refuted re-pairings.
 
-**CloudLab is CPU-bound, not memory-bound.** node0-4: 251 GB and 40 logical (20 physical, Xeon E5-2660 v2, 2013) cores
-each. The host ledger was memory-only; liftlab's 30 GB hosts capped every start by memory, so the per-head core count
-never mattered. Here nine campaigns each filled every host to 40 cores on its own: load 70-93 on 40 CPUs, seed replays
-3-5x slower than EX1. Judge a host by its
-load as well as its memory; one uncapped campaign (`launch-round.sh`) can take the whole pool, so development rounds
-run as sweeps (`sweep.sh`, shared pool).
-
-**Charge what is used where cores bind (2026-10-25).** A replay charged its 90th percentile rounded up to whole cores
-(HDFS: mean 1.63, p90 2.46, charged 2 or 3) left a node at 40 cores charged under a load of 25-55: on liftlab memory
-bound first and the rounding cost nothing. On `system/hdfs-cloudlab` the ledger charges hundredths, a replay its mean,
-and a round runs as one pool of every case (`tools/rounds/run-pool.sh`, PARALLEL §8), not lanes and not alone reruns,
-which only paid on 30 GB hosts; `system/hdfs-liftlab` reverted all of it, since on liftlab memory binds first.
-
-**Cluster setup traps (tools/cloudlab/setup-nodes.sh does them right):** the home directory is local per node, so the
-repositories, worktrees, snapshots, trees, ~/.m2 and z3 must live on the shared /bulk; Ubuntu's `maven` pulls in JDK 11
-as the default java (set JDK 8 with update-alternatives); the unit tests call `z3` from PATH (a /usr/local/bin link);
-the shell test needs `jq`; Ubuntu 22.04 has no gcc-6 (build the VM in the sources' Ubuntu 18.04 image,
-`tools/vm/build-image-docker.sh`); four tree builds at once race on the shared Maven wrapper's download (run `./mvnw -v`
-once first); a surefire provider is fetched at the first online `mvn package`, so the first test run must not be `-o`.
-A remote background job is started with `ssh -f <host> 'setsid nohup <cmd> >log 2>&1 </dev/null &'`: without `-f`
-the ssh session stays open on the job and the calling tool waits on it (agent D's offline composes, 2026-10-24: its
-shell call never returned, the four composes never started, and the agent sat silent for an hour until stopped).
-
-**Bounds calibrated on liftlab:** CloudLab's cores are 2-5x slower per case (F1: TestDFSUpgrade's seed replay 2957 s
-against EX1's whole case of 1857 s). `replay_timeout_s=2400` then kills a focused replay that runs a long workload to
-its window's close: hdfs-adhoc-24, 26, 37 ended BOUNDED by it on the same three response-loss flips, each past the
-target's section of the test, so `case.sh` declares 7200 for them. A bound's expiry that repeats on the same flips in
-every case of a family is the workload's length, not a hang: read where the killed replay was (the test's line).
+**A bound's expiry that repeats on the same flips is the workload's length.** `replay_timeout_s=2400` killed the focused
+replays of hdfs-adhoc-24, 26 and 37 on the same three response-loss flips, each past the target's section of the test
+(TestDFSUpgrade's seed replay alone took 2957 s on slower cores), so `case.sh` declares 7200 for them. Read where the
+killed replay was (the test's line) before calling it a hang.
 
 **Heartbeat recency is the time model:** with 1 s heartbeats, the NameNode's choice of a block recovery's primary (the
-most recently heartbeated replica) followed how the nodes' heartbeats fell, and under CloudLab's load every replay of
+most recently heartbeated replica) followed how the nodes' heartbeats fell, and under heavy CPU load every replay of
 `TestBlockRecovery2#testRecoveryTimeout` chose the other DataNode than its recording (F1-adhoc-28 MISSING). The tree's
 first answer, the first live replica in the block's order, still followed the write pipeline's order, which a replay
 drew otherwise (F2-adhoc-29); the primary is now the live replica with the least DataNode UUID, a value both passes
 share. A workaround must stand on what both passes agree on, not on a second order that may differ.
 
-**Memory is plentiful, so heaps are large, and a table sized by the heap is large too:** HDFS sizes its INodeMap and
-BlocksMap by `Runtime.maxMemory()`, so a 22 GB seed replay's INodeMap had 33M buckets and every fsimage save walked them
-all in the interpreter; the stall watchdog (300 s with no new event) then ended 225 of hdfs-adhoc-52's replays. On liftlab
-the heaps were small enough. Read a REPLAY_NO_PROGRESS replay's thread dump before calling it a hang: a RUNNABLE main
-thread in the workload's own loop is a computation, not a stall (the tree now sizes a GSet as for 64 MB).
+**A table sized by the heap is as large as the heap:** HDFS sizes its INodeMap and BlocksMap by `Runtime.maxMemory()`,
+so a 22 GB seed replay's INodeMap had 33M buckets and every fsimage save walked them all in the interpreter; the stall
+watchdog (300 s with no new event) then ended 225 of hdfs-adhoc-52's replays. Read a REPLAY_NO_PROGRESS replay's thread
+dump before calling it a hang: a RUNNABLE main thread in the workload's own loop is a computation, not a stall (the tree
+now sizes a GSet as for 64 MB).
+
+**Setup traps that hold anywhere:** concurrent first builds of several trees race on the shared Maven wrapper's download
+(run `./mvnw -v` once first); a surefire provider is fetched at the first online `mvn package`, so the first test run must
+not be `-o`; the unit tests call `z3` from PATH; the shell test needs `jq`. A remote background job is started with
+`ssh -f <host> 'setsid nohup <cmd> >log 2>&1 </dev/null &'`: without `-f` the ssh session stays open on the job and the
+calling tool waits on it (agent D's offline composes, 2026-10-24: its shell call never returned, the four composes never
+started, and the agent sat silent for an hour until stopped).
