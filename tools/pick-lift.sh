@@ -2,7 +2,7 @@
 lifts_given=${LIFTS+set}
 # shellcheck source=lib/gc-env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/gc-env.sh"
-[[ -n "${lifts_given}" ]] || LIFTS=$(printf '%s\n' ${LIFTS} | grep -vx "${GC_CONTROL_HOST}" | tr '\n' ' ')
+[[ -n "${lifts_given}" ]] || LIFTS=$(printf '%s\n' ${LIFTS} | grep -vx lift11 | tr '\n' ' ')
 min=${1:-6}
 for h in ${LIFTS}; do
   ssh -o ConnectTimeout=4 -o BatchMode=yes "$h" \

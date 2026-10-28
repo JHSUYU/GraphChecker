@@ -1,19 +1,27 @@
 #!/usr/bin/env python3
-"""final-stats.py: the ZooKeeper final table on CloudLab (as results/hbase and results/hdfs): per case its final run
-(the first round of --order whose run accept-<round>-<short> has a summary row), its verdict, time in four parts
-and the final closure's size. seeding = PREFLIGHT..IMPORT (+ZKKEYS); exploration = EXPLORE; compose+solver = COMPOSE +
-SOLVE + DECIDE; other = CONFIRM + EMIT + REPRODUCE; refuted = the wall of the claims CONFIRM refuted before the last;
-regions / occurrences = the final closure; rounds = EXPLORE's obligation generations. A round --alone names ran its
-case alone on the five nodes; any other ran beside other cases.
-Usage: final-stats.py --order Z2,Z1 --cases experiments/zookeeper/zookeeper-cases.tsv [--out /bulk/gc-out/zk-final]
-       [--alone F2]"""
+"""final-stats.py -- the ZooKeeper final table, ported from HBase's analysis/hbase-2026-10-20/lead/final-stats.py: per
+case its final run (the first round of ORDER whose run accept-<round>-<short> has a summary row), its verdict, time in
+four parts and the final closure's region count. seeding = PREFLIGHT..IMPORT (+ZKKEYS); exploration = EXPLORE;
+compose+solver = COMPOSE + SOLVE + DECIDE; other = CONFIRM + EMIT + REPRODUCE; refuted = the compose and CONFIRM of the
+claims CONFIRM refuted before the last (final/refuted/<n>): stage_metrics.tsv times only the last claim, so it is the wall
+the stages leave uncovered. regions = distinct regionId of the final
+closure's execution_task_plan.jsonl, occurrences = its rows; rounds = EXPLORE's obligation generations. A round named
+F2* or F3* (HBase's rule), or one --alone names, ran its case alone; any other (F1*) ran concurrently.
+Usage: final-stats.py --order F2S,F1B --cases <final snapshot>/experiments/zookeeper/zookeeper-cases.tsv
+       [--out /bigtemp/vnr3ne/gc-out/zookeeper-final] [--alone F2S,F2T]. Prints TSV, then the markdown table."""
 import argparse, glob, json, os, re
 
 SEED = ['PREFLIGHT', 'FREEZE_TOOL', 'SETUP', 'FREEZE', 'SEED', 'PLAN', 'INSTRUMENT', 'REPLAY', 'IMPORT', 'ZKKEYS']
 COMPOSE = ['COMPOSE', 'SOLVE', 'DECIDE']
 OTHER = ['CONFIRM', 'EMIT', 'REPRODUCE']
+SHORT = {'zk-bugs-quota-init': 'quota', 'zk-bugs-election-offer': 'offer', 'zk-bugs-container-reuse': 'cont',
+         'zk-bugs-retry-seq-quota': 'rseq', 'zk-bugs-trunc-sync': 'trunc', 'zk-bugs-observer-master': 'om'}
+
+
 def short(case):
-    return case.split('-', 1)[1]
+    if case in SHORT:
+        return SHORT[case]
+    return case[len('zk-adhoc-'):] if case.startswith('zk-adhoc-') else case[len('zk-'):]
 
 
 def ended(path):
@@ -22,10 +30,10 @@ def ended(path):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--out', default='/bulk/gc-out/zk-final')
+    p.add_argument('--out', default='/bigtemp/vnr3ne/gc-out/zookeeper-final')
     p.add_argument('--order', required=True, help='rounds, most final first, comma-separated')
-    p.add_argument('--cases', required=True, help='experiments/zookeeper/zookeeper-cases.tsv')
-    p.add_argument('--alone', default='', help='rounds that ran alone')
+    p.add_argument('--cases', required=True, help="the final snapshot's experiments/zookeeper/zookeeper-cases.tsv")
+    p.add_argument('--alone', default='', help='rounds that ran alone (default: F2* and F3*)')
     a = p.parse_args()
     order = [r for r in a.order.split(',') if r]
     alone = set(r for r in a.alone.split(',') if r)
@@ -67,7 +75,8 @@ def main():
         finding = last[12] if len(last) > 12 else ''
         native = re.search(r'reproduced (\d+/\d+) natively', finding)
         mech = finding.split('|')[0].split(' at ')[0].strip()
-        rows.append(dict(case=case, run=tag, mode='alone' if run in alone else 'concurrent', claim=last[3], blockers=last[5], wall=int(last[2]), seeding=sec(SEED),
+        rows.append(dict(case=case, run=tag, mode='alone' if (run in alone or (not alone and run[:2] in ('F2', 'F3')))
+                         else 'concurrent', claim=last[3], blockers=last[5], wall=int(last[2]), seeding=sec(SEED),
                          exploration=sec(['EXPLORE']), compose=sec(COMPOSE), other=sec(OTHER), refutedClaims=refuted,
                          refuted=int(last[2]) - sec(SEED + ['EXPLORE'] + COMPOSE + OTHER) if refuted else 0,
                          regions=len(regions),

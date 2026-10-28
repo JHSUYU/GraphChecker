@@ -6,7 +6,7 @@
     "kind": "CLOCK_SKEW",
     "valuationOrdinal": 0,
     "movedRoots": {
-      "M_J_field_REGION.a45a7fec-aa28-3ad7-aaf4-382594068a0f.in.25a22341-7aef-3f7c-bddb-66e6f1fb5679.occ.fcf4b028b5b7b5631bab1d247beeb37542a1bf73d4337a57ccca486cfa1dfea8_java/lang/Long": "142308104"
+      "M_J_field_REGION.a45a7fec-aa28-3ad7-aaf4-382594068a0f.in.25a22341-7aef-3f7c-bddb-66e6f1fb5679.occ.fcf4b028b5b7b5631bab1d247beeb37542a1bf73d4337a57ccca486cfa1dfea8_java/lang/Long": "2125452314"
     },
     "polarityDecides": true,
     "gaps": [
@@ -14,7 +14,7 @@
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "OWNER_PINNED_BY_CONTAINER_READ:MAP/89#-3@ef2ec29311786f2a-c00c5033",
+        "subject": "OWNER_PINNED_BY_CONTAINER_READ:MAP/87#-3@ef2ec29311786f2a-6240ca38",
         "detail": "a field or a query of this path is asked through a query\u0027s read of this container, which names no object, so its family is held to the arm the run took"
       },
       {
@@ -40,8 +40,8 @@
       }
     ]
   },
-  "solverRuns": 16,
-  "seedSessionId": "seed-result-c3ae3ab5",
+  "solverRuns": 18,
+  "seedSessionId": "seed-result-f72fe96f",
   "valuations": [
     {
       "ordinal": 0,
@@ -50,25 +50,25 @@
         "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.92a1d6ce-a2a3-3619-89e3-0dc4c6d18bb9": "false"
       },
       "moved": {},
-      "selectedPathId": "29c82341916b6e65",
-      "selectedSessionId": "cb961f86d5682524-7888e8c8",
+      "selectedPathId": "7e7d7c8b3c88752b",
+      "selectedSessionId": "cb961f86d5682524-2571bc12",
       "fatalObserved": true,
       "selectedArms": [
         {
-          "selector": "writer_arm__1__5c2393384c36",
-          "family": "writer_family__1__5c2393384c36",
+          "selector": "writer_arm__3__62b77de9947d",
+          "family": "writer_family__3__62b77de9947d",
           "groupId": "6fc8e0e66edde667",
           "attachEndpointIds": [],
-          "sessionId": "cb961f86d5682524-7888e8c8",
+          "sessionId": "cb961f86d5682524-2571bc12",
           "sessionIds": [
-            "cb961f86d5682524-7888e8c8"
+            "cb961f86d5682524-2571bc12"
           ],
-          "producerPathId": "41c66503113305c8",
+          "producerPathId": "2186d5419e69983e",
           "interactionIds": [
             "6704871d20e3d2c1"
           ],
           "expressionRefs": [
-            "EXPR.9bf7f5b4f115bc3a"
+            "EXPR.859bb3b84f66ed77"
           ],
           "attested": true
         }
@@ -98,7 +98,7 @@
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "OWNER_PINNED_BY_CONTAINER_READ:MAP/89#-3@ef2ec29311786f2a-c00c5033",
+      "subject": "OWNER_PINNED_BY_CONTAINER_READ:MAP/87#-3@ef2ec29311786f2a-6240ca38",
       "detail": "a field or a query of this path is asked through a query\u0027s read of this container, which names no object, so its family is held to the arm the run took"
     },
     {

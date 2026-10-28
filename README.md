@@ -17,23 +17,6 @@ A SAT comes with a claim naming the roots that moved (`claim.json`) and one repl
 the program agrees (`confirm.json`). What the rows do not state is named, never silently
 defaulted.
 
-## This branch: the 16 ZooKeeper cases on CloudLab
-
-`system/zookeeper-cloudlab` (2026-10-25) runs every ZooKeeper case of `system/zookeeper` on a CloudLab cluster of five
-nodes, `node0`-`node4` (40 logical cores and 251 GB each, `/bulk` shared over NFS), with `system/hdfs-cloudlab`'s
-CloudLab layer and the parallel strategy both CloudLab branches share ([docs/handover/PARALLEL.md](docs/handover/PARALLEL.md)
-§8): cores bind here, not memory, so the ledger charges hundredths of a core, a replay its measured mean, a node's
-busy cores are its load where its charges overstate them, and a round is one pool of every case
-(`tools/rounds/run-pool.sh`). The fork's `graphchecker/zookeeper-checks` carries two more workarounds. Result
-(`results/zookeeper/README.md`): 15 of 16 cases reach their liftlab verdict -- the five owner-bug checks but
-trunc-sync and the sixth bug check PASS (SAT, confirmed in the VM, reproduced natively 7-10/10), trunc-sync
-(ZOOKEEPER-5094) is not detected, the study checks end SAT, SAT_UNCONFIRMED or UNSAT as on liftlab; zk-adhoc-06 does
-not replay its recorded election here (TODO "ZooKeeper on CloudLab" 1). No new bug.
-**Start at [docs/handover/START-HERE.md](docs/handover/START-HERE.md)**; the cluster is
-[docs/handover/OPERATIONS.md](docs/handover/OPERATIONS.md) §11, a fresh clone [docs/REPRODUCE.md](docs/REPRODUCE.md) §8.
-The rest of this README is the shared index; where it names `lift*` hosts and `/bigtemp`, read node0-4 and `/bulk` on
-this branch.
-
 ## Use all ten servers, in parallel -- mandatory for whoever takes over
 
 The owner (long-term, 2026-10-05): "一定要最大化利用10个server。这10个server配有nfs,你只要做好代码隔离等。可以大大加速的。这是你的
@@ -96,7 +79,7 @@ that works on this project takes [RULES.md](docs/handover/RULES.md),
 
 | # | document | what it holds |
 | --- | --- | --- |
-| 0 | [docs/handover/START-HERE.md](docs/handover/START-HERE.md) | A new lead starts here: the ZooKeeper group on CloudLab (2026-10-25), the parallel strategy, each case's verdict, how to run a case and the series (liftlab's: [zookeeper-START-HERE.md](docs/handover/zookeeper-START-HERE.md); HBase's: [hbase-START-HERE.md](docs/handover/hbase-START-HERE.md)) |
+| 0 | [docs/handover/START-HERE.md](docs/handover/START-HERE.md) | A new lead starts here: ZooKeeper finished (2026-10-22), each case's verdict, what to read in order, what is left, how to run a case and the series, the rules, where everything is (HBase's: [hbase-START-HERE.md](docs/handover/hbase-START-HERE.md)) |
 | 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands: ZooKeeper finished (§Z: what `system/zookeeper` and the ZooKeeper fork's tree hold, snapshots, images, runs, evidence); HBase finished (§H: what `system/hbase` and the HBase fork's tree hold, each case's result, where everything is); Solr after its final round SGF9 (2026-10-19, §S: what `system/solr` holds, the fork's tree, each study check's result and time); the end of the HDFS group (2026-10-08): the two HDFS branches and what each holds; the goals (verbatim); the remote and the parked local branches; every system tree (Hadoop, Solr, ZooKeeper, HBase) with its branch and, for HDFS, the fork's branch it is; VM images and snapshots; the rounds that closed each case; where the evidence lives. |
 | 2 | [docs/handover/TODO.md](docs/handover/TODO.md) | The plan, per system in the owner's order (HDFS, Solr, HBase, ZooKeeper): for HDFS the follow-ups (the two-phase final acceptance run, the general fixes the workarounds stand in for, the defects found, speed, cleanup); then each next system's steps. |
 | 3 | [docs/handover/RULES.md](docs/handover/RULES.md) | The owner's standing rules, long-term, quoted: what a finished check is (only SAT or UNSAT, a right `.smt`), symbolic scope first, general fixes only, no fallback code, a large closure converges (a bound is a rare last resort), workarounds with measure, system by system, git and safety. |
@@ -198,9 +181,9 @@ is written.
 
 Obligations of a campaign (each a solve, then its replay when the solver answers SAT, two starts),
 and GROW's re-runs, fan out over the hosts in
-`CAUSYNTH_CAMPAIGN_WORKER_HOSTS`, each to the host with the most room (the most free cores, then the most memory room),
-as many on a host as its ledger admits. A head's own steps go to its host when it has room, else to the pool's host
-with the most room (`campaign_head_charged`, run there through `run_engine.sh --run-placed`). Every start on a
+`CAUSYNTH_CAMPAIGN_WORKER_HOSTS`, each to the host with the most room, as many on a host as its ledger admits, up to its
+cores. A head's own steps go to its host when it has room, else to the pool's host with the most
+room (`campaign_head_charged`, run there through `run_engine.sh --run-placed`). Every start on a
 host is charged to the ledger first, at its measured need, for as long as it runs: the seed replay
 (twice the recording's measured peak at its start, its heap sized for seven times it, growing while its host has room), an obligation's solve (what a solver starts at), then
 every obligation's, re-run's and CONFIRM's replay
@@ -215,11 +198,7 @@ heap) and a `fanout.sh` job (its `NEED_MB`). A sweep's cases share the hosts
 replay charge (PIPELINE §7.7). A start goes only when both the host's live charges and its real use
 (`MemTotal` less `MemAvailable`), each with the start and a head's held room (its engine JVMs'
 measured peak times 1.25, the largest idle head's of the host), stay within
-`CAUSYNTH_HOST_MAX_USED_PCT` (70) percent of `MemTotal`, and the cores its live charges keep busy, with
-the start's own (a replay its campaign's measured cores, a solve two, an engine JVM, a REPRODUCE run or a
-`fanout.sh` job one), stay within `CAUSYNTH_HOST_MAX_CORES_PCT` (100) percent of its `nproc` (a host whose
-charges keep no core busy takes any one start): memory binds on liftlab, cores on CloudLab. A charge,
-`<mb>.<cores x 100>.<host>.<pid>.<time>.<rand>`, lives by a lease its holder renews
+`CAUSYNTH_HOST_MAX_USED_PCT` (70) percent of `MemTotal`; a charge lives by a lease its holder renews
 (`$CAUSYNTH_HOST_LEDGER/<host>/charges/`, 120 s), so a killed run's charges lapse, and is released
 the moment what it ran returns. A running workload JVM that outgrows its
 charge is granted the excess, charged on the ledger, unless the host's real use (`MemTotal` less

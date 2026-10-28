@@ -12,61 +12,61 @@
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "12ee32eeb766f114 of seed-result-407921a3",
+        "subject": "12ee32eeb766f114 of seed-result-451ada22",
         "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 3469), where the path throws: no producer for this path"
       },
       {
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "2227dedcab4dcf52 of seed-result-407921a3",
+        "subject": "2227dedcab4dcf52 of seed-result-451ada22",
         "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 3469), where the path throws: no producer for this path"
       },
       {
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "197d3ac8346c75d8 of seed-result-407921a3",
+        "subject": "197d3ac8346c75d8 of seed-result-451ada22",
         "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 3469), where the path throws: no producer for this path"
       },
       {
         "sessionId": "composition",
         "kind": "ADMISSION_GAP",
         "cls": "DIAGNOSTIC",
-        "subject": "12ee32eeb766f114 of 64a6b235aa32c40d-112f881f",
+        "subject": "12ee32eeb766f114 of 64a6b235aa32c40d-85448e1e",
         "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 3469), where the path throws: no producer for this path"
       },
       {
         "sessionId": "composition",
         "kind": "CLAIM_REFUTED",
         "cls": "DIAGNOSTIC",
-        "subject": "e92af8a68bf30506",
-        "detail": "an earlier claim\u0027s model on this path, with arms [writer_arm__0__0e4b4117ac0f, writer_arm__0__15a105617948, writer_arm__0__9aa7a7a84874] at {}, is excluded: the run took an edge the model did not choose, so it did not run the model: STATE 09d68d528996d03c: the model joined this read to writer 1bb014610ab01132 (version 2567), the run observed MAP/12#-3@3194 written by f16a074920147ddc"
+        "subject": "26e6689ca85278cc",
+        "detail": "an earlier claim\u0027s model on this path, with arms [writer_arm__0__c7db935a18c5, writer_arm__0__dd410c1016c5] at {}, is excluded: the run took an edge the model did not choose, so it did not run the model: STATE 09d68d528996d03c: the model joined this read to writer 1bb014610ab01132 (version 2567), the run observed MAP/12#-3@3194 written by f16a074920147ddc"
       }
     ]
   },
-  "solverRuns": 10,
-  "seedSessionId": "seed-result-407921a3",
+  "solverRuns": 18,
+  "seedSessionId": "seed-result-451ada22",
   "valuations": [
     {
       "ordinal": 0,
       "status": "sat",
       "assignment": {},
       "moved": {},
-      "selectedPathId": "e92af8a68bf30506",
-      "selectedSessionId": "seed-result-407921a3",
+      "selectedPathId": "26e6689ca85278cc",
+      "selectedSessionId": "seed-result-451ada22",
       "fatalObserved": false,
       "selectedArms": [
         {
-          "selector": "writer_arm__0__ef27d1fcc43a",
-          "family": "writer_family__0__ef27d1fcc43a",
+          "selector": "writer_arm__0__e245fd6aad1c",
+          "family": "writer_family__0__e245fd6aad1c",
           "groupId": "bcfa93d4d7a14a9c",
           "attachEndpointIds": [],
-          "sessionId": "seed-result-407921a3",
+          "sessionId": "seed-result-451ada22",
           "sessionIds": [
-            "seed-result-407921a3"
+            "seed-result-451ada22"
           ],
-          "producerPathId": "c8896899822959cd",
+          "producerPathId": "41a8e2b37bd59ac3",
           "interactionIds": [
             "a46ecebfc79200f5",
             "e2fece500e4944b3"
@@ -78,15 +78,15 @@
           "attested": true
         },
         {
-          "selector": "writer_arm__0__2b8c8eb59076",
-          "family": "writer_family__0__2b8c8eb59076",
+          "selector": "writer_arm__0__c7db935a18c5",
+          "family": "writer_family__0__c7db935a18c5",
           "groupId": "1509b2411bccd7c3",
           "attachEndpointIds": [],
-          "sessionId": "seed-result-407921a3",
+          "sessionId": "seed-result-451ada22",
           "sessionIds": [
-            "seed-result-407921a3"
+            "seed-result-451ada22"
           ],
-          "producerPathId": "3f94abfdaf0f1df0",
+          "producerPathId": "147d44b136e1693b",
           "interactionIds": [
             "8bd2bc5cac116571",
             "f22cefbae0fcd942"
@@ -98,7 +98,7 @@
         }
       ],
       "repairedArms": [
-        "writer_arm__0__ef27d1fcc43a"
+        "writer_arm__0__e245fd6aad1c"
       ],
       "unsatCore": []
     }
@@ -108,36 +108,36 @@
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "12ee32eeb766f114 of seed-result-407921a3",
+      "subject": "12ee32eeb766f114 of seed-result-451ada22",
       "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 3469), where the path throws: no producer for this path"
     },
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "2227dedcab4dcf52 of seed-result-407921a3",
+      "subject": "2227dedcab4dcf52 of seed-result-451ada22",
       "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 3469), where the path throws: no producer for this path"
     },
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "197d3ac8346c75d8 of seed-result-407921a3",
+      "subject": "197d3ac8346c75d8 of seed-result-451ada22",
       "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 3469), where the path throws: no producer for this path"
     },
     {
       "sessionId": "composition",
       "kind": "ADMISSION_GAP",
       "cls": "DIAGNOSTIC",
-      "subject": "12ee32eeb766f114 of 64a6b235aa32c40d-112f881f",
+      "subject": "12ee32eeb766f114 of 64a6b235aa32c40d-85448e1e",
       "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 3469), where the path throws: no producer for this path"
     },
     {
       "sessionId": "composition",
       "kind": "CLAIM_REFUTED",
       "cls": "DIAGNOSTIC",
-      "subject": "e92af8a68bf30506",
-      "detail": "an earlier claim\u0027s model on this path, with arms [writer_arm__0__0e4b4117ac0f, writer_arm__0__15a105617948, writer_arm__0__9aa7a7a84874] at {}, is excluded: the run took an edge the model did not choose, so it did not run the model: STATE 09d68d528996d03c: the model joined this read to writer 1bb014610ab01132 (version 2567), the run observed MAP/12#-3@3194 written by f16a074920147ddc"
+      "subject": "26e6689ca85278cc",
+      "detail": "an earlier claim\u0027s model on this path, with arms [writer_arm__0__c7db935a18c5, writer_arm__0__dd410c1016c5] at {}, is excluded: the run took an edge the model did not choose, so it did not run the model: STATE 09d68d528996d03c: the model joined this read to writer 1bb014610ab01132 (version 2567), the run observed MAP/12#-3@3194 written by f16a074920147ddc"
     }
   ]
 }
