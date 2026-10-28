@@ -132,7 +132,8 @@ tree branch `gc/hb-e15` (231d8c7246).
 
 ## S. Solr after the final round SGF9 (2026-10-19) -- read this first if you take over Solr
 
-The owner stopped the 2026-10-18 final round to rewrite the engine's bottlenecks (REFACTOR-PLAN workstreams A-H); the
+The owner stopped the 2026-10-18 final round to rewrite the engine's bottlenecks (workstreams A-H: data representation, the holding composer, the
+scheduler, the exploration core, replay and VM, serial fixed cost, NFS, cleanup); the
 rewrite was merged into `system/solr` and the final round SGF9 ran the 12 study checks, each alone on lift02-10 +
 lift12-15, at world depth 0, on VM `vm-force10` and the tree set `sg3j-trees`. The owner ended it on 2026-10-19 and had
 everything gathered on `system/solr`, pushed with the fork's tree, and documented ("剩余的case我们不跑了，不要了"). Nothing

@@ -184,7 +184,7 @@ recommendation.
 - **A large rewrite is allowed, old code is gone for good** ("由于现在代码太过于臃肿，我已经允许你大改动了", "你可以大规模
   重写了，最后20个case重跑一遍debug就行", "旧的代码就要全部删除了。再也不用了"): one implementation per concept, no
   flag or fallback, nothing kept for comparison (references are old run outputs and old jars); acceptance of the rewrite =
-  all 20 Solr cases rerun and debugged. The plan is REFACTOR-PLAN.md.
+  all 20 Solr cases rerun and debugged (carried out 2026-10-18/19: STATE §S).
 - **Read what exists before building** ("总之你好好读读现在已有的代码机制和细节吧，不要重复造轮子了 ... 包括system/hdfs
   上的上一个版本的代码，包括vm"): an inventory of the engine, both branches and the VM precedes a new mechanism
   (analysis/solr-2026-10-18/capabilities/INVENTORY.md).
