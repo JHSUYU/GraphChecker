@@ -7,21 +7,20 @@ everything lives, how to build, test, run and read a campaign, and the traps the
 
 | what | where / how |
 | --- | --- |
-| hosts | `lift06`…`lift15` (ten) and, since 2026-10-13 (owner), `lift02`…`lift05`, 48 cores and 30 GB each (`lift01` is not usable: `/bigtemp` does not mount there; `lift02` and `lift03` cannot reach `lift15` over ssh, "No route to host", so they are workers, never heads: a head must reach every host of its list, PREFLIGHT refuses the run otherwise). All are used for every fan-out (obligations, rounds, sweeps, builds); a campaign's hosts are its `LIFTS`/`CAUSYNTH_CAMPAIGN_WORKER_HOSTS` at launch (`analysis/solr-2026-10-12/launch.sh` names all thirteen). `lift11` is the owner's interactive machine: it is a **worker but never a campaign head** (`launch-round.sh` enforces it). Never blow up a host's memory: every start goes through the host ledger (below). |
+| hosts | liftlab: `lift02`…`lift15`, 48 cores and 30 GB each (`lift01` is not usable: `/bigtemp` does not mount there). `lift11` is the **control host**, the owner's interactive machine where the sessions run: never a worker or a campaign head (`launch-round.sh` refuses it as a head; `tools/lib/gc-env.sh`'s default `LIFTS` names every lift, so export `LIFTS` without it). `lift07` does not answer since the servers went down on 2026-10-23: leave it out of `LIFTS`. `lift02` and `lift03` cannot reach `lift15` over ssh ("No route to host"), so they are workers, never heads: a head must reach every host of its list, PREFLIGHT refuses the run otherwise. Maven and Ant are installed on `lift02`-`lift06` and `lift08`-`lift10` only: builds of snapshots and trees go there (`LIFTS="..." tools/onlift.sh`). `lift15` has gcc-6 (VM builds). Every fan-out (obligations, rounds, sweeps) uses the workers; a campaign's hosts are its `LIFTS`/`CAUSYNTH_CAMPAIGN_WORKER_HOSTS` at launch. Never blow up a host's memory: every start goes through the host ledger (below). |
 | home | `/u/vnr3ne` is NFS-shared by all lifts, **100 GB quota** (it has been full twice). Keep bulk data off it. |
 | bulk storage | `/bigtemp/vnr3ne` (NFS pool, automounted on every lift, owner-approved): round outputs `gc-out/`, VM images `vm-*/`, specs, analyses, gate outputs `ab/`, helper scripts `bin/`, agent worktrees `wt/`. `test -w` does not trigger the automount; `ls` it first. |
 | local scratch | `/localtmp/$USER` on each lift (replay working directories go to `/localtmp/$USER/graphchecker/`). |
 | stock JDK 8 | `/usr/lib/jvm/java-8-openjdk-amd64`. **Trap:** the owner's dotfiles export `JAVA_HOME=java-11`, which lift11–15 lack, and `bash -c` under ssh re-reads `~/.bashrc`. Do not edit the dotfiles; use `onlift.sh`, which unsets `SSH_CLIENT` and sets Java 8. |
 | where things live | stated once in `tools/lib/gc-env.sh`: `GC_BULK` (`/bigtemp/vnr3ne`), `GC_OUT`, `GC_TREES` (the system trees, `$GC_BULK/wt`), `GC_M2` (their Maven repositories, `$GC_BULK/m2`), `Z3_BIN`, `LIFTS`, the ledger. Every case's `case.sh` names its tree under `GC_TREES`. From a fresh clone of the GitHub branches: [../REPRODUCE.md](../REPRODUCE.md) |
 | z3 | `Z3_BIN` (`~/.local/bin/z3`, 4.14.1), what the engine, `accept.sh`'s probe and `round-verify.sh` run |
-| concolic VM images | `system/solr`: **`/bigtemp/vnr3ne/vm-force10/j2sdk-image`** (sources `96214b520`, its `SOURCE.txt` and `smoke.log` beside it): `vm-force8` plus the read-out channel -- a session's read-out pages state each expression definition once, their tables numbered (`System.readOutTrackedLocations`, `VmExpressionChannel`, VM.md §8); the runtime binds the new native, so it refuses `vm-force8` and older by name. `vm-force8` (`ec4fbd1e1`) is superseded: `vm-force5` (`058c29b9e`: `vm-hg5` plus the forced fatal arm's forcing table, the `Collectors.toMap` model, the enum model, and a String's or builder's shadow keeping no field shadows) plus the base pause a doors-only occurrence holds, under which a frame the program pushes keeps its tracking, cleared at each retake, never resumed away (`System.pauseConcolicBase`, VM.md §2); the runtime binds it, so this side refuses an older image. THE RULE: every hook that opens a door window runs inside a woven observation bracket (`ConcolicRegionRuntime#openDoorWindow` refuses one outside, an `ENGINE_FAULT`). `vm-force7` (`16ea283dc`, the base pause before its review) is kept as LL3-lock-leak's evidence; `vm-force1..5` and `vm-force6` (a read-out window, reverted on `solr-zk-state`) are superseded. Both HDFS branches: **`/bigtemp/vnr3ne/vm-hg5/j2sdk-image`** (sources: branch `hdfs-vm-hg5` `742f13363`; its `SOURCE.txt` and `smoke.log` sit beside it): list/deque/HashSet iterators reach their tracked container, a read record states its observed version `{fieldVersionId, versionKind}` in envelope schema 2, outside mutations marked after they run. `main`'s: `vm-model-guards2`. Every other `vm-*` directory is superseded. Pass an image as `CAUSYNTH_CUSTOM_JDK_HOME` (a sweep: `VM_IMAGE`), never as `JAVA_HOME`. A new image from either HDFS branch's sources: `tools/vm/build-image.sh <new dir>` on a host with gcc-6 (lift15), a few minutes; a fresh clone's image (2026-10-08, `/bigtemp/vnr3ne/repro/vm`) passed the same smoke suite. A Java side that needs natives an image lacks refuses the replay by name (`ConcolicVmBroker#requireCurrentCapabilities`). |
-| HDFS trees | `$GC_TREES/<name>`, one per row of `experiments/hadoop/trees.tsv`, each a branch of the Hadoop fork (`git@github.com:JHSUYU/hadoop.git`; on this cluster each is a worktree of `~/hadoop` on the local branch STATE §3 names): **`hadoop-hdfs-study-r7`** = **`graphchecker/hdfs-checks`** `bd72fcc1a13` (every HDFS case but 07, 21 and 11741: the 36 study checks' markers and workloads, the eight named block-key/snapshot cases, `hdfs-bugs-slowdisk-zero`, the time family's workarounds, HDFS-17897's fix reverted); **`hadoop-hdfs-study-r8`** = **`graphchecker/hdfs-checks-adhoc07`** `e3dab6266a7` (hdfs-adhoc-07 only: r7 + QJM's `AsyncLoggerSet`/`QuorumCall` reply maps in the loggers' order); **`hadoop-hdfs-21`** = **`graphchecker/hdfs-checks-adhoc21`** `c360d869629` (hdfs-adhoc-21 only: r7 + the DataNode handshake on its own joined thread); **`hadoop-hdfs-11741-r6`** = **`graphchecker/hdfs-11741`** `6c86fca9a2b` (hdfs-11741: trunk 734dd8a67cd with HDFS-11741's fix reverted, its own hook generation). `main`'s cases read `$GC_TREES/hadoop-hdfs-dtx` (local `gc/hdfs-unified-dtx`, Maven repo `/bigtemp/vnr3ne/wt/dtx/m2`). **Making a tree**: `experiments/hadoop/prepare-trees.sh <name>` from a built `system/hdfs1` checkout via `tools/onlift.sh -g 8`: clones the branch, installs the checkout's plain jar into the tree's own Maven repository `$GC_M2/<name>`, builds hadoop-hdfs and every module it needs (`experiments/hadoop/build.sh`, Java 8, `javac8-filter-crc32c.sh`), then runs every case's workload once natively, since a case's classpath is read off its workload's surefire report (a case whose workload never ran there fails validate, "missing test report"). After a rebuild, or for a check added to `checks.tsv`: `SKIP_TREE_BUILD=1 experiments/hadoop/build.sh <tree> '<Class>#<method>'` runs just the workload. The trees on this cluster today were made before that script (sparse worktrees of `~/hadoop` built module by module, Maven repositories `$GC_M2/hdfs-study-r7`, `hdfs-study-r8`, `hdfs-11741-r6`). **A per-case tree** (a workaround one case reads, owner 2026-10-06): a fork branch from r7's with the patch, a row in `trees.tsv`, `case.sh` overriding `repo=` for that case id only. A tree change that adds or removes a statement in a method shifts its Jimple unit ids: a case's `loop-bounds*.jsonl` rows naming them must follow. |
-| Solr trees | `system/solr`'s 20 cases: **`lucene-solr-checks`** (`$GC_TREES/lucene-solr-checks`, branch `gc/solr-checks`, a worktree of `~/lucene-solr-8_11`; to be the fork's `graphchecker/solr-checks`, `experiments/solr/trees.tsv`): `gc/solr-bugs` plus every case's marker, the bug checks' workloads and the full-distributed tests' hook. **Making it** from the fork: `experiments/solr/prepare-trees.sh` via `tools/onlift.sh -g 8` (clone, Ant build against the checkout's jar, every case's workload once natively; after a tree change `SKIP_TREE_BUILD=1 experiments/solr/build.sh <tree> <seed> '<Class>#<method>'` runs one workload). `main`'s cases: one Solr 8.11 tree line, `~/lucene-solr-unified` (branch `gc/solr-unified`, a worktree of `~/lucene-solr-8_11`): the shared adapter, both cases' workloads and target markers, the two kept scaffold patches (inventory: `/bigtemp/vnr3ne/analysis/unify/solr-inventory.md`); solr-18406 and solr-18413 name its successor `gc/solr-unified-storing` (`/bigtemp/vnr3ne/wt/lucene-solr-storing`: the same plus SolrZkClient's `MessageDoors#storing` write brackets). The older per-case worktrees (`gc/solr`, `~/lucene-solr-18406`, `~/lucene-solr-18413`, `~/lucene-solr-8_11-adhoc`) serve only rounds started on them. Ant build; native Ant tests need `-Dtests.useSecurityManager=false`. `~/solr` is apache/solr main (blobless: never `git grep` a commit there). |
-| ZooKeeper trees | `/bigtemp/vnr3ne/wt/zookeeper-hb` (`gc/zk-unified-hb`, + the RESPONSE door, for `hb-schedule`; Maven repo `/bigtemp/vnr3ne/m2/zookeeper-hb`). `/bigtemp/vnr3ne/wt/zookeeper-unified` (branch `gc/zk-unified` on `branch-3.9`, a worktree of `~/zookeeper`): the adapter (`CausynthZk`, `CausynthZkCluster`), the `zk-bugs` cases' target markers and the quota workload. Maven build into its own repository `/bigtemp/vnr3ne/m2/zookeeper` (`experiments/zookeeper/build.sh`, which installs the GraphChecker jar there; never `~/.m2`). Build a case's workload before its first run: `SKIP_GRAPHCHECKER_INSTALL=1 bash experiments/lib/run.sh experiments/zookeeper/zk-bugs <case> build`. Its only remote is apache/zookeeper: never push it. |
-| HBase tree | `/bigtemp/vnr3ne/wt/hbase-unified` (`gc/hbase-unified`); clones `~/hbase`, `~/zookeeper`, `~/hadoop`, `~/lucene-solr-8_11`; private Maven repos `/bigtemp/vnr3ne/m2/<name>` |
-| host ledger | `$CAUSYNTH_HOST_LEDGER` = `/bigtemp/vnr3ne/gc-out/hosts/<lift>/charges/<mb>.<cores>.<host>.<pid>.<time>.<rand>` (CloudLab: `/bulk/gc-out/hosts/`): a charge's MB and the cores it keeps busy; its mtime is its 120 s lease, renewed every 10 s by its holder; a lapsed lease no longer counts (it is deleted at ten leases); `explorations/` = the capped explorations running. `ls` the charges of a host to see what holds it |
-| evidence and agent tools | `/bigtemp/vnr3ne/gc-out/solr-bugs/{evidence,agent-tools,scripts}` (jstacks of the ZkStateReader-race hangs, A2's `watch-sb.sh`/`watch-stall.sh` run watchers, the storing tree's `spelledAs-adapter.patch`); `/bigtemp/vnr3ne/readout-stream/` (A6's `measure-seed.sh`, `measure-obl.sh`, `compare.py` and the retained-heap tool `heap/tool/HeapRetained.java`: how replay memory was measured; 4.2 GB of data); `/bigtemp/vnr3ne/gc-out/hb-schedule/` (Z1–Z5 with their `run.sh` recipes); `/bigtemp/vnr3ne/ab/` (offline gates; jars in `ab/jars/`) |
-| round outputs | `/bigtemp/vnr3ne/gc-out/hdfs-study/` (the HDFS group's rounds: `accept-<round>-<n>/`, `sweep-<round>-cases.tsv` maps n to the case, `rounds/<round>.cases`); `/bigtemp/vnr3ne/gc-out/hdfs-excl/` (series EX1, every case alone, PRUNE=0: the offline gate's corpora); `/bigtemp/vnr3ne/gc-out/<branch or agent>/` for agents' runs; `gc-out/accept-V25-*` `main`'s last round |
+| concolic VM images | `system/solr`: **`/bigtemp/vnr3ne/vm-force10/j2sdk-image`** (sources `96214b520`, its `SOURCE.txt` and `smoke.log` beside it): the read-out channel -- a session's read-out pages state each expression definition once, their tables numbered (`System.readOutTrackedLocations`, `VmExpressionChannel`, VM.md §8) -- on top of the forced fatal arm's forcing table, the `Collectors.toMap` and enum models, a String's or builder's shadow keeping no field shadows, and the base pause a doors-only occurrence holds, under which a frame the program pushes keeps its tracking, cleared at each retake, never resumed away (`System.pauseConcolicBase`, VM.md §2); the runtime binds the new natives, so it refuses an older image by name (`ConcolicVmBroker#requireCurrentCapabilities`). THE RULE: every hook that opens a door window runs inside a woven observation bracket (`ConcolicRegionRuntime#openDoorWindow` refuses one outside, an `ENGINE_FAULT`). The other branches' images: `vm-force12` (`system/hbase`, `system/hdfs-liftlab`), `vm-force13` (`system/zookeeper`), `vm-hg5` (the former `system/hdfs` and `system/hdfs1`), `vm-model-guards2` (`main`). Pass an image as `CAUSYNTH_CUSTOM_JDK_HOME` (a sweep: `VM_IMAGE`), never as `JAVA_HOME`. A new image: `tools/vm/build-image.sh <new dir>` from a checkout's `third_party/` sources on lift15 (gcc-6), a few minutes; never overwrite an image a run uses. |
+| HDFS trees | the HDFS cases this branch carries from `system/hdfs1` name `$GC_TREES/<name>`, one per row of `experiments/hadoop/trees.tsv` (`hadoop-hdfs-study-r7`, `-r8`, `hadoop-hdfs-21`, `hadoop-hdfs-11741-r6`; STATE §3; their worktrees are gone since the 2026-10-28 cleanup). **Making a tree**: `experiments/hadoop/prepare-trees.sh <name>` via `tools/onlift.sh -g 8`: clones the fork's branch, installs the checkout's plain jar into the tree's own Maven repository `$GC_M2/<name>`, builds hadoop-hdfs and every module it needs (`experiments/hadoop/build.sh`, Java 8, `javac8-filter-crc32c.sh`), then runs every case's workload once natively, since a case's classpath is read off its workload's surefire report (a case whose workload never ran there fails validate, "missing test report"). After a rebuild, or for a check added to `checks.tsv`: `SKIP_TREE_BUILD=1 experiments/hadoop/build.sh <tree> '<Class>#<method>'` runs just the workload. **A per-case tree** (a workaround one case reads, owner 2026-10-06): a fork branch from r7's with the patch, a row in `trees.tsv`, `case.sh` overriding `repo=` for that case id only. A tree change that adds or removes a statement in a method shifts its Jimple unit ids: a case's `loop-bounds*.jsonl` rows naming them must follow. The HDFS record and its trees are `system/hdfs-liftlab`'s. |
+| Solr trees | `system/solr`'s 20 cases: **`lucene-solr-checks`** (`$GC_TREES/lucene-solr-checks`; on this cluster `GC_TREES=/bigtemp/vnr3ne/wt/sg3j-trees`, whose `lucene-solr-checks` links to the worktree `/bigtemp/vnr3ne/wt/lucene-solr-zktrace2` of `~/lucene-solr-8_11`, branch `gc/solr-zktrace2` 12d23091d1 = the fork's `graphchecker/solr-checks`, `experiments/solr/trees.tsv`). **Making it** from the fork: `experiments/solr/prepare-trees.sh` via `tools/onlift.sh -g 8` (clone, Ant build against the checkout's jar, every case's workload once natively; after a tree change `SKIP_TREE_BUILD=1 experiments/solr/build.sh <tree> <seed> '<Class>#<method>'` runs one workload). Ant build; native Ant tests need `-Dtests.useSecurityManager=false`. `~/solr` is apache/solr main (blobless: never `git grep` a commit there). |
+| ZooKeeper and HBase trees | on their branches (`system/zookeeper`, `system/hbase`: the forks' `graphchecker/zookeeper-checks`, `graphchecker/hbase-checks`). Private Maven repositories `/bigtemp/vnr3ne/m2/<name>`, never `~/.m2`. |
+| host ledger | `$CAUSYNTH_HOST_LEDGER` = `/bigtemp/vnr3ne/gc-out/hosts/<lift>/charges/<mb>.<host>.<pid>.<time>.<rand>`: a charge's mtime is its 120 s lease, renewed every 10 s by its holder; a lapsed lease no longer counts (it is deleted at ten leases); `explorations/` = the capped explorations running. `ls` the charges of a host to see what holds it |
+| evidence and agent tools | `/bigtemp/vnr3ne/ab/` (offline gates; jars in `ab/jars/`); `/bigtemp/vnr3ne/analysis/<topic>-<date>/` (each session's briefs, drivers, readings: START-HERE §5) |
+| round outputs | `/bigtemp/vnr3ne/gc-out/solr/` (the Solr runs of record: SGF7's bug checks, SGF9's 38 21 10 40) and `gc-out/solr-final/` (the owed cases' R1-R4, X1, X1B, X1C), each `accept-<round>-<case>/`; `/bigtemp/vnr3ne/gc-out/hdfs-study/` (the HDFS group's rounds: `accept-<round>-<n>/`, `sweep-<round>-cases.tsv` maps n to the case, `rounds/<round>.cases`); `/bigtemp/vnr3ne/gc-out/hdfs-excl/` (series EX1, every HDFS case alone, PRUNE=0: the offline gate's corpora); `/bigtemp/vnr3ne/gc-out/<branch or agent>/` for agents' runs; `gc-out/accept-V25-*` `main`'s last round |
 | owner's memory notes | `~/.claude/projects/-u-vnr3ne-GraphChecker/memory/` (one fact per file, index `MEMORY.md`) |
 
 ## 2. Helper commands
@@ -56,12 +55,14 @@ tools/onlift.sh -g 10 bash -c 'mvn -q -o package && bash src/test/shell/run_engi
 ```
 
 `onlift.sh` never picks `lift11` (the control host) unless `LIFTS` names it: with `LIFTS` unset,
-`tools/pick-lift.sh` drops it from `gc-env.sh`'s default list, where it stays a campaign's worker.
+`tools/pick-lift.sh` drops it from `gc-env.sh`'s default list. Only lift02-06 and lift08-10 have Maven and Ant: give
+`onlift.sh` those (`LIFTS="lift04 lift05 lift06 lift08 lift09 lift10" tools/onlift.sh ...`) or `-h <one of them>`.
 
 Keep `-o` (offline): `~/.m2` is shared over NFS. A snapshot needs both jars in `target/` (`-jar-with-dependencies`,
 plain); the `hadoop-shim` classifier jar the HDFS trees call is built on `system/hdfs`, which keeps `src/shim/java`.
 
-VM: `tools/vm/build-image.sh <new dir>` via `tools/onlift.sh -h lift15 -g 12` (the one lift with gcc-6): the
+VM: `tools/vm/build-image.sh <new dir>` via `tools/onlift.sh -h lift15 -g 12` (the one lift with gcc-6; it has no Maven,
+which the build does not need): the
 checkout's `third_party/` sources built on local disk as a full JDK, then the smoke suite (`<dir>/smoke.log`); a few
 minutes. Never overwrite an image a round uses; build a new directory.
 
@@ -70,8 +71,8 @@ minutes. Never overwrite an image a round uses; build a new directory.
 ```bash
 tools/lib/worktree-add.sh ~/gc-run/p<N> <commit> --detach   # no third_party/: seconds, not most of an hour
 (cd ~/gc-run/p<N> && tools/onlift.sh -g 10 mvn -q -o package -DskipTests)
-GC_OUT=/bigtemp/vnr3ne/gc-out/<dir> CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-hg5/j2sdk-image \
-  CASES="hdfs-17960 hdfs-adhoc-20" tools/rounds/launch-round.sh ~/gc-run/p<N> <round>   # heads chosen by room
+GC_OUT=/bigtemp/vnr3ne/gc-out/<dir> CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force10/j2sdk-image \
+  CASES="solr-18406 solr-adhoc-21" tools/rounds/launch-round.sh ~/gc-run/p<N> <round>   # heads chosen by room
 #   (CASES unset: launch-round.sh's own list of the named cases)
 # tools/rounds/launch-run.sh <snapshot> <case> <suffix>: one run, its obligations also over all of LIFTS
 DRY=1 ... tools/rounds/launch-round.sh ...                         # the heads it would choose
@@ -83,19 +84,11 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
 - A launch must name its VM image (`CAUSYNTH_CUSTOM_JDK_HOME`; a sweep's `VM_IMAGE`): there is no
   default image.
 - `launch-round.sh` chooses each case's head host at launch from the hosts' room in the ledger
-  (`campaign_host_room`: its memory room and its free cores): the heaviest case first (its `engine_memory_mb`, `tools/lib/heads.sh`
-  `case_engine_heap_mb`), each to the host with the most room (the most free cores, then the most memory room,
-  `campaign_host_roomier`) among those heading the fewest
+  (`campaign_host_room`): the heaviest case first (its `engine_memory_mb`, `tools/lib/heads.sh`
+  `case_engine_heap_mb`), each to the host with the most room among those heading the fewest
   cases, so no host heads two before every host heads one; `lift11` heads nothing. A head only drives its campaign: every
   engine JVM, the seed and CONFIRM replays and REPRODUCE's runs go wherever there is room, its own
   host first (PIPELINE §7.7).
-- **Cores bind on CloudLab, memory on liftlab.** Every charge also states the cores it keeps busy (a replay the
-  campaign's measured `campaign_replay_cores`, a solve 2, an engine JVM, a REPRODUCE run and a `fanout.sh` job 1;
-  PIPELINE §7.7), and a start goes only where the live charged cores of every campaign on the host plus its own stay
-  within `CAUSYNTH_HOST_MAX_CORES_PCT` (100) percent of `nproc` (a host whose charges keep no core busy takes any one
-  start). On liftlab (30 GB, 48 cores) memory always bound first. On CloudLab (251 GB, 40 logical cores) memory never
-  binds: with cores counted per campaign, round C1's nine campaigns each filled every host to 40 cores (load 70-93,
-  HDFS replays 3-5x slower than liftlab's). Campaigns of a build before this charge no cores (their rows read as 0).
 - REPRODUCE's native runs are charged `reproduce_charge_pct` (130) percent of the recording's peak resident
   memory (`run_engine.sh` `campaign_reproduce_one`): a native run's own peak scatters around the recording's
   (110 runs: 32 above it, the largest 1.27x), and ten charged at 100 % on one host outgrew its 70 % ceiling
@@ -128,7 +121,7 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
   checks") gives every case `CAUSYNTH_STREAM_SHARED_POOL=true`, so the cases it runs at once share
   the lifts: each exploration keeps its share in flight, the slots of its hosts at its measured
   replay charge (`campaign_pool_slots`: on each lift as many replays as fit under the 70 % ceiling
-  at that charge, at most its core limit over a replay's cores) over the sharing explorations running now (their entries in
+  at that charge, at most its cores) over the sharing explorations running now (their entries in
   `$CAUSYNTH_HOST_LEDGER/explorations/`), at least one, read again at every start
   (`campaign_stream_has_slot`).
   A sweep's head is admitted (`fanout.sh` `ADMIT_MB`, no lifelong charge: its campaign reserves the room) for the room it reserves on its host
@@ -137,20 +130,17 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
   while one case's 27-32 replays filled the lifts. Once its engine JVMs have run, the room it holds
   is their measured peak times 1.25 (`run_engine.sh` `campaign_head_need_mb`). A lift holds the
   largest idle reservation of its heads, not their sum.
-- A round name is written once (`accept-<round>-<case>` exists → refused). Names used so far:
-  `v*`, `r1`–`r9`, `ra1`, `rb1`, `i1`–`i3`, `stream*`, `fast*`, `g1`, `F1`, `F1b`, `F2`, `K*`, `L*`, `N1`,
-  `V1`–`V25`, `V4h`, `V5h`, `V7b`, `V16b`, `V18b`, `V22b`, `V22c`, `V24b`, `PP1`, `PP1b`, `M1`, `CF1`, `STO1`, agents' `a37f*`,
-  `ee*`, `agent-*`, `w4-*`, `R5x*`, `r6s*`, `R7*`, `nr*`, `SB*`, `SBX*`, `SBR*`, `EO*`, `ZK*`, `SD*`, `HB*`, `HBA*`,
-  `W6C*`, `Z*`, `G*` (in their own `GC_OUT`). Use a fresh name: the next `main` round is `V26`, the next HDFS group round `HG11` (used 2026-10-06/07 on the two HDFS branches: `HL1`, `HL1R-*`, `HF1`-`HF3`, `OK3`-`OK5`, `W21`, `CC*`, `EX1`; used 2026-10-05/06: `HG8*`, `HG9`, `HG9B`, `HG9L-<case>`, `SW1`, `SW1L-45`, `HG10V`; agents', each in its own `GC_OUT`: `TM*`, `CL*`, `AR*`, `AW*`, `DO*`, `FD*`, `CW*`, `SH55`, `NP*`, `WD*`, `SL*`) (HDFS-study names used: `HG1`-`HG5`, `HG5A`, `HG7`, `HS*`, `HN*`, `TD*`, `DS2`-`DS8`, `DC*`, `IOF*`, `HSS*`, `HSC*`, `HOA*`, `HDV*`, `HCS*`; agents' of 2026-10-05, each in its own `GC_OUT`: `RIH*`, `MCH*`, `WHF*`, `HCL*`, `PS*`, `AS*`, `HR*`, `DW*`, `D1`).
-- Typical wall time: the 46 HDFS cases each alone on the ten lifts are [../design/PERFORMANCE.md](../design/PERFORMANCE.md)
-  §6 (series EX1: most 10-40 min, 11741 ~1.5 h, 07 ~3 h). After the campaign, the acceptance report's `probe.sh` (z3
+- A round name is written once (`accept-<round>-<case>` exists → refused): `ls $GC_OUT` before naming one, and give an
+  agent's runs their own `GC_OUT`. Solr's names so far: SGF*, R1-R4, X1, X1B, X1C (and their `...STOP` evidence names).
+- Typical wall time: the 20 Solr cases each alone are `results/solr/README.md` (most 10-40 min, 05 07 14 31 up to
+  ~4 h); the HDFS cases each alone on ten lifts are [../design/PERFORMANCE.md](../design/PERFORMANCE.md) §6 (series EX1). After the campaign, the acceptance report's `probe.sh` (z3
   per alternative path, 600 s each, at most `PROBE_BUDGET_SECONDS` 900 over the probe) adds up to ~15 min before the
   summary row is written; it is reported, not a gate.
 
-**The HDFS group (a sweep of the 46 cases), as the 2026-10-05 lead ran it (round HG7):**
+**A sweep, as the 2026-10-05 lead ran the HDFS group's 46 cases (round HG7):**
 
 ```bash
-tools/lib/worktree-add.sh ~/gc-run/<snap> system/hdfs1 --detach
+tools/lib/worktree-add.sh ~/gc-run/<snap> <commit> --detach
 (cd ~/gc-run/<snap> && tools/onlift.sh -g 6 mvn -q -o package -DskipTests)
 out=/bigtemp/vnr3ne/gc-out/hdfs-study
 cp $out/rounds/HG7.cases $out/rounds/<ROUND>.cases            # the 46 case ids, one per line
@@ -263,11 +253,9 @@ breaks a campaign's time down by stage.
 round's `slots`, `graph`, `gaps` and `tasks` `.jsonl.gz` (a round's `obligations.jsonl`, a worker's
 files and the manifests stay plain). Read them with `zcat`/`gzip -cd` (`zgrep`, `gzip -cd x | jq`); a
 session its replay never closed prints every row, then "unexpected end of file". A run recorded before
-the change (plain `*.jsonl`, through `system/solr` 4c79223f2 and `solr-parkeys`) is evidence only: no
-reader of this engine opens it. To read one with this engine (an offline gate over an old corpus), make a
-compressed copy first -- `GzCopy <src> <dst>` in `/bigtemp/vnr3ne/analysis/solr-2026-10-17/nfs/tool/`
-writes the session files as the publisher does and the round files as the planner does, hard-linking
-everything else, never writing under `<src>`.
+the change (plain `*.jsonl`, through `system/solr` 4c79223f2 and `solr-parkeys`; SGF7's runs among them) is evidence
+only: no reader of this engine opens it (the copier that gzipped such runs, `GzCopy`, went in a cleanup; the compressed
+corpora it made stay under `analysis/solr-2026-10-18/explore/corpora/`).
 
 **Debugging a case** (the method the leads used):
 - **Start with the summary.** Its row gives the claim, the verdict and the reason. Then the log's
@@ -288,9 +276,7 @@ everything else, never writing under `<src>`.
   `obligations-<NNNN>/<id>/obligation_result.jsonl` holds ADMITTED / NOT_ADMITTED / UNSAT /
   ADMISSION_GAP, with the reason. Counting refusal reasons across a round finds the dominant waste.
 - **The host ledger** (`$CAUSYNTH_HOST_LEDGER/<lift>/charges/`). It tells you whether a step waits
-  for memory or cores ("waiting for memory for a head step", "waiting for room: ... N cores charged"). A lapsed
-  charge is a file older than 120 s; a host's live charged cores:
-  `find <ledger>/<host>/charges -newermt @$(( $(date +%s) - 120 )) -printf '%f\n' | awk -F. '{c += $2} END {print c}'`.
+  for memory ("waiting for memory for a head step"). A lapsed charge is a file older than 120 s.
 - **Offline first.** A COMPOSE, EXPLORE or CONFIRM-planning change can be replayed on a recorded
   round with `offline-ab.sh` (§6) before any live run.
 
@@ -368,10 +354,8 @@ everything else, never writing under `<src>`.
 ## 9. Added 2026-10-18
 
 - **Rows are gzip.** Session row files and a round's slots/graph/gaps/tasks are `.jsonl.gz`, read through
-  `smt.ArtifactIO#input` (shell `campaign_rows`). Runs recorded before 2026-10-18 are plain and unreadable by the new
-  code: copy them with `/bigtemp/vnr3ne/analysis/solr-2026-10-17/nfs/tool/GzCopy <src> <dst>` (never into the source;
-  two copies into one destination collide). Compressed planner references: `analysis/solr-2026-10-17/nfs/snap05r5gz`,
-  `nfs/ref/{13,21,19,05r2}`.
+  `smt.ArtifactIO#input` (shell `campaign_rows`); runs recorded before 2026-10-18 are plain and unreadable by the new
+  code (§7).
 - **Watchdog during a round:** `bash /bigtemp/vnr3ne/analysis/solr-2026-10-18/watchdog.sh` (probe
   `watch-remote.sh`): exits at the first D-state pid seen twice, ssh refused twice, a case log unchanged > 15 min, a host
   > 90 % memory, a JVM/z3 of a case other than the running one, a z3 orphaned > 60 min. Re-arm after each alarm.
@@ -379,36 +363,6 @@ everything else, never writing under `<src>`.
   bytes by owner (first claim, rows first), by class and by string kind. Delete dumps after use (tens of GB).
 - **Hosts:** lift15 refused ssh public keys for ~2 h on 2026-10-18 (its /u autofs); the watchdog's ssh check catches
   it. Many parallel ssh sessions can fail with `kex_exchange_identification` (sshd MaxStartups).
-- **The final-round driver** is `analysis/solr-2026-10-16/final-seq5.sh <snapshot> <trees> <head> <case:budget>...`
-  (start scripts `start-sgf8*.sh` beside it; round log `gc-out/solr/SGF8-seq.log`); rename a stopped case's dir to an
-  evidence name (`accept-SGF8STOP-...`) before a rerun, since the driver skips a dir that has a summary.
-
-## 10. CloudLab (system/solr-cloudlab, system/hbase-cloudlab, 2026-10-25)
-
-`system/solr-cloudlab` and `system/hbase-cloudlab` are `system/solr` and `system/hbase` (the engines, case settings and
-workarounds as published) with the CloudLab port of `system/hdfs-cloudlab` (its tools only, none of its HDFS engine
-changes) and the parallel settings sized for this experiment: five Ubuntu 22.04 nodes `node0`..`node4` (Clemson: two
-Xeon Gold 6142, 64 logical = 32 physical cores, 376 GB each; a 10 Gb/s private network 10.10.1.0/24; a second 931 GB
-disk `/dev/sdb`; passwordless ssh between them and to GitHub). Every section above applies with these values:
-
-| what | where / how |
-| --- | --- |
-| hosts | `LIFTS="node0 node1 node2 node3 node4"`, all five workers and heads (`GC_CONTROL_HOST` empty). A series runs from node0 (it serves /bulk); every case's obligations, CONFIRM and native runs go to all five. |
-| the limit | **cores**: a replay is one Zero interpreter thread plus its publication (measured `workload_cores_x100`: hbase-adhoc-07's seed replay 2.15, its obligation replays 1.83-1.92; three other cases' 1.13-1.19), so a node holds 21-32 obligation replays at once by cores (each charged its campaign's measured p90 rounded up, never its seed's: charged the seed's 3, hbase-adhoc-07's round of 292 obligations ran 18 per node, charged 2 it runs 32; rounded to the nearest, a contended replay's lower measure fed back into more admissions, hbase-adhoc-10 at load 100-123 on 64 cores). A node's CPU swings between 30 and 99 % as replays pass their busy phases; replays started together in one round burst together; by memory (80 % of 376 GB at a few hundred MB to a few GB each) far more. Every ledger charge states its cores beside its MB (`<mb>.<cores>.<host>...`, PIPELINE §7.7) and a start goes only where every campaign's live charged cores plus its own fit the node's 64 (`CAUSYNTH_HOST_MAX_CORES_PCT` 100); every choice among hosts takes the one with the most free cores, memory breaking ties (`campaign_host_roomier`). |
-| memory ceilings | sized for 376 GB (commit "CloudLab: the ledger, heaps and solver seats ..."): `CAUSYNTH_HOST_MAX_USED_PCT` 80 (liftlab 70: the nodes run nothing else); `engine_memory_mb` 65536 in every case's `workflow.properties` (an engine JVM starts at its measured need and doubles only when it runs out, so the ceiling costs nothing until used; liftlab's 12288/21504 cut hbase-adhoc-10's planner and solr-adhoc-07's/-14's composers); `campaign_solver_max_heap_mb` 65536; COMPOSE's z3 room `campaign_compose_z3_most_room_mb` and `campaign_compose_z3_host_most_mb` 65536 (all 128 valuations' z3 pairs at once on four nodes; liftlab's 16-18 GB left solr-adhoc-05's scoped z3s memout at their slot). The served planner is charged its whole heap's footprint for life, ~70 GB on its head's node. |
-| solver seats | `campaign_solver_seats`: a warm solver takes a question per four of its node's cores (16 here, 8 on liftlab), each solve charged two cores. |
-| CPU clock | every core at the `performance` governor (`setup-node.sh`; CloudLab's `schedutil` kept busy cores at 2.4-2.8 of 3.7 GHz). A replay is one interpreter thread, so the clock is its speed: under schedutil hbase-bugs-backup-lock-reply-lost's seed and obligation replays took 5m13-5m16 each, its exploration (one round, two replays at once) 362 s against 186 s on the lifts. |
-| shared storage | `/bulk` = `GC_BULK`: node0's `/dev/sdb` (ext4 at `/data`), `/data/bulk` exported over NFS 4.2 and mounted at `/bulk` everywhere (node0 by a bind mount). The home directory is local to each node, so `~/.m2`, `~/.ivy2` and `~/.ant` (Solr's Ant and Ivy) link to `/bulk/m2/dot-*`. |
-| local scratch | `/localtmp` on each node = its own `/dev/sdb` (`/data/localtmp`); replays work in `/localtmp/$USER/graphchecker/`. |
-| repositories | `/bulk/GraphChecker` (`GC_REPO`; worktrees by `tools/lib/worktree-add.sh`, sparse, serialized by a flock); integration worktrees `/bulk/wt/gc-solr-cloudlab`, `/bulk/wt/gc-hbase-cloudlab` |
-| trees | `GC_TREES=/bulk/wt`: `lucene-solr-checks` (the Solr fork's `graphchecker/solr-checks`, 12d23091d1) and `hbase-checks` (the HBase fork's `graphchecker/hbase-checks`, b5d5cc6a20), each built by its system's `prepare-trees.sh` against its worktree's jar: 17/17 and 18/18 workloads PASSED natively, 20/20 and 22/22 cases valid (2026-10-25) |
-| VM images | `/bulk/vm/solr/j2sdk-image` (system/solr's VM sources) and `/bulk/vm/hbase/j2sdk-image` (system/hbase's), each `tools/vm/build-image-docker.sh <dir>` from a full clone on a node's /localtmp (Ubuntu 22.04 has no gcc-6: the sources' Ubuntu 18.04 image), ~10 minutes each, both at once on two nodes; `smoke.log` ends `SMOKE_EXIT=0`, 24 OK |
-| snapshots | `/bulk/gc-run/<system>-cl-<n>` (the final series C2: `-cl-2`) (`worktree-add.sh <dir> system/<system>-cloudlab --detach`, then `mvn -q -o package -DskipTests` on a node) |
-| outputs | `/bulk/gc-out/solr-cl`, `/bulk/gc-out/hbase-cl`; the ledger `/bulk/gc-out/hosts`; the node samples `/bulk/gc-out/cl-util/<node>.tsv` (`tools/cloudlab/util-sampler.sh`) |
-| making the cluster | `BULK_SUBNET=10.10.1.0/24 tools/cloudlab/setup-nodes.sh` from any node with a checkout of either branch (packages incl. Ant, disks, NFS, JDK 8, the dot-directory links, z3, the governor), then REPRODUCE §9 |
-
-The final series ran every case of both systems alone on the five nodes, one at a time
-(`/bulk/analysis/cloudlab-2026-10-25/series.sh`: `tools/rounds/run-series.sh` per system from the snapshots, the
-sampler throughout); `tools/rounds/final-stats.py --util /bulk/gc-out/cl-util` makes each system's table
-(`results/<system>/README.md`). Monitoring: `/bulk/analysis/cloudlab-2026-10-25/watch.sh` (a line per stage change,
-error and verdict, and the nodes' CPU and memory every 5 min, under a Monitor).
+- **The series driver** of the owed cases is `analysis/solr-2026-10-22/lead/final/series2.sh` (START-HERE §3); the
+  standard one is `tools/rounds/run-series.sh` (REPRODUCE §4). Rename a stopped case's dir to an evidence name
+  (`accept-<round>STOP-...`) before a rerun, since a driver skips a dir that has a summary.

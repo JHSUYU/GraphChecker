@@ -1690,16 +1690,9 @@ NFS client holding the old row cached rewrote it past a truncate it lost (MCH1: 
 then the tail of the solver's, and the planner failed on the line). The head starts each queued solve, REPLAY, GROW re-run (§7.8) and confirmation,
 first first, while the exploration runs fewer than its share of a shared pool (below; a REPLAY
 counts like any start), on the host of `campaign_worker_hosts` (empty: this machine, no
-ssh) WITH THE MOST ROOM (`campaign_stream_admit_host`, `campaign_stream_by_room`). A host's room
-orders by its free cores first -- its core limit less the cores every campaign's live charges keep
-busy there -- and its memory room breaks ties -- the ceiling less the room heads hold there and the
-larger of its live charges and its real use -- as the head's view of its ledger holds them
-(`campaign_host_roomier`, the one order every choice among hosts takes: the stream's, a head step's,
-a head's hold, `launch-round.sh`'s heads, `fanout.sh`'s hold, `offline-ab.sh`'s placement,
-`campaign_hosts_by_room`); ordered by memory alone, CloudLab's 251 GB nodes always differed by memory
-and never by cores: L1-17897's 40 replays ran 16/4/4/4/12 on node0-4, L2-adhoc-10's 108 by free cores
-21/21/19/23/24 (its solves follow the warm solver's seats, not this order: 98 of 203 on node3, whose
-solver served first); the pool's order breaks ties, so a burst of equal starts goes one to
+ssh) WITH THE MOST ROOM (`campaign_stream_admit_host`, `campaign_stream_by_room`: the ceiling less
+the room heads hold there and the larger of its live charges and its real use, as the head's view
+of its ledger holds them, the pool's order breaking ties, so a burst of equal starts goes one to
 each host in turn and every start after it to the host its charges left the most room; one
 round-robin cursor for every kind sat, after each solve the one warm solver took, on the host after
 it, and every replay's scan started there: SGF8-adhoc-07 rounds 7-11 put 17 of 19 replays on lift04,
@@ -1757,25 +1750,24 @@ time in it (the ledger's lock, the hosts' readings, the choice), each kind no ho
 and each job's end as the head takes it; a peer states its start time (`campaign_peer_enter`'s "peer <host>
 at <epoch>" line, in the job's logs); `analysis/solr-2026-10-18/stream2/ctlplane.py` reads them with the
 workers' files (a replay's JVM exit, `workload_cores_x100`). A host is taken for a start of a
-kind (`campaign_stream_try_host`) when its ledger admits the start at its kind's charge AND its
-kind's cores (below; `campaign_stream_kind_cores`: a solve or a `HARD` `campaign_solve_cores`, two,
+kind (`campaign_stream_try_host`) while the cores the campaign's starts keep busy there leave the
+start's own (read once, `campaign_host_cores`; `campaign_stream_kind_cores`: a solve or a `HARD` two,
 its z3 race's two engines, a REPLAY, a re-run or a confirmation the cores replays measurably keep busy,
 `campaign_replay_cores`: the seed replay's alone, then at least the 90th percentile of the replays after it
 once eight returned, from the watcher's `workload_cores_x100`, its CPU time over its wall time -- solr-adhoc-05's
-replays kept 2.2-3.7 cores busy each, and counted one they held 8 of 13 hosts at 96-100 % CPU; CloudLab's HDFS
-replays p50 0.78, p90 1.39, at most 1.65 of 614), a
+replays kept 2.2-3.7 cores busy each, and counted one they held 8 of 13 hosts at 96-100 % CPU; each start gives
+back the cores it was admitted at, `stream_job_cores`; a host running
+none takes one whatever its count; `campaign_stream_host_count` counts each start in and out), a
 question the host's resident solver answers (`campaign_stream_seated`: a solve) only on a free seat
-of that solver (`campaign_stream_has_seat`, §7.5: a warm host's seats, a cold host's one,
-`campaign_stream_host_count` counting each solve in and out) -- so each kind runs on a host as many
-at once as its core limit and its room at that kind's measured charge hold, across every campaign
-on it, with no fixed count beside
+of that solver (`campaign_stream_has_seat`, §7.5: a warm host's seats, a cold host's one), and its
+memory ledger admits the start at its kind's charge (below) -- so each kind runs on a host as many
+at once as its cores and its room at that kind's measured charge hold, with no fixed count beside
 them (two solves and one hard-lane ask per host kept PV7-adhoc-39 alone on the pool far below its
 room); none admitting, the head waits for a return, its step's end or the poll interval
 (`campaign_host_poll_s`). A START TAKES MILLISECONDS: the pool admits by the head's VIEW of each host's
-ledger (`campaign_stream_view`, `campaign_stream_try_charge`) -- its live charges' MB and cores, the room
-heads hold there and its real use, read again once older than the poll interval, and between, the charges
-as the head's own starts found them under the host's lock and less what it released (the MB and cores its
-charge row names, `campaign_stream_release`) -- so a start the view has no room
+ledger (`campaign_stream_view`, `campaign_stream_try_charge`) -- its live charges, the room heads hold there
+and its real use, read again once older than the poll interval, and between, the charges as the head's
+own starts found them under the host's lock and less what it released -- so a start the view has no room
 for takes no lock and reads nothing, and one it has room for is decided by the ledger's rule
 (`campaign_host_fits`, `campaign_host_admit`, as below) with the head room read as it stands and the live
 charges under the lock; each host's MemAvailable is kept fresh beside the loop by a reader of its own
@@ -1790,28 +1782,13 @@ a background subshell, or remotely through `ssh`: a solve as `run_engine.sh --ru
 with the frozen jar and its sha256, a REPLAY or a re-run as a placed step (below)
 (`campaign_stream_job`; a REPLAY's logs `replay-stdout.log`, `replay-stderr.log` and
 `replay-host.txt` beside its solve's); each other start takes the class tree and plan of the
-generation current when it starts (§7.8). The gate
-(`campaign_host_try_start <host> <need> <cores> [spare]`) is a ledger shared by all campaigns, gates and
+generation current when it starts (§7.8). The memory gate
+(`campaign_host_try_start <host> <need>`) is a ledger shared by all campaigns, gates and
 `tools/adhoc/fanout.sh` under `$CAUSYNTH_HOST_LEDGER/<host>/` (`tools/lib/gc-env.sh`, handed to every
-peer with the ceilings): one file per live charge, `charges/<mb>.<cores>.<host>.<pid>.<time>.<rand>`
-(`campaign_host_charge_row`; one reading, `campaign_host_charged`, sums both), and a start is allowed when
+peer with the ceiling): one file per live charge, `charges/<mb>.<id>`, and a start is allowed when
 both `Σ live charges + held + need ≤ L` and `MemTotal − MemAvailable + held + need ≤ L`, where `L`
 is `CAUSYNTH_HOST_MAX_USED_PCT` (70) percent of `MemTotal` and `held` the room a head holds there
-(below), AND either no live charge keeps a core busy or `Σ live charged cores + cores ≤ C`, where `C` is
-`CAUSYNTH_HOST_MAX_CORES_PCT` (100) percent of the host's `nproc` (`campaign_host_core_limit`, the
-host's `cores` file), so a start larger than `C` still runs on a host whose charges keep no core busy
-(`campaign_host_fits`): no start leaves a host more than 70 % charged or used, or more cores charged
-than it has. A refused start says which half refused it (`campaign_host_refused`, the head's "waiting
-for room" line: "<host> has N cores charged to what it runs; one needs K and at most C ... may be
-charged"). The cores a start states are named once: a solve, a `HARD` ask or a solver JVM started for
-no handed charge `campaign_solve_cores` (2; a cold solve's charge keeps its two when its solver takes it
-over), every replay (the seed's, the stream's, the final CONFIRM's) `campaign_replay_cores`, a head's
-engine JVM (every stage's, the served planner's, an offline gate's) `campaign_engine_cores` (1),
-REPRODUCE's native runs `campaign_reproduce_cores` (1), a `fanout.sh` job `campaign_fanout_job_cores`
-(1); what a running JVM is granted as it grows and a composer's z3 room keep none beside the start that
-charged them. On liftlab (30 GB, 48 cores) memory bound first; on CloudLab (251 GB, 40 logical cores)
-memory never binds, and with cores counted per campaign nine campaigns each filled every host to its 40
-cores (round C1: load 70-93, HDFS replays 3-5x slower): the core half is what holds them. A charge holds for the whole life
+(below): no start leaves a host more than 70 % charged or used. A charge holds for the whole life
 of what it started: a JVM below its charge grows into it later, so its unused charge is room no
 other start may take (counted only for a 60 s ramp, the Solr replays of rounds SB11 and SB13,
 growing for minutes toward their 6000 MB, filled lift12-15 and lift06 to 29-30 GB). It lives by a
@@ -1869,13 +1846,13 @@ THE SHARED POOL. With `stream_shared_pool=true` (a sweep's cases, `tools/adhoc/s
 explorations running at once share their hosts (`campaign_stream_has_slot`, the one dispatch
 point): each starts one more only while it runs fewer than its share, the slots its hosts hold at
 its measured replay charge (`campaign_pool_slots`: on each host as many starts as fit under the
-ceiling above at that charge, at most its core limit over a replay's cores) over the sharing explorations whose entry in
+ceiling above at that charge, at most its cores) over the sharing explorations whose entry in
 `$CAUSYNTH_HOST_LEDGER/explorations/` is fresh (written when the loop starts, kept fresh by the
 head's heartbeat like its room, `campaign_head_reservation_stale_s`, removed when it ends), at
 least one, read again at every start; it says once for each share it waits at. So the share
 follows the measured need, grows as others end and shrinks as others begin (what already runs past
 it runs out), and one exploration alone keeps all of it. `false`, the default and a named
-acceptance run's, shares nothing: the hosts' ledgers (memory and cores) alone decide. A sweep admits each
+acceptance run's, shares nothing: the hosts' memory and cores alone decide. A sweep admits each
 head for the room it reserves on its host (HEAD ROOM below; `tools/lib/heads.sh`
 `case_head_reserve_mb`). Round a40 without sharing: one Solr case kept 27-32 replays in flight on
 all ten lifts, the other cases' heads waited for room, and 20 Solr checks would have taken over
@@ -1883,12 +1860,9 @@ all ten lifts, the other cases' heads waited for room, and 20 Solr checks would 
 for a slot (HG4).
 
 HEAD STEPS. Every heavy step of a head (`do_campaign`) goes where there is room through one rule
-(`campaign_head_charged <need> <cores>`, `campaign_head_place`): the head's own host when it fits there
-(its own room is not held against it), else the first of the pool's hosts with its need's room under the
-ceiling (`campaign_host_room`), the most room first (`campaign_hosts_by_room`: the most free cores, then
-the most memory room), whose ledger admits it with its cores (a host whose
-memory has room may have its cores charged), charged there while it runs and released when it returns;
-none admitting,
+(`campaign_head_charged`, `campaign_head_place`): the head's own host when it fits there (its own
+room is not held against it), else the pool's host with the most room under the ceiling
+(`campaign_host_room`), charged there while it runs and released when it returns; none having room,
 it waits, saying so once -- but A STEP NO HOST CAN EVER HOLD never waits: past the most a pool host holds
 with no charge standing (its ceiling less what it uses beside the ledger, at most the system's own 2048 MB, `campaign_head_most_mb`), an
 engine JVM whose heap is only a bound (no measured need) runs at the largest heap that fits it, and any
@@ -3954,7 +3928,7 @@ row's reason), `UNSAT` when it is
 `defects[]` is the reason). A case without one is `STOPPED` when its summary row
 exists (the stage and reason its logs state: the campaign's own failure, the case timeout, a
 failed trace aggregation, a stage's Java main, the engine's `die`, a full disk or quota),
-`PENDING` when never started, else `RUNNING` while some lift (`LIFTS`, default lift06–15) still
+`PENDING` when never started, else `RUNNING` while some lift (`LIFTS`, default lift02–15) still
 runs a process naming its directory, `DEAD` when none does.
 
 `tools/regress/offline-ab.sh --round <round>... <baseline-jar> <candidate-jar> [case...]` is the

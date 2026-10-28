@@ -1,4 +1,4 @@
-# Parallel development: keep ten lifts full (long-term)
+# Parallel development: keep every lift full (long-term)
 
 Part of every agent's long-term memory ([RULES.md](RULES.md)). The owner, 2026-10-05: "一定要最大化利用10个server。这10个
 server配有nfs,你只要做好代码隔离等。可以大大加速的。这是你的长期记忆", "我们一个case内oblication当然可以分配到多机。你也可以合理
@@ -13,10 +13,9 @@ the way there is that no work waits in series for anything but a real dependency
 | across cases | many campaigns, several rounds at once | `tools/adhoc/sweep.sh` (`heads-per-host`, a shared pool: each exploration takes its share of the slots and grows as others end); several sweeps side by side (one per purpose: a rerun group, the named-bug baseline, deep closures with a longer `CASE_TIMEOUT_SECONDS`); no case needs the cluster alone |
 | across development | up to 5 coding agents (owner 2026-10-18; 4 before), read-only diagnosis and review agents, the lead's rounds | each agent on its own branch, worktree, snapshot and `GC_OUT`, up to four live runs at once; offline gates and builds via `onlift.sh` on the least loaded lift ([AGENTS.md](AGENTS.md)) |
 
-The limits are memory and cores, both through the ledger: no lift above 70 % of its memory (the ledger refuses a start
-past it, a running JVM past it is ended) and no lift with more cores charged than `CAUSYNTH_HOST_MAX_CORES_PCT` (100)
-percent of its `nproc`, summed over every campaign on it. On liftlab (30 GB, 48 cores a lift) memory binds first; on
-CloudLab (251 GB, 40 logical cores a node) cores do (round C1: nine campaigns, load 70-93, before cores were charged).
+The only limit is memory: no lift above 70 % (the ledger refuses a start past it, a running JVM past it is ended).
+Cores and load are not limits: 48 per lift. The workers are liftlab's `lift02`-`lift15` but `lift11` (the control host)
+and `lift07` (unreachable since 2026-10-23): 12 lifts.
 
 ## 2. Isolation and sharing over NFS
 
@@ -40,7 +39,7 @@ host, and it is why isolation must be strict.
   shared `~/.m2` (`onlift.sh ... env MAVEN_REPO_LOCAL=... cmd`).
 - **The control host stays light** (2026-10-12): the lead's and the agents' sessions all run on one lift (lift11), and
   every tool call starts a shell there. Their polling (one waiter per agent, from another lift, >= 60 s) and their
-  heavy commands (`onlift.sh` off it) go elsewhere, and while they run there it is out of the campaigns' `LIFTS`; a
+  heavy commands (`onlift.sh` off it) go elsewhere, and it is never in the campaigns' `LIFTS`; a
   jam on it stops every agent at once although the cluster and NFS are idle (OPERATIONS §8: `BASH_ENV` and a wedged
   `/sw`; the recipe: §6). Distribute through NFS as before: measured from the other lifts, NFS answered in milliseconds under ten
   campaigns; a git checkout per lift is not needed.
@@ -122,7 +121,7 @@ jam (fixed) and budget cuts (rerun at 3 h).
 
 ## 6. The recipe as run on 2026-10-12 (Solr): copy it
 
-What one lead and four coding agents did to keep ten lifts busy without NFS or the control host becoming the
+What one lead and four coding agents did to keep the lifts busy without NFS or the control host becoming the
 bottleneck. Every command here is current; the numbers are measured.
 
 **1. The control host (lift11) stays light.** Claude Code sessions -- the lead and every agent -- run on lift11, and
@@ -143,21 +142,20 @@ every tool call starts a shell there.
 - Nothing heavy and no polling on lift11: builds, tests and offline gates go through `tools/onlift.sh`, which
   never picks lift11 unless `LIFTS` names it (`tools/pick-lift.sh` drops it from the default list when `LIFTS` is
   unset; 2026-10-13, an `mvn` build landed there with `LIFTS` unset); each agent keeps at most ONE background
-  waiter, polling from another lift at >= 60 s; campaigns launched while sessions run on lift11 leave it out of
-  `LIFTS` (below).
+  waiter, polling from another lift at >= 60 s; campaigns leave lift11 out of `LIFTS` (below).
 
 **2. Launching.** One command per batch of cases; heads are chosen by room, never lift11, every obligation spread over
-`LIFTS`, each start to the host with the most room, the most free cores first and memory room breaking ties (a replay ended for memory queued again at its full need, never a
+`LIFTS`, each start to the host with the most room (a replay ended for memory queued again at its full need, never a
 verdict; OPTIMIZATIONS 1.32):
 ```bash
 cd ~/gc-run/<snap> && env -u BASH_ENV \
-  LIFTS="lift06 lift07 lift08 lift09 lift10 lift12 lift13 lift14 lift15" \
+  LIFTS="lift02 lift03 lift04 lift05 lift06 lift08 lift09 lift10 lift12 lift13 lift14 lift15" \
   CASES="solr-18406 solr-18413" CASE_TIMEOUT_SECONDS=10800 PRUNE=0 GC_OUT=/bigtemp/vnr3ne/gc-out/<agent or round> \
-  CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force8/j2sdk-image tools/rounds/launch-round.sh ~/gc-run/<snap> <ROUND>
+  CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force10/j2sdk-image tools/rounds/launch-round.sh ~/gc-run/<snap> <ROUND>
 ```
 `CASE_TIMEOUT_SECONDS`, `PRUNE` and `CAUSYNTH_CAMPAIGN_STOP_AFTER` reach the heads on the command line (ssh carries no
 environment). A case that needs another Solr tree: its `case.sh` `repo=` lines edited in the snapshot only, or a
-`GC_TREES` directory whose `lucene-solr-checks` links to the tree (`sg3-trees`, `ib-trees`).
+`GC_TREES` directory whose `lucene-solr-checks` links to the tree (as `sg3j-trees` does).
 
 The head's own chain is short (OPTIMIZATIONS 1.33): an answer lands as it is collected, a session is gated where its
 worker staged it before it lands and the gate reads only the sessions it gates (the ones before by their records), and
@@ -193,8 +191,7 @@ and an unrelated undecidable conjunct no longer makes the flip unknown.
   peak times 1.5: charged at the largest, ledgers held 21-22 GB
   over 8-11 GB of real use and no host admitted a start (21: peaks p50 918, p90 1242, max 2234 MB, each charged 3456).
   After both: 18406 757 s (1000-1750 before), migrate 604 s, 18413 PASS, all native 10/10 (round LD2).
-- Judge a host by real use and live charges (`$CAUSYNTH_HOST_LEDGER/<lift>/charges/`, mtime < 120 s: their MB and
-  cores), and its load against its charged cores.
+- Judge a host by real use and live charges (`$CAUSYNTH_HOST_LEDGER/<lift>/charges/`, mtime < 120 s), not by load.
 
 **4. Agents and trees.** At most five coding agents (owner 2026-10-18; four before), each with its own branch, worktree (`tools/lib/worktree-add.sh`,
 a sha), frozen snapshots `~/gc-run/<prefix><n>`, `GC_OUT` and at most two live runs; read-only reviewers beside the

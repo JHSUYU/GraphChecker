@@ -24,18 +24,17 @@ on the cluster is faster):
 Measured per campaign in `out/<case>/schedule/stage_metrics.tsv`; `tools/analysis/timeline.py <case dir>` splits it by
 stage, round and job (streaming layout; the per-round solve/replay waits included).
 
-## 2. How ten lifts run many campaigns at once (the design)
+## 2. How the lifts run many campaigns at once (the design)
 
-Ten lifts (`lift06`-`lift15`), 48 cores and 30 GB each, NFS-shared home and `/bigtemp`. Everything is placed by
+liftlab's workers (`lift02`-`lift15` but `lift11`, the control host, and `lift07`, unreachable since 2026-10-23; ten
+`lift06`-`lift15` when most of these numbers were measured), 48 cores and 30 GB each, NFS-shared home and `/bigtemp`. Everything is placed by
 memory, through one ledger, so any number of campaigns, gates and agent runs can share the cluster without a host
 running out of memory, and a single case alone takes the whole cluster.
 
 - **The host ledger** (`$CAUSYNTH_HOST_LEDGER/<host>/charges/`, PIPELINE §7.7): every start (a replay, a solve, an
-  engine JVM, a gate JVM, a `fanout.sh` job) is first charged on its host, its MB and the cores it keeps busy. A start
-  goes only when both the host's live charges and its real use (`MemTotal - MemAvailable`), plus the start and any
-  head's held room, stay within 70 % of `MemTotal`, and the live charged cores plus its own within
-  `CAUSYNTH_HOST_MAX_CORES_PCT` (100) percent of `nproc` (any one start on a host whose charges keep no core busy);
-  memory binds on liftlab, cores on CloudLab. A charge is a file whose mtime is a 120 s lease renewed every 10 s by its holder, so a
+  engine JVM, a recording, a gate JVM, a `fanout.sh` job) is first charged on its host. A start goes only when both
+  the host's live charges and its real use (`MemTotal - MemAvailable`), plus the start and any head's held room, stay
+  within 70 % of `MemTotal`. A charge is a file whose mtime is a 120 s lease renewed every 10 s by its holder, so a
   killed run's charges lapse; it is removed the moment what it ran returns. A running JVM that outgrows its charge asks
   for the excess and gets it unless the host's REAL use would pass the ceiling.
 - **Measured charges** (2026-10-05): a replay is charged the campaign's measured replay need (the largest resident
@@ -66,8 +65,7 @@ running out of memory, and a single case alone takes the whole cluster.
   explorations whose entry in `$CAUSYNTH_HOST_LEDGER/explorations/` is fresh, re-read at every start. One case alone
   keeps all of it; ten keep a tenth each, and a share grows as others end. A named acceptance run shares nothing.
 - **Head steps** (PIPELINE §7.7 HEAD STEPS): every engine JVM of a head (static passes, planner, composer, CONFIRM's
-  main, GROW's planner) goes to the head's own host if it fits, else to the pool's host with the most room (free cores
-  first, then memory), charged
+  main, GROW's planner) goes to the head's own host if it fits, else to the pool's host with the most room, charged
   at the heap it starts at; a step that waits holds its need on the best host so that host drains. A head holds room
   for its next step: its measured step need (the largest engine JVM peak x1.25, at least 1 GB; 3.4-6.4 GB measured,
   HR1), never a fixed 8 GB; a host counts only its largest idle reservation. Every engine JVM (a head's, the served
@@ -150,7 +148,7 @@ if it is clearly wrong, name the cause in code.
 | where EXPLORE's time went: per verdict the run time and the queue wait, the concurrency over time, the refusal reasons | `tools/rounds/obl-times.py <case>/schedule` |
 | time per stage, per round, per job | `out/<case>/schedule/stage_metrics.tsv`; `tools/analysis/timeline.py <case dir>` |
 | what the exploration did per round | the log's `[campaign] round N (wave W): K obligation(s), E exposure(s), F in flight` and `exploration stopped (<END>)` lines |
-| is the ledger the bottleneck | the log's `waiting for room: no host admits one more start (<host> has X MB charged ..., Y MB in use and Z MB held for a head ...` or `<host> has N cores charged to what it runs ...)`; `ls -l $CAUSYNTH_HOST_LEDGER/<host>/charges/` (live = mtime < 120 s) |
+| is the ledger the bottleneck | the log's `waiting for room: no host admits one more start (<host> has X MB charged ..., Y MB in use and Z MB held for a head ...)`; `ls -l $CAUSYNTH_HOST_LEDGER/<host>/charges/` (live = mtime < 120 s) |
 | why a seed replay stalls | `grep -c 'did not happen' .../seed-result/focused/replay.log`, then which events did not happen and on which thread; `jstack` the replay JVM (`ps -g $(cat <run>/pgid)` on the head host) |
 | where a JVM spends its time | sample `jstack <pid>` every few seconds (5-10 samples) and count the top frames; for IO, `strace -f -c` |
 | a replay's memory | the replay log's `the workload JVM's resident memory peaked at X MB; its host was charged Y MB` |
@@ -191,7 +189,7 @@ recordings the offline gate needs: keep `PRUNE=0` for a round you will gate agai
    in the body); 07's CC7 still lost 8 obligations to a full host (no host had room within the 60 s placement wait).
 6. 17897's COMPOSE: two z3 runs per satisfiable ask, whole asks 16-56 s (measured on `hdfs-compose-perf-wip`,
    bundled in `/bigtemp/vnr3ne/handover/2026-10-08/graphchecker-remote-branches.bundle`).
-7. The two-phase final run (TODO HDFS §1): short cases a few at a time, deep closures each with the whole cluster.
+7. The two-phase final run (TODO HDFS §1, done another way: `system/hdfs-liftlab`'s series H1 ran each case alone).
 8. **A hard question held its host's solver** (SP4-10/13, 2026-10-12; branch `solr-solve`): a host's solver answers
    one question at a time, and obligation solves ran at the full 1810 s z3 budget. Answered questions took a median
    1 s (p90 3-4 s, max 9 s), but 16 READ-door (`SolrZkClient.getData`) and routed-alias
