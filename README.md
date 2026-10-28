@@ -57,8 +57,8 @@ REPRODUCE §8, `results/zookeeper/`); `system/zookeeper-buggy-detect` ZOOKEEPER-
 The owner (long-term, 2026-10-05): "一定要最大化利用10个server。这10个server配有nfs,你只要做好代码隔离等。可以大大加速的。这是你的
 长期记忆"; "我们一个case内oblication当然可以分配到多机"; "我们不必强行要求独占". **A lead or agent that takes over keeps the
 workers full at all times; nothing waits in series except on a real dependency.** The workers are `lift02`-`lift15`
-but `lift11` (the control host where the sessions run) and `lift07` (unreachable since 2026-10-23): set `LIFTS` to the
-other twelve, whatever `tools/lib/gc-env.sh`'s default lists. How the last leads did it (details and lessons:
+but `lift11` (the control host where the sessions run), `lift07` (unreachable since 2026-10-23) and `lift15` (lift02 and
+lift03 cannot reach it): `tools/lib/gc-env.sh`'s default `LIFTS` is these eleven. How the last leads did it (details and lessons:
 [docs/handover/PARALLEL.md](docs/handover/PARALLEL.md)):
 
 1. **Inside one case:** every obligation (a solve, then a replay), GROW re-run, CONFIRM and native reproduction is a

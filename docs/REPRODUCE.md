@@ -24,9 +24,9 @@ history; `system/hdfs-liftlab` replaces them. The CloudLab runs of 2026-10-24..2
 ## 0. The machines
 
 - Linux x86_64 hosts (Ubuntu 22.04 here: liftlab, `lift02`-`lift15`, 48 cores and 30 GB each; `lift11` is the control
-  host where the sessions run, out of the workers; `lift07` does not answer since 2026-10-23, so a run's workers are the
-  other twelve: `LIFTS="lift02 lift03 lift04 lift05 lift06 lift08 lift09 lift10 lift12 lift13 lift14 lift15"`; lift02
-  and lift03 cannot reach lift15 over ssh, so a run they head with lift15 among its workers is refused in PREFLIGHT:
+  host where the sessions run, out of the workers; `lift07` does not answer since 2026-10-23, and lift02 and lift03 cannot
+  reach lift15 over ssh (a run they head with lift15 among its workers is refused in PREFLIGHT), so a run's workers are
+  the eleven of gc-env's default: `LIFTS="lift02 lift03 lift04 lift05 lift06 lift08 lift09 lift10 lift12 lift13 lift14"`;
   `launch-round.sh` heads cases on any host of `LIFTS` but lift11, so give it `LIFTS` without lift15, or without lift02
   and lift03). One host works; a case then takes several times longer.
 - One filesystem mounted at the same path on every host (`GC_BULK`, here `/bigtemp/vnr3ne`), the home directory shared

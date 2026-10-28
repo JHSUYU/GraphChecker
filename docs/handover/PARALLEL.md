@@ -150,7 +150,7 @@ every tool call starts a shell there.
 verdict; OPTIMIZATIONS 1.32):
 ```bash
 cd ~/gc-run/<snap> && env -u BASH_ENV \
-  LIFTS="lift04 lift05 lift06 lift08 lift09 lift10 lift12 lift13 lift14 lift15" \
+  LIFTS="lift04 lift05 lift06 lift08 lift09 lift10 lift12 lift13 lift14" \
   CASES="hbase-adhoc-04 hbase-adhoc-22" CASE_TIMEOUT_SECONDS=10800 PRUNE=0 GC_OUT=/bigtemp/vnr3ne/gc-out/<agent or round> \
   CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force12/j2sdk-image tools/rounds/launch-round.sh ~/gc-run/<snap> <ROUND>
 ```
