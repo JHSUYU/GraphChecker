@@ -32,7 +32,8 @@ Counts: the final selection (owner 2026-10-21, `docs/checks/SELECTION.md`): HDFS
 State at the end of the HDFS group (2026-10-07): every check has an exported `.smt`
 read by hand against the code, one row each in [../STATUS.md](../STATUS.md) "HDFS checks" (the branch that closed it -- `system/hdfs`, locked, or
 `system/hdfs1` -- its run, verdict and reading). Both are superseded by `system/hdfs-liftlab` (2026-10-27), which runs every
-case on HBase's engine (STATE §L; its series H1: H1 (results/hdfs: 45 cases alone, 62555 s = 17.4 h; seeding 42 %, exploration 53 %, compose+solver 4 %; every verdict as CloudLab's); on CloudLab: STATUS "HDFS checks on CloudLab"). Every verdict passed [../handover/CHECKING.md](../handover/CHECKING.md)
+case on HBase's engine (STATE §L; its series H1, `results/hdfs/`: 45 cases alone, 62555 s = 17.4 h; seeding 42 %,
+exploration 53 %, compose+solver 4 %; STATUS "HDFS checks on HBase's engine"). Every verdict passed [../handover/CHECKING.md](../handover/CHECKING.md)
 §1; the time family (21 22 23 24 25 34 35 52) is accepted with an approximately right `.smt` (RULES), its residue named.
 
 | check | site (our tree) | guard | workload | window | state (2026-10-06) |

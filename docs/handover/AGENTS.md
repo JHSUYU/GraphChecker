@@ -144,7 +144,8 @@ eleven merges into main, none reverted)
   scenario each. Every one found real blockers that the offline gate and the live runs had passed (a vacuous
   INITIAL check, a CONFIRM rule looser than WIRE's, false orders that silently drop alternatives, declared target
   regions dropped by a root rule). The author fixes them all; the lead decides the disputed ones.
-- **Merges in a dedicated worktree** `/bigtemp/vnr3ne/wt/main-pw`: per round a branch `main-<x>` from main, `git
+- **Merges in a dedicated worktree** (one per integration branch, e.g. `/bigtemp/vnr3ne/wt/gc-hdfs-liftlab`; on
+  `main` in 2026-10-03 it was `main-pw`): per round a branch `main-<x>` from main, `git
   merge --no-ff` the change, resolve conflicts by hand (two implementations of one concept become one interface),
   `mvn -q -o package` + shell test via `onlift.sh`, commit, `tools/lib/worktree-add.sh ~/gc-run/p<N> <commit> --detach`, build it,
   `launch-round.sh` all regression cases, a `Monitor` on `round-monitor.sh`; on all-PASS fast-forward `main` to
@@ -182,7 +183,7 @@ eleven merges into main, none reverted)
     the lead's decisions, the deliverable, the validation.
   - The agent prompt says: read the brief, AGENT-RULES.md, and the docs.
 - **Integration branches per round.**
-  - `hg4`, then `hg5`, in `/bigtemp/vnr3ne/wt/gc-hg4b`: the round's merged feature branches on top of
+  - `hg4`, then `hg5`, in a worktree of their own: the round's merged feature branches on top of
     `system/hdfs`, built and tested, a frozen snapshot `~/gc-run/hg<N>`, then a sweep of the 46
     (`tools/adhoc/sweep.sh`, 2 heads per host).
   - Feature branches touch the same docs rows, so `docs/STATUS.md` conflicts on almost every merge.

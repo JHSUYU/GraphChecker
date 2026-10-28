@@ -188,7 +188,8 @@ recordings the offline gate needs: keep `PRUNE=0` for a round you will gate agai
    in the body); 07's CC7 still lost 8 obligations to a full host (no host had room within the 60 s placement wait).
 6. 17897's COMPOSE: two z3 runs per satisfiable ask, whole asks 16-56 s (measured on `hdfs-compose-perf-wip`,
    bundled in `/bigtemp/vnr3ne/handover/2026-10-08/graphchecker-remote-branches.bundle`).
-7. The two-phase final run (TODO HDFS §1): short cases a few at a time, deep closures each with the whole cluster.
+7. The two-phase final run (owner 2026-10-06): short cases a few at a time, deep closures each with the whole cluster;
+   carried out instead as series H1 on `system/hdfs-liftlab`, every case alone (`results/hdfs/`).
 8. **A hard question held its host's solver** (SP4-10/13, 2026-10-12; branch `solr-solve`): a host's solver answers
    one question at a time, and obligation solves ran at the full 1810 s z3 budget. Answered questions took a median
    1 s (p90 3-4 s, max 9 s), but 16 READ-door (`SolrZkClient.getData`) and routed-alias
