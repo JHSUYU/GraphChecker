@@ -30,8 +30,8 @@ capability is not forced. ZooKeeper has two such bugs, both at zk-adhoc-02's thr
 
 | case | bug | CloudLab, 2026-10-26 | liftlab, B1 |
 | --- | --- | --- | --- |
-| zk-buggy-710 | ZOOKEEPER-710: a SessionMoved never tears the connection down | **SAT** STATE_PAIRING_FLIPPED (the old write's `session.owner` reads paired with the takeover's REVALIDATE), confirmed, native 10/10, control 0/10, PASS (ZB6, 361 s) | B1 (lead fills in) |
-| zk-buggy-2886 | ZOOKEEPER-2886: a multi's SessionMoved stays a per-op error | **SAT**, the same pairing in the second multi, confirmed, native 10/10, control 0/10, PASS (ZB6, 363 s) | B1 (lead fills in) |
+| zk-buggy-710 | ZOOKEEPER-710: a SessionMoved never tears the connection down | **SAT** STATE_PAIRING_FLIPPED (the old write's `session.owner` reads paired with the takeover's REVALIDATE), confirmed, native 10/10, control 0/10, PASS (ZB6, 361 s) | B1: SAT, CONFIRM, native 10/10, control 0/10, report.py PASS, 308 s (B1-zk-buggy-710) |
+| zk-buggy-2886 | ZOOKEEPER-2886: a multi's SessionMoved stays a per-op error | **SAT**, the same pairing in the second multi, confirmed, native 10/10, control 0/10, PASS (ZB6, 363 s) | B1: SAT, CONFIRM, native 10/10, control 0/10, report.py PASS, 294 s (B1-zk-buggy-2886) |
 
 The caveat (each README): the witness is the plain world, and each fix changes only what follows the throw, so the
 fixed-code controls reach the same throw (710's ZC2 and 2886's ZC1: SAT, confirmed, 10/10). The owner (2026-10-27/28)
@@ -74,7 +74,7 @@ workers are lift02-15 less lift07 (unreachable since 2026-10-23) and lift11; Mav
    ```
    cd /u/vnr3ne/gc-run/bd-zookeeper-1 && env -u BASH_ENV \
      GC_OUT=/bigtemp/vnr3ne/gc-out/buggy-detect GC_TREES=/bigtemp/vnr3ne/wt/bd-trees-1 GC_M2=/bigtemp/vnr3ne/m2/bd-1 \
-     LIFTS="lift02 lift03 lift04 lift05 lift06 lift08 lift09 lift10 lift12 lift13 lift14 lift15" \
+     LIFTS="lift02 lift03 lift04 lift05 lift06 lift08 lift09 lift10 lift12 lift13 lift14" \
      CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force13/j2sdk-image CASE_TIMEOUT_SECONDS=21600 PRUNE=0 \
      CASES="zk-buggy-710 zk-buggy-2886" tools/rounds/launch-round.sh /u/vnr3ne/gc-run/bd-zookeeper-1 B1
    ```

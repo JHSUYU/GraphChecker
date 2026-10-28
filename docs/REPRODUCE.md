@@ -395,4 +395,4 @@ fixed-code controls `graphchecker/zk-bug-<jira>-control`. `trees.tsv`'s `zookeep
 4. **Reading them**, as §8.5; a case is detected when it ends `SAT_CANDIDATE`, confirmed, reproduced natively
    (`final/reproduce.json`) with its control 0/N, and `experiments/accept/report.py` passes its mechanism
    (`STATE_PAIRING_FLIPPED`). The verdicts: [handover/BUGGY-DETECT.md](handover/BUGGY-DETECT.md) (CloudLab 2026-10-26
-   SAT 10/10 each; liftlab B1 (lead fills in)).
+   SAT 10/10 each; liftlab B1: both SAT again, CONFIRM, native 10/10, control 0/10, report.py PASS (results/zookeeper-buggy/)).

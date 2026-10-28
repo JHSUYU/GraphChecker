@@ -609,8 +609,8 @@ is not stated. Recorded only, not chased.
 [START-HERE.md](START-HERE.md) runs the two cases; STATE §Z "The buggy-detect line" lists what this branch adds to
 `system/zookeeper`; [BUGGY-DETECT.md](BUGGY-DETECT.md) has every system's table.
 
-**1. B1 on liftlab** (2026-10-28, `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-zk-buggy-710`, `-zk-buggy-2886`): B1
-(lead fills in). The fixed-code controls (`graphchecker/zk-bug-710-control`, `-2886-control`) have run only on CloudLab
+**1. B1 on liftlab** (2026-10-28, `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-zk-buggy-710`, `-zk-buggy-2886`): done,
+both SAT again, CONFIRM, native 10/10, control 0/10, report.py PASS (results/zookeeper-buggy/). The fixed-code controls (`graphchecker/zk-bug-710-control`, `-2886-control`) have run only on CloudLab
 (SAT, confirmed, 10/10: the caveat); a liftlab run of each needs its own tree set (START-HERE §3).
 
 **2. zk-bugs-trunc-sync on this engine.** On CloudLab its runs Z4 and Z9 ended RUN_DEFECT: the formula UNSAT_CLOSED (5094

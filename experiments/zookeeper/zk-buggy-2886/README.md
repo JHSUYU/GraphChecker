@@ -40,7 +40,7 @@ timeout; `client_fault_transports=(ZK_QUORUM)`; report.py `STATE_PAIRING_FLIPPED
 
 ## Result: SAT (confirmed, reproduced 10/10 natively, control 0/10), the plain world
 
-**On liftlab** (B1, `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-zk-buggy-2886`): B1 (lead fills in).
+**On liftlab** (B1, `/bigtemp/vnr3ne/gc-out/buggy-detect/accept-B1-zk-buggy-2886`): B1: SAT, CONFIRM, native 10/10, control 0/10, report.py PASS, 294 s (B1-zk-buggy-2886).
 
 The record below is CloudLab's (2026-10-26). ZB6 (system/zookeeper-buggy-detect bba07d7d1, tree b8b7149f, 363 s):
 EXPLORE stopped WITNESSED after 5 rounds and 101 obligation

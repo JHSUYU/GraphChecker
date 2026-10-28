@@ -224,7 +224,7 @@ checks must be SAT, confirmed, native; the study checks end SAT, UNSAT or at a n
 zk-buggy-710 (ZOOKEEPER-710) and zk-buggy-2886 (ZOOKEEPER-2886), both at zk-adhoc-02's throw: each case's README
 (`experiments/zookeeper/zk-buggy-<jira>/`) has its declarations, runs and reading; [handover/BUGGY-DETECT.md](handover/BUGGY-DETECT.md)
 the verdicts -- CloudLab 2026-10-26: SAT STATE_PAIRING_FLIPPED, confirmed, native 10/10, control 0/10 each (ZB6);
-liftlab: B1 (lead fills in).
+liftlab: B1: both SAT again, CONFIRM, native 10/10, control 0/10, report.py PASS (results/zookeeper-buggy/).
 
 ## R1. Symbols come automatically from the fatal slice
 
