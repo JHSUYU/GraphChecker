@@ -71,6 +71,7 @@ workflow_config_keys=(
   "concolic_replay_command CAUSYNTH_CONCOLIC_REPLAY_COMMAND krp -"
   "campaign_worker_hosts CAUSYNTH_CAMPAIGN_WORKER_HOSTS krp -"
   "stream_shared_pool CAUSYNTH_STREAM_SHARED_POOL krp false"
+  "stream_stop_at_witness CAUSYNTH_STREAM_STOP_AT_WITNESS krp true"
   "engine_memory_mb GRAPH_CHECKER_ENGINE_MEMORY_MB krp -"
   "campaign_stop_after CAUSYNTH_CAMPAIGN_STOP_AFTER krp -"
   "region_path_max_paths_per_region CAUSYNTH_REGION_PATH_MAX_PATHS_PER_REGION krp -"
@@ -659,6 +660,8 @@ ${campaign_stop_after}" ;;
 ${causynth_scope_growth_budget}"
   [[ "${stream_shared_pool}" == true || "${stream_shared_pool}" == false ]] \
     || die "stream_shared_pool must be true or false: ${stream_shared_pool}"
+  [[ "${stream_stop_at_witness}" == true || "${stream_stop_at_witness}" == false ]] \
+    || die "stream_stop_at_witness must be true or false: ${stream_stop_at_witness}"
   local worker_host
   for worker_host in ${campaign_worker_hosts}; do
     case "${worker_host}" in
@@ -5731,7 +5734,8 @@ campaign_stream_move() {
 did not stage"
     mv -- "${staged}/${session}" "${sessions}/${session}"
     stream_landed=$((stream_landed + 1))
-    [[ -z "${stream_stop}" ]] && campaign_stream_fatal \
+    [[ -z "${stream_stop}" && "${stream_stop_at_witness}" == true ]] \
+      && campaign_stream_fatal \
       "${worker}/obligation_result.jsonl" "${sessions}/${session}" || continue
     stream_witnesses+=("${session}")
   done

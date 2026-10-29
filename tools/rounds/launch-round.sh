@@ -44,7 +44,7 @@ mapfile -t launches < <(for case_id in "${cases[@]}"; do
 
 mkdir -p "${out}"
 passed=
-for name in CAUSYNTH_CAMPAIGN_STOP_AFTER CASE_TIMEOUT_SECONDS PRUNE; do
+for name in CAUSYNTH_CAMPAIGN_STOP_AFTER CAUSYNTH_STREAM_STOP_AT_WITNESS CASE_TIMEOUT_SECONDS PRUNE; do
   [[ -z "${!name+x}" ]] || passed+="${name}=$(printf '%q' "${!name}") "
 done
 for launch in "${launches[@]}"; do
