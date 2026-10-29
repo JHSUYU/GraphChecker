@@ -30,6 +30,21 @@ hbase-buggy-20642: 819 s of its wall are the 7 claims CONFIRM refuted before the
 REPRODUCE by exact id 0/10 and by IDENTITY §9 shape 10/10 (accepted by the owner), as in B1. hbase-buggy-15039 reproduced
 natively 8/10 alone (B1 10/10, the fresh-clone check F1 9/10), the control 0/10.
 
+## N1 (2026-10-29): the whole exploration, each case alone
+
+The cases whose E1 exploration ended WITNESSED, again alone, with `CAUSYNTH_STREAM_STOP_AT_WITNESS=false` (`run_engine.sh` `stream_stop_at_witness`, `docs/design/PIPELINE.md`): no
+session is a witness, every exploration runs to FIXED_POINT, and COMPOSE, SOLVE, DECIDE and CONFIRM run once over the
+whole corpus (snapshot `/u/vnr3ne/gc-run/bd-hbase-2`; runs under
+`/bigtemp/vnr3ne/gc-out/buggy-detect-full`; `docs/handover/BUGGY-DETECT.md` "Time, the whole exploration" compares
+them with E1). The formulas and claims above stay E1's.
+
+| case | bug | point | run | claim | report.py | mechanism | CONFIRM | native REPRODUCE | wall (s) | seeding (s) | exploration (s) | compose+solver (s) | other (s) | refuted claims (s) | regions | occurrences | rounds |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| hbase-buggy-20642 | HBASE-20642 | hbase-adhoc-04 | N1-hbase-buggy-20642 | SAT_CANDIDATE | PASS | MARKER_FLIPPED | yes | 0/10, by shape 10/10; control 0/10 | 1720 | 320 | 463 | 51 | 110 | 776 (2) | 3 | 40 | 27 |
+| hbase-buggy-15039 | HBASE-15039 | hbase-adhoc-34 | no run |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+
+1 of 2 cases ran (N1); wall 1720 s; seeding 320, exploration 463, compose+solver 51, other 110
+
 ## B1 (2026-10-28): the cases side by side, for comparison
 
 The same snapshot and trees, the cases beside each other and beside the other systems' on the liftlab workers
