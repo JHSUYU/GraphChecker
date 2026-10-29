@@ -88,6 +88,7 @@ marked * below.
 | `compose_max_valuations`* (16) | the valuations COMPOSE enumerates |
 | `campaign_worker_hosts`, `engine_memory_mb`, `stream_shared_pool` (false) | the pool's hosts, the most heap a head JVM is given and a solver asked again, whether the exploration shares its hosts' replay slots with the other sharing explorations (§7.7; a sweep's cases) |
 | `campaign_stop_after` | empty, `SEED` or `IMPORT` |
+| `stream_stop_at_witness` (true) | whether EXPLORE takes witnesses and ends WITNESSED (§7.9); false: no session is a witness, the exploration runs to its fixed point or the budget, and COMPOSE decides over the whole corpus (the time of a whole exploration) |
 | `reproduce_runs`* (10), `reproduce_time_factor`* (3), `reproduce_min_s`* (300), `reproduce_charge_pct`* (130) | how many native reproduction runs, each one's wall clock as a multiple of the recording's workload, at least `reproduce_min_s`, and each one's memory charge in percent of the recording's peak (§10b) |
 
 Defaults in parentheses; `solver_timeout_ms` and `schedule_max_jobs` have none.
@@ -2389,7 +2390,7 @@ obligation cancelled or reaped, by id, and `roundDropped`, a round never taken):
 
 - **WITNESSED.** A landed session whose replay was ADMITTED and whose target row at the declared
   occurrence (the last round's `anchorOccurrences`) observed the fatal -- the rule of §7.1 step 6 --
-  is a witness: once the head step that took it in has gated it, the next head step -- whatever a
+  is a witness (with `stream_stop_at_witness=true`, the default; with false none is, and this end never comes): once the head step that took it in has gated it, the next head step -- whatever a
   round plans meanwhile -- is an attempt at every
   witness gated and not yet attempted, one COMPOSE over the corpus as it stands -- `do_compose`, the
   stage's own entry, into `witness-attempts/NNNN/` -- since an observed fatal is not yet a
