@@ -76,6 +76,50 @@ are 28-45 % faster alone (seeding 273-336 s, B1 539-657 s with the three seeding
 (1123 s, B1 884 s) over the same closure and the same replays, every replay slower on every worker (median 119 s, B1
 95 s), not explained; the rest are at most 13 % slower than in B1, or faster.
 
+## Time, the whole exploration (round N1, 2026-10-29)
+
+The owner: "不要中途replay碰到就停，而是完整跑完所有exploration", each case alone again. Twelve of E1's fourteen
+explorations ended WITNESSED: the first admitted replay that observed the fatal at the declared occurrence was composed
+over the corpus as it stood, CONFIRM accepted it, and the queued and running work was dropped (HDFS-11741: 1109 queued
+obligations; HBASE-20642: 426 unlanded jobs). N1 runs those twelve with `CAUSYNTH_STREAM_STOP_AT_WITNESS=false` (`run_engine.sh` `stream_stop_at_witness`, `docs/design/PIPELINE.md`): no
+session is a witness, every exploration runs to FIXED_POINT, and COMPOSE, SOLVE, DECIDE and CONFIRM run once over the
+whole corpus. HDFS-14311 and HBASE-15039
+reached FIXED_POINT in E1 and are not run again. The E1 workers and trees, snapshots `/u/vnr3ne/gc-run/bd-<x>-2` (the
+E1 engine plus that key), 12 h per case, driver `/bigtemp/vnr3ne/analysis/buggy-detect-full-2026-10-29/series-N1.sh`,
+runs `/bigtemp/vnr3ne/gc-out/buggy-detect-full/accept-N1-<case>`.
+
+| system | bug | report.py | rounds / verdicts, E1 -> N1 | wall (s), E1 -> N1 | seeding (s) | exploration (s), E1 -> N1 | compose+solver (s), E1 -> N1 | other (s) | refuted claims (s) |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| ZooKeeper | ZOOKEEPER-2886 | PASS | 5 / 57 -> 12 / 128 | 300 -> 595 | 160 | 107 -> 375 | 10 -> 10 | 47 | - |
+| ZooKeeper | ZOOKEEPER-710 | PASS | 5 / 112 -> 12 / 122 | 311 -> 589 | 164 | 108 -> 366 | 10 -> 6 | 46 | - |
+| HDFS | HDFS-12931 | PASS | 1 / 11 -> 10 / 67 | 400 -> 611 | 241 | 119 -> 237 | 8 -> 103 | 23 | - |
+| HDFS | HDFS-5766 | PASS | 1 / 11 -> 13 / 68 | 391 -> 679 | 243 | 117 -> 309 | 4 -> 97 | 24 | - |
+| HDFS | HDFS-14075 | PASS | 2 / 12 -> 6 / 16 | 490 -> 475 | 354 | 112 -> 84 | 3 -> 5 | 23 | - |
+| HDFS | HDFS-17383 | PASS | 1 / 19 -> 15 / 75 | 530 -> 916 | 324 | 158 -> 477 | 8 -> 81 | 29 | - |
+| HDFS | HDFS-10609 | PASS | 2 / 42 -> 27 / 235 | 556 -> 859 | 265 | 244 -> 399 | 8 -> 161 | 28 | - |
+| Solr | SOLR-9440 | PASS | 9 / 36 -> 30 / 135 | 576 -> 1065 | 338 | 143 -> 603 | 4 -> 33 | 75 | - |
+| Solr | SOLR-6197 | **FAIL** (below) | 15 / 79 -> 38 / 105 | 539 -> 948 | 279 | 220 -> 605 | 8 -> 11 | 37 | - |
+| Solr | SOLR-6101 | PASS | 21 / 113 -> 45 / 125 | 632 -> 940 | 275 | 292 -> 601 | 8 -> 16 | 34 | - |
+| HBase | HBASE-20642 | PASS | 3 / 28 -> 27 / 534 | 1504 -> 1720 | 320 | 332 -> 463 | 15 -> 51 | 110 | 776 (8 claims; E1 819) |
+| HDFS | HDFS-11741 | PASS | 9 / 347 -> 38 / 3354 | 1123 -> 2551 | 252 | 634 -> 1369 | 149 -> 794 | 127 | - |
+| **12 cases** | | | | **7352 -> 11948** | 3215 (26.9 %) | 2586 -> 5888 (49.3 %) | 235 -> 1368 (11.4 %) | 603 (5.0 %) | 776 (6.5 %) |
+
+Every exploration reached FIXED_POINT (none the budget); every claim is SAT, CONFIRM again, native REPRODUCE as in E1
+(10/10, HBASE-20642 exact id 0/10 and by shape 10/10, every control 0/10). Against E1 the 12 take 1.63 times the wall
+and 2.28 times the exploration; with HBASE-15039 from E1 the 13 detected there take 12798 s (median 859 s): seeding
+27 %, exploration 49 %, compose+solver 11 %, other 6 %, refuted claims 6 %; with HDFS-14311 the 14 take 15319 s. E1's
+exploration column holds its witness attempt (that COMPOSE and CONFIRM ran inside EXPLORE, and the final stages reused
+them); in N1 COMPOSE reads the whole corpus (HDFS-11741: 793 s of its 794 over 3354 verdicts, SOLVE 0.5 s) and CONFIRM
+is a replay of its own. HBASE-20642 decided 8 claims before the last both times (N1: 2 CONFIRM refuted, 6 confirmed
+and natively 0/10 by exact id; E1: 7 and 1); the first confirmed claim stands.
+
+SOLR-6197 is SAT, confirmed, natively 10/10 with the control 0/10, but report.py FAILs it: 20 BLOCKING
+TOPOLOGY_DIVERGENCE rows (`explore/SlotTable#take`, "a replacement, not growth"). Two admitted replays of one world
+(obligations 265d7b401e0d73ea and a5972cb95766e3f7, the latter re-run under the grown tree, the session CONFIRM chose)
+pair the anchor's core create (`CoreContainer.create`) reads of five `state.json` fields with the overseer's first
+`setData` of `state.json` in one and its second in the other: which version the core create reads is a race the replay
+does not pin. E1 ended WITNESSED before a second session of that world was in its corpus.
+
 Branches (github.com/JHSUYU): GraphChecker `system/hdfs-buggy-detect`, `system/hbase-buggy-detect`,
 `system/zookeeper-buggy-detect`, `system/solr-buggy-detect`, each `system/<x>` (liftlab) plus that system's old-bug cases
 and their engine support; the forks' `graphchecker/hdfs-bug-<jira>` (hadoop), `graphchecker/hbase-bug-<jira>` (hbase),

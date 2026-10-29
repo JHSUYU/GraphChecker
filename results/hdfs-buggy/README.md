@@ -41,6 +41,26 @@ the same work (178 admitted replays, B1 180): every replay ran slower, on every 
 did the head's COMPOSE (149 s, B1 108 s). The hosts are alike and nothing else ran; not explained. The other five
 detected cases took 391-556 s alone, within 10 % of B1 or faster.
 
+## N1 (2026-10-29): the whole exploration, each case alone
+
+The cases whose E1 exploration ended WITNESSED, again alone, with `CAUSYNTH_STREAM_STOP_AT_WITNESS=false` (`run_engine.sh` `stream_stop_at_witness`, `docs/design/PIPELINE.md`): no
+session is a witness, every exploration runs to FIXED_POINT, and COMPOSE, SOLVE, DECIDE and CONFIRM run once over the
+whole corpus (snapshot `/u/vnr3ne/gc-run/bd-hdfs-2`; runs under
+`/bigtemp/vnr3ne/gc-out/buggy-detect-full`; `docs/handover/BUGGY-DETECT.md` "Time, the whole exploration" compares
+them with E1). The formulas and claims above stay E1's.
+
+| case | bug | point | run | claim | report.py | mechanism | CONFIRM | native REPRODUCE | wall (s) | seeding (s) | exploration (s) | compose+solver (s) | other (s) | refuted claims (s) | regions | occurrences | rounds |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| hdfs-buggy-11741 | HDFS-11741 | hdfs-adhoc-11 | N1-buggy-11741 | SAT_CANDIDATE | PASS | CLOCK_SKEW | yes | 10/10; control 0/10 | 2551 | 252 | 1369 | 794 | 127 | - | 14 | 36 | 38 |
+| hdfs-buggy-17383 | HDFS-17383 | hdfs-adhoc-12 | N1-buggy-17383 | SAT_CANDIDATE | PASS | MARKER_FLIPPED | yes | 10/10; control 0/10 | 916 | 324 | 477 | 81 | 29 | - | 10 | 15 | 15 |
+| hdfs-buggy-12931 | HDFS-12931 | hdfs-adhoc-11 | N1-buggy-12931 | SAT_CANDIDATE | PASS | MARKER_FLIPPED | yes | 10/10; control 0/10 | 611 | 241 | 237 | 103 | 23 | - | 12 | 15 | 10 |
+| hdfs-buggy-5766 | HDFS-5766 | hdfs-adhoc-11 | N1-buggy-5766 | SAT_CANDIDATE | PASS | MARKER_FLIPPED | yes | 10/10; control 0/10 | 679 | 243 | 309 | 97 | 24 | - | 13 | 15 | 13 |
+| hdfs-buggy-10609 | HDFS-10609 | hdfs-adhoc-11 | N1-buggy-10609 | SAT_CANDIDATE | PASS | MARKER_FLIPPED | yes | 10/10; control 0/10 | 859 | 265 | 399 | 161 | 28 | - | 21 | 37 | 27 |
+| hdfs-buggy-14075 | HDFS-14075 | hdfs-adhoc-45 | N1-buggy-14075 | SAT_CANDIDATE | PASS | MARKER_FLIPPED | yes | 10/10; control 0/10 | 475 | 354 | 84 | 5 | 23 | - | 3 | 4 | 6 |
+| hdfs-buggy-14311 | HDFS-14311 | hdfs-adhoc-24 | no run |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+
+6 of 7 cases ran (N1); wall 6091 s; seeding 1679, exploration 2875, compose+solver 1241, other 254
+
 ## B1 (2026-10-28): the cases side by side, for comparison
 
 The same snapshot and trees, the cases beside each other and beside the other systems' on the liftlab workers
