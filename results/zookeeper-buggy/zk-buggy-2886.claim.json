@@ -10,38 +10,38 @@
     "gaps": []
   },
   "solverRuns": 8,
-  "seedSessionId": "seed-result-56fa488c",
+  "seedSessionId": "seed-result-274f996f",
   "valuations": [
     {
       "ordinal": 0,
       "status": "sat",
       "assignment": {},
       "moved": {},
-      "selectedPathId": "38c8ea551f6e61b0",
-      "selectedSessionId": "f02ce3c8de933a9e-7589262f",
+      "selectedPathId": "23a372cb0894c67d",
+      "selectedSessionId": "f02ce3c8de933a9e-39c7593b",
       "fatalObserved": true,
       "selectedArms": [
         {
-          "selector": "writer_arm__0__aabcb0922c28",
-          "family": "writer_family__0__aabcb0922c28",
+          "selector": "writer_arm__0__7d4097b67f9c",
+          "family": "writer_family__0__7d4097b67f9c",
           "groupId": "403550f3bc24a134",
           "attachEndpointIds": [],
-          "sessionId": "f02ce3c8de933a9e-7589262f",
+          "sessionId": "f02ce3c8de933a9e-39c7593b",
           "sessionIds": [
-            "f02ce3c8de933a9e-7589262f"
+            "f02ce3c8de933a9e-39c7593b"
           ],
-          "producerPathId": "d1f6b6aa0a2be39d",
+          "producerPathId": "635a014e4c5227e5",
           "interactionIds": [
             "293b1ee3c5b1fdfd"
           ],
           "expressionRefs": [
-            "EXPR.078ae97738a99afd"
+            "EXPR.127756047a29c56a"
           ],
           "attested": true
         }
       ],
       "repairedArms": [
-        "writer_arm__0__aabcb0922c28"
+        "writer_arm__0__7d4097b67f9c"
       ],
       "unsatCore": []
     }
