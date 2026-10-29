@@ -1,4 +1,4 @@
 case	run	claim	smt	claim_json
-solr-buggy-6101	buggy-detect/accept-B1-solr-buggy-6101	SAT_CANDIDATE	solr-buggy-6101.smt2.gz	solr-buggy-6101.claim.json
-solr-buggy-6197	buggy-detect/accept-B1-solr-buggy-6197	SAT_CANDIDATE	solr-buggy-6197.smt2.gz	solr-buggy-6197.claim.json
-solr-buggy-9440	buggy-detect/accept-B1-solr-buggy-9440	SAT_CANDIDATE	solr-buggy-9440.smt2.gz	solr-buggy-9440.claim.json
+solr-buggy-6101	buggy-detect-exclusive/accept-E1-solr-buggy-6101	SAT_CANDIDATE	solr-buggy-6101.smt2.gz	solr-buggy-6101.claim.json
+solr-buggy-6197	buggy-detect-exclusive/accept-E1-solr-buggy-6197	SAT_CANDIDATE	solr-buggy-6197.smt2.gz	solr-buggy-6197.claim.json
+solr-buggy-9440	buggy-detect-exclusive/accept-E1-solr-buggy-9440	SAT_CANDIDATE	solr-buggy-9440.smt2.gz	solr-buggy-9440.claim.json
