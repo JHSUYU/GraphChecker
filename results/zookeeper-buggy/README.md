@@ -29,6 +29,21 @@ occurrences = the final closure; rounds = EXPLORE's generations).
 Both cases as in B1: the same mechanism (STATE_PAIRING_FLIPPED), native 10/10, the control 0/10, within 2 % of B1's
 wall.
 
+## N1 (2026-10-29): the whole exploration, each case alone
+
+The cases whose E1 exploration ended WITNESSED, again alone, with `CAUSYNTH_STREAM_STOP_AT_WITNESS=false` (`run_engine.sh` `stream_stop_at_witness`, `docs/design/PIPELINE.md`): no
+session is a witness, every exploration runs to FIXED_POINT, and COMPOSE, SOLVE, DECIDE and CONFIRM run once over the
+whole corpus (snapshot `/u/vnr3ne/gc-run/bd-zookeeper-2`; runs under
+`/bigtemp/vnr3ne/gc-out/buggy-detect-full`; `docs/handover/BUGGY-DETECT.md` "Time, the whole exploration" compares
+them with E1). The formulas and claims above stay E1's.
+
+| case | bug | point | run | claim | report.py | mechanism | CONFIRM | native REPRODUCE | wall (s) | seeding (s) | exploration (s) | compose+solver (s) | other (s) | refuted claims (s) | regions | occurrences | rounds |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| zk-buggy-710 | ZOOKEEPER-710 | zk-adhoc-02 | N1-zk-buggy-710 | SAT_CANDIDATE | PASS | STATE_PAIRING_FLIPPED | yes | 10/10; control 0/10 | 589 | 164 | 366 | 6 | 46 | - | 3 | 34 | 12 |
+| zk-buggy-2886 | ZOOKEEPER-2886 | zk-adhoc-02 | N1-zk-buggy-2886 | SAT_CANDIDATE | PASS | STATE_PAIRING_FLIPPED | yes | 10/10; control 0/10 | 595 | 160 | 375 | 10 | 47 | - | 3 | 34 | 12 |
+
+2 of 2 cases ran (N1); wall 1184 s; seeding 324, exploration 741, compose+solver 16, other 93
+
 ## B1 (2026-10-28): the cases side by side, for comparison
 
 The same snapshot and trees, the cases beside each other and beside the other systems' on the liftlab workers
