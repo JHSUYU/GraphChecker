@@ -31,6 +31,22 @@ solr-buggy-9440 reproduced natively 10/10 alone (B1, side by side: 6/10; CloudLa
 Solr's seeding takes 273-336 s (B1: 539-657 s, with the three Solr cases seeding at once) and every case finishes in
 539-632 s (B1: 884-988 s).
 
+## N1 (2026-10-29): the whole exploration, each case alone
+
+The cases whose E1 exploration ended WITNESSED, again alone, with `CAUSYNTH_STREAM_STOP_AT_WITNESS=false` (`run_engine.sh` `stream_stop_at_witness`, `docs/design/PIPELINE.md`): no
+session is a witness, every exploration runs to FIXED_POINT, and COMPOSE, SOLVE, DECIDE and CONFIRM run once over the
+whole corpus (snapshot `/u/vnr3ne/gc-run/bd-solr-2`; runs under
+`/bigtemp/vnr3ne/gc-out/buggy-detect-full`; `docs/handover/BUGGY-DETECT.md` "Time, the whole exploration" compares
+them with E1). The formulas and claims above stay E1's.
+
+| case | bug | point | run | claim | report.py | mechanism | CONFIRM | native REPRODUCE | wall (s) | seeding (s) | exploration (s) | compose+solver (s) | other (s) | refuted claims (s) | regions | occurrences | rounds |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| solr-buggy-6101 | SOLR-6101 | solr-adhoc-19 | N1-solr-buggy-6101 | SAT_CANDIDATE | PASS | MARKER_FLIPPED | yes | 10/10; control 0/10 | 940 | 275 | 601 | 16 | 34 | - | 4 | 44 | 45 |
+| solr-buggy-6197 | SOLR-6197 | solr-adhoc-19 | N1-solr-buggy-6197 | SAT_CANDIDATE | FAIL | MARKER_FLIPPED | yes | 10/10; control 0/10 | 948 | 279 | 605 | 11 | 37 | - | 4 | 36 | 38 |
+| solr-buggy-9440 | SOLR-9440 | solr-adhoc-31 | N1-solr-buggy-9440 | SAT_CANDIDATE | PASS | MARKER_FLIPPED | yes | 10/10; control 0/10 | 1065 | 338 | 603 | 33 | 75 | - | 7 | 44 | 30 |
+
+3 of 3 cases ran (N1); wall 2953 s; seeding 892, exploration 1809, compose+solver 60, other 146
+
 ## B1 (2026-10-28): the cases side by side, for comparison
 
 The same snapshot and trees, the cases beside each other and beside the other systems' on the liftlab workers
