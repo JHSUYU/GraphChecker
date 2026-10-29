@@ -6,7 +6,7 @@
     "kind": "MARKER_FLIPPED",
     "valuationOrdinal": 1,
     "movedRoots": {
-      "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.c41a2224-1bef-35de-8348-0eab5b3bcb8a": "true"
+      "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.004f7e64-c867-33a6-a382-aeaedc9368ee": "true"
     },
     "polarityDecides": true,
     "gaps": [
@@ -105,14 +105,7 @@
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@seed-result-d058a111",
-        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "UNSTATED_VALUE",
-        "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@bec63733d242086a-514917f4",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@seed-result-5960ce89",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
@@ -152,8 +145,8 @@
       }
     ]
   },
-  "solverRuns": 29,
-  "seedSessionId": "seed-result-d058a111",
+  "solverRuns": 28,
+  "seedSessionId": "seed-result-5960ce89",
   "valuations": [
     {
       "ordinal": 0,
@@ -177,6 +170,26 @@
       "ordinal": 1,
       "status": "sat",
       "assignment": {
+        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.c41a2224-1bef-35de-8348-0eab5b3bcb8a": "false",
+        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.174bf94d-6b10-3ffa-b7da-c33c97dae91c": "false",
+        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.09821ca6-9a85-3662-ab24-70aae86981bb": "false",
+        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.b9abbe21-80dc-3e95-a9d9-e999c3cea157": "false",
+        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.004f7e64-c867-33a6-a382-aeaedc9368ee": "true"
+      },
+      "moved": {
+        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.004f7e64-c867-33a6-a382-aeaedc9368ee": "true"
+      },
+      "selectedPathId": "1bd69a7adb24ca72",
+      "selectedSessionId": "e767574e850a8166-d78cfcae",
+      "fatalObserved": true,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 2,
+      "status": "unsat",
+      "assignment": {
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.c41a2224-1bef-35de-8348-0eab5b3bcb8a": "true",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.174bf94d-6b10-3ffa-b7da-c33c97dae91c": "false",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.09821ca6-9a85-3662-ab24-70aae86981bb": "false",
@@ -186,15 +199,15 @@
       "moved": {
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.c41a2224-1bef-35de-8348-0eab5b3bcb8a": "true"
       },
-      "selectedPathId": "6fcbb04e3dfec56d",
-      "selectedSessionId": "0dce9fcd137ed258-1f4babd5",
-      "fatalObserved": true,
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
       "selectedArms": [],
       "repairedArms": [],
       "unsatCore": []
     },
     {
-      "ordinal": 2,
+      "ordinal": 3,
       "status": "unsat",
       "assignment": {
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.c41a2224-1bef-35de-8348-0eab5b3bcb8a": "false",
@@ -214,7 +227,7 @@
       "unsatCore": []
     },
     {
-      "ordinal": 3,
+      "ordinal": 4,
       "status": "unsat",
       "assignment": {
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.c41a2224-1bef-35de-8348-0eab5b3bcb8a": "false",
@@ -225,26 +238,6 @@
       },
       "moved": {
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.09821ca6-9a85-3662-ab24-70aae86981bb": "true"
-      },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
-      "selectedArms": [],
-      "repairedArms": [],
-      "unsatCore": []
-    },
-    {
-      "ordinal": 4,
-      "status": "unsat",
-      "assignment": {
-        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.c41a2224-1bef-35de-8348-0eab5b3bcb8a": "false",
-        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.174bf94d-6b10-3ffa-b7da-c33c97dae91c": "false",
-        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.09821ca6-9a85-3662-ab24-70aae86981bb": "false",
-        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.b9abbe21-80dc-3e95-a9d9-e999c3cea157": "true",
-        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.004f7e64-c867-33a6-a382-aeaedc9368ee": "false"
-      },
-      "moved": {
-        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.b9abbe21-80dc-3e95-a9d9-e999c3cea157": "true"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -260,11 +253,11 @@
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.c41a2224-1bef-35de-8348-0eab5b3bcb8a": "false",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.174bf94d-6b10-3ffa-b7da-c33c97dae91c": "false",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.09821ca6-9a85-3662-ab24-70aae86981bb": "false",
-        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.b9abbe21-80dc-3e95-a9d9-e999c3cea157": "false",
-        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.004f7e64-c867-33a6-a382-aeaedc9368ee": "true"
+        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.b9abbe21-80dc-3e95-a9d9-e999c3cea157": "true",
+        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.004f7e64-c867-33a6-a382-aeaedc9368ee": "false"
       },
       "moved": {
-        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.004f7e64-c867-33a6-a382-aeaedc9368ee": "true"
+        "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.b9abbe21-80dc-3e95-a9d9-e999c3cea157": "true"
       },
       "selectedPathId": "",
       "selectedSessionId": "",
@@ -275,7 +268,7 @@
     },
     {
       "ordinal": 6,
-      "status": "sat",
+      "status": "unsat",
       "assignment": {
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.c41a2224-1bef-35de-8348-0eab5b3bcb8a": "true",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.174bf94d-6b10-3ffa-b7da-c33c97dae91c": "true",
@@ -287,16 +280,16 @@
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.c41a2224-1bef-35de-8348-0eab5b3bcb8a": "true",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.174bf94d-6b10-3ffa-b7da-c33c97dae91c": "true"
       },
-      "selectedPathId": "6fcbb04e3dfec56d",
-      "selectedSessionId": "0dce9fcd137ed258-1f4babd5",
-      "fatalObserved": true,
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
       "selectedArms": [],
       "repairedArms": [],
       "unsatCore": []
     },
     {
       "ordinal": 7,
-      "status": "sat",
+      "status": "unsat",
       "assignment": {
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.c41a2224-1bef-35de-8348-0eab5b3bcb8a": "true",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.174bf94d-6b10-3ffa-b7da-c33c97dae91c": "false",
@@ -308,16 +301,16 @@
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.c41a2224-1bef-35de-8348-0eab5b3bcb8a": "true",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.09821ca6-9a85-3662-ab24-70aae86981bb": "true"
       },
-      "selectedPathId": "6fcbb04e3dfec56d",
-      "selectedSessionId": "0dce9fcd137ed258-1f4babd5",
-      "fatalObserved": true,
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
       "selectedArms": [],
       "repairedArms": [],
       "unsatCore": []
     },
     {
       "ordinal": 8,
-      "status": "sat",
+      "status": "unsat",
       "assignment": {
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.c41a2224-1bef-35de-8348-0eab5b3bcb8a": "true",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.174bf94d-6b10-3ffa-b7da-c33c97dae91c": "false",
@@ -329,9 +322,9 @@
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.c41a2224-1bef-35de-8348-0eab5b3bcb8a": "true",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.b9abbe21-80dc-3e95-a9d9-e999c3cea157": "true"
       },
-      "selectedPathId": "6fcbb04e3dfec56d",
-      "selectedSessionId": "0dce9fcd137ed258-1f4babd5",
-      "fatalObserved": true,
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
       "selectedArms": [],
       "repairedArms": [],
       "unsatCore": []
@@ -350,8 +343,8 @@
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.c41a2224-1bef-35de-8348-0eab5b3bcb8a": "true",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.004f7e64-c867-33a6-a382-aeaedc9368ee": "true"
       },
-      "selectedPathId": "6fcbb04e3dfec56d",
-      "selectedSessionId": "0dce9fcd137ed258-1f4babd5",
+      "selectedPathId": "1bd69a7adb24ca72",
+      "selectedSessionId": "e767574e850a8166-d78cfcae",
       "fatalObserved": true,
       "selectedArms": [],
       "repairedArms": [],
@@ -401,7 +394,7 @@
     },
     {
       "ordinal": 12,
-      "status": "unsat",
+      "status": "sat",
       "assignment": {
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.c41a2224-1bef-35de-8348-0eab5b3bcb8a": "false",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.174bf94d-6b10-3ffa-b7da-c33c97dae91c": "true",
@@ -413,9 +406,9 @@
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.174bf94d-6b10-3ffa-b7da-c33c97dae91c": "true",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.004f7e64-c867-33a6-a382-aeaedc9368ee": "true"
       },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
+      "selectedPathId": "1bd69a7adb24ca72",
+      "selectedSessionId": "e767574e850a8166-d78cfcae",
+      "fatalObserved": true,
       "selectedArms": [],
       "repairedArms": [],
       "unsatCore": []
@@ -443,7 +436,7 @@
     },
     {
       "ordinal": 14,
-      "status": "unsat",
+      "status": "sat",
       "assignment": {
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.c41a2224-1bef-35de-8348-0eab5b3bcb8a": "false",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.174bf94d-6b10-3ffa-b7da-c33c97dae91c": "false",
@@ -455,16 +448,16 @@
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.09821ca6-9a85-3662-ab24-70aae86981bb": "true",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.004f7e64-c867-33a6-a382-aeaedc9368ee": "true"
       },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
+      "selectedPathId": "1bd69a7adb24ca72",
+      "selectedSessionId": "e767574e850a8166-d78cfcae",
+      "fatalObserved": true,
       "selectedArms": [],
       "repairedArms": [],
       "unsatCore": []
     },
     {
       "ordinal": 15,
-      "status": "unsat",
+      "status": "sat",
       "assignment": {
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.c41a2224-1bef-35de-8348-0eab5b3bcb8a": "false",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.174bf94d-6b10-3ffa-b7da-c33c97dae91c": "false",
@@ -476,9 +469,9 @@
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.b9abbe21-80dc-3e95-a9d9-e999c3cea157": "true",
         "REGION.e9c461ed-34b4-3243-a367-ab679c7f5118.in.004f7e64-c867-33a6-a382-aeaedc9368ee": "true"
       },
-      "selectedPathId": "",
-      "selectedSessionId": "",
-      "fatalObserved": false,
+      "selectedPathId": "1bd69a7adb24ca72",
+      "selectedSessionId": "e767574e850a8166-d78cfcae",
+      "fatalObserved": true,
       "selectedArms": [],
       "repairedArms": [],
       "unsatCore": []
@@ -580,14 +573,7 @@
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@seed-result-d058a111",
-      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "UNSTATED_VALUE",
-      "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@bec63733d242086a-514917f4",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@seed-result-5960ce89",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {

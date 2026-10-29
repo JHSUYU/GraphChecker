@@ -91,7 +91,7 @@ def main():
     done = [r for r in rows if r['run'] != '-']
     if done:
         tot = {k: sum(r[k] for r in done) for k in ['wall', 'seeding', 'exploration', 'compose', 'other']}
-        print('\n%d of %d cases ran (%s, beside each other on liftlab); wall %d s; seeding %d, exploration %d, '
+        print('\n%d of %d cases ran (%s); wall %d s; seeding %d, exploration %d, '
               'compose+solver %d, other %d' % (len(done), len(rows), a.round, tot['wall'], tot['seeding'],
                                                tot['exploration'], tot['compose'], tot['other']))
 

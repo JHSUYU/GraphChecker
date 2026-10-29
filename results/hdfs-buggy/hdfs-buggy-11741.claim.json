@@ -6,11 +6,109 @@
     "kind": "CLOCK_SKEW",
     "valuationOrdinal": 0,
     "movedRoots": {
-      "M_J_field_REGION.08ab84c9-0925-3733-a2ba-a57ea4cec9f7.in.2bcf8fee-24b3-3416-808b-6f935306fb4b.occ.e8bcf1746cd556f72f9e25fecf97b3ed55e25b7d061313f95b2835503e79ffb2_java/lang/Long": "1793200292126",
-      "M_J_field_REGION.ba3902cd-9721-3876-bd7c-d4f7d2fc0284.in.ba6095a6-4c6c-353d-994c-17dffabec657.occ.d81269ca1f017326f99b766641b8865d79cc910820653cd61dc406f24118a463_java/lang/Long": "1793203886406"
+      "M_J_field_REGION.ba3902cd-9721-3876-bd7c-d4f7d2fc0284.in.1488745b-10af-3461-a2ce-dcdbfc69fdf8.occ.d84f2e1c4aa7fdf478d55bb57f7690a72bd2a3fa90c8cc872ae96621578a0c0c_java/lang/Long": "1793289468215",
+      "M_J_field_REGION.08ab84c9-0925-3733-a2ba-a57ea4cec9f7.in.2bcf8fee-24b3-3416-808b-6f935306fb4b.occ.e8bcf1746cd556f72f9e25fecf97b3ed55e25b7d061313f95b2835503e79ffb2_java/lang/Long": "1793285624637"
     },
     "polarityDecides": true,
     "gaps": [
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ce9679755699e5a2",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "4116349b4ec28202",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "510a6b6a60d0b9d3",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "140fa853c458c099",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "b69ff96edb47f168",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "fa8c9f80ea382e2f",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "7ef15afd5a0f575a",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "5b8a101a4c45d1f4",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "995408e215be49f5",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "52182988096726fe",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "048ef87a03a66dfb",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "d77ea9226e933b64",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ba4ad8b3d5735114",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "52b48c2d4725dba1",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
       {
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
@@ -169,41 +267,6 @@
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "ce9679755699e5a2",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "4116349b4ec28202",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "510a6b6a60d0b9d3",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "140fa853c458c099",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "b69ff96edb47f168",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
         "subject": "ba06c86853cc0765",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
@@ -275,13 +338,6 @@
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
         "subject": "ae3493f49abfeac6",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "fa8c9f80ea382e2f",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
@@ -519,49 +575,7 @@
         "sessionId": "composition",
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
-        "subject": "7ef15afd5a0f575a",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "5b8a101a4c45d1f4",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "995408e215be49f5",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "52182988096726fe",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "048ef87a03a66dfb",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "d77ea9226e933b64",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "ba4ad8b3d5735114",
+        "subject": "83693ffec0e2178c",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
@@ -639,20 +653,6 @@
         "kind": "TOPOLOGY_DIVERGENCE",
         "cls": "DIAGNOSTIC",
         "subject": "a032b94953fb029b",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "52b48c2d4725dba1",
-        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "TOPOLOGY_DIVERGENCE",
-        "cls": "DIAGNOSTIC",
-        "subject": "83693ffec0e2178c",
         "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
       },
       {
@@ -764,182 +764,336 @@
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@02ac60d220874ed1-ba2e4e6c",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@087f6607a7164e59-fc23a5d7",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@531ef827293af139-9ef82da8",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@3a2a524428bdaa32-60ac4e1e",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@63105d9115fd56b2-4a6f6790",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@seed-result-18a1ca76",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@seed-result-40ac73e8",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@0e53f0e62d960237-1c230998",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@087f6607a7164e59-2bd11707",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@97414be43bc39a93-ab1b1dfa",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@20131718ffcecc90-da0ff6bf",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@124d6bb7a7fa8c01-73860ad7",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@a0adbfa7d7e268c9-b7d50bbb",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@2ee5071a727d2203-892afcbc",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@40b1806e9be689ea-095ebcd2",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@343462d35d981b21-06646873",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@4ae0a8fe257e2252-67e3d2d6",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@b7308b133d34d8cf-794d5975",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@506b11c6d9fb1fe0-1c043f0d",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@f4440b2e8b1f4885-9d7061d0",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@d20ad49d4acb85e4-8056f488",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@15fa8f72147b23b8-795dd5e4",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@5b89f80013fbf5e2-26ed43f9",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@1b0fbe7decb3ee8f-22c8fbb8",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@5c529191cc9217c5-bc5e184d",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@40b1806e9be689ea-490cea5f",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@6061b4f51e31be96-db3b69d0",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@1f0817a102bf3564-fe3d70fb",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@e301a60d234ba224-87b47187",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@8784f29b024a5a70-14b9e5b0",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@f6cf4a57ea9dc836-23a88ebd",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@20131718ffcecc90-611a5ea1",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@f718f4445060560e-9dd5b0f0",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@d737974611c6faff-b2fb9004",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@fc9b23ca8b13e46a-243f8df3",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@245bd6343b5ea7cb-19e47f01",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@7242d65a9059095d-e40fceb3",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@a8d6226c54774544-5fe99c50",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@7d206ed376eed2d8-e05c5f46",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@fc9b23ca8b13e46a-ac5ee2ad",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@8784f29b024a5a70-fef0225c",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@5c529191cc9217c5-e2f1a47e",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@97414be43bc39a93-794a97dd",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@40d0fdd77a5ed308-a20c3b1d",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@a8d6226c54774544-a87da24f",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@4652bf4b6c49ac2a-548ed8c3",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@bc2482e54cd3888b-cd3ab451",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@4ae0a8fe257e2252-dbe164bc",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@f007197694291eea-8743d6e3",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@57998223f1034a71-1b65be03",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
         "sessionId": "composition",
         "kind": "UNSTATED_VALUE",
         "cls": "DIAGNOSTIC",
-        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@799c2264dd5bc1a4-83e81476",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@5b89f80013fbf5e2-4eb39c8d",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@c2636633aec99833-870184ac",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@e301a60d234ba224-eda3f01c",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@f718f4445060560e-12cc30af",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@9138c9a678eb6a47-7ba413c4",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@46f21908bc6217e6-e9ff5209",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@506b11c6d9fb1fe0-fc9a7cf3",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@6061b4f51e31be96-d3d8e538",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@7242d65a9059095d-e9c6ddee",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@7d206ed376eed2d8-63d6365a",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@7ed2e0944899a100-e85caf28",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@f007197694291eea-e4b6e0bf",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@810f4972c8797db5-f60c2d67",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@84d1716f2caabebc-143cb688",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@b56b437ad783e3be-0c77ce8b",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@9309f193901d209d-42a3ba23",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@a4f68da51612eca4-b11a8077",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@a9689d5342473d3f-c8eec91f",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@bc2482e54cd3888b-fe7d7ddd",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@c6c1d08bdd1c6299-d6bf48ef",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@cefa0a2c108d1eff-cef6a660",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@f008a7d2f944ad1c-3a6455b0",
+        "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@799c2264dd5bc1a4-356c890e",
         "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
       },
       {
@@ -951,8 +1105,8 @@
       }
     ]
   },
-  "solverRuns": 471,
-  "seedSessionId": "seed-result-40ac73e8",
+  "solverRuns": 1360,
+  "seedSessionId": "seed-result-18a1ca76",
   "valuations": [
     {
       "ordinal": 0,
@@ -974,34 +1128,33 @@
         "REGION.074f9e67-bf11-3cc3-a83a-cd67abb4b6bc.in.26106476-481b-3709-a215-6713d3256dfd": "false"
       },
       "moved": {},
-      "selectedPathId": "ef473aa4e7aee207",
-      "selectedSessionId": "02ac60d220874ed1-ba2e4e6c",
+      "selectedPathId": "53afaecf1d8e2e41",
+      "selectedSessionId": "2ee5071a727d2203-892afcbc",
       "fatalObserved": true,
       "selectedArms": [
         {
-          "selector": "message_arm__0__ab23801c4f59",
-          "family": "message_family__0__c2cca2878f2d",
+          "selector": "message_arm__8__b30a82eb63b9",
+          "family": "message_family__8__c2cca2878f2d",
           "groupId": "1f091b8efbf0571a",
           "attachEndpointIds": [
             "1f091b8efbf0571a"
           ],
-          "sessionId": "02ac60d220874ed1-ba2e4e6c",
+          "sessionId": "2ee5071a727d2203-892afcbc",
           "sessionIds": [
-            "02ac60d220874ed1-ba2e4e6c",
-            "63105d9115fd56b2-4a6f6790"
+            "2ee5071a727d2203-892afcbc"
           ],
-          "producerPathId": "6164a9ba521c2431",
+          "producerPathId": "487bdbd7f54249ee",
           "interactionIds": [
             "33a45b7051e0c4e2"
           ],
           "expressionRefs": [
-            "EXPR.829981069febcdd7"
+            "EXPR.80964039244f112e"
           ],
           "attested": true
         },
         {
-          "selector": "message_arm__0__bc80eff43e04",
-          "family": "message_family__0__a36cb10aef3c",
+          "selector": "message_arm__8__76268e74c116",
+          "family": "message_family__8__a36cb10aef3c",
           "groupId": "8210c57c33afb61e|ab97b8923f7ef784|b46c856c2fa85059|ea16d251093c9c83",
           "attachEndpointIds": [
             "ab97b8923f7ef784",
@@ -1009,11 +1162,11 @@
             "ea16d251093c9c83",
             "8210c57c33afb61e"
           ],
-          "sessionId": "02ac60d220874ed1-ba2e4e6c",
+          "sessionId": "2ee5071a727d2203-892afcbc",
           "sessionIds": [
-            "02ac60d220874ed1-ba2e4e6c"
+            "2ee5071a727d2203-892afcbc"
           ],
-          "producerPathId": "ec8bde50f9648062",
+          "producerPathId": "6855b8d7a1adc9a4",
           "interactionIds": [
             "35451023d6f0f48d",
             "4160e60814910bcb",
@@ -1021,10 +1174,10 @@
             "fd2acb4d747f65d3"
           ],
           "expressionRefs": [
-            "EXPR.16c45ad24680da53",
-            "EXPR.7e7783a75396c083",
-            "EXPR.64b6837476a36a9a",
-            "EXPR.24aeb39e1fad2990"
+            "EXPR.28cdd777eeb7e6df",
+            "EXPR.c7317da5d2e4b848",
+            "EXPR.949a3abb5d5269c6",
+            "EXPR.e3ebb5cf8afdf35f"
           ],
           "attested": true,
           "roots": [
@@ -1032,8 +1185,8 @@
           ]
         },
         {
-          "selector": "message_arm__0__cceac95c9c37",
-          "family": "message_family__0__3cd138c0b22a",
+          "selector": "message_arm__8__27595ec50b33",
+          "family": "message_family__8__3cd138c0b22a",
           "groupId": "1409edb270f688f7|2fd6b315133f30b3|343648aeea5c5be4|47f2f3efb1e35a66|a0244191d32d21cf|a3579ab2f95d1905",
           "attachEndpointIds": [
             "a3579ab2f95d1905",
@@ -1043,11 +1196,11 @@
             "2fd6b315133f30b3",
             "47f2f3efb1e35a66"
           ],
-          "sessionId": "02ac60d220874ed1-ba2e4e6c",
+          "sessionId": "2ee5071a727d2203-892afcbc",
           "sessionIds": [
-            "02ac60d220874ed1-ba2e4e6c"
+            "2ee5071a727d2203-892afcbc"
           ],
-          "producerPathId": "ce8730b736e7ab10",
+          "producerPathId": "037d9af62a945d16",
           "interactionIds": [
             "d43987c43d1c1dde",
             "08bc23d96ad5597e",
@@ -1057,59 +1210,56 @@
             "384de0104074e3e8"
           ],
           "expressionRefs": [
-            "EXPR.a09677cf235d6edf",
-            "EXPR.bc904baf3020e5cb",
-            "EXPR.c61907bf840dfffc",
-            "EXPR.fa68072b35e5bb20",
-            "EXPR.257c1e9307046df2",
-            "EXPR.3fa506ddb1383dd8"
+            "EXPR.717bdf4fa744cc3e",
+            "EXPR.eb39df3a7bcbe13f",
+            "EXPR.9585b170a4db03ac",
+            "EXPR.a838a59e8b53d70e",
+            "EXPR.d5d824dd8f9ec333",
+            "EXPR.c56286cf9eb81718"
           ],
-          "attested": true,
-          "roots": [
-            "REGION.08ab84c9-0925-3733-a2ba-a57ea4cec9f7.in.fb303b81-5551-3d9b-8a18-e887d02bd2c1"
-          ]
+          "attested": true
         },
         {
-          "selector": "message_arm__0__5634927d2d26",
-          "family": "message_family__0__b8d890d15483",
+          "selector": "message_arm__8__f23d7b26d190",
+          "family": "message_family__8__b8d890d15483",
           "groupId": "8210c57c33afb61e|b46c856c2fa85059|ea16d251093c9c83",
           "attachEndpointIds": [
             "b46c856c2fa85059",
             "ea16d251093c9c83",
             "8210c57c33afb61e"
           ],
-          "sessionId": "02ac60d220874ed1-ba2e4e6c",
+          "sessionId": "2ee5071a727d2203-892afcbc",
           "sessionIds": [
-            "02ac60d220874ed1-ba2e4e6c"
+            "2ee5071a727d2203-892afcbc"
           ],
-          "producerPathId": "ec8bde50f9648062",
+          "producerPathId": "6855b8d7a1adc9a4",
           "interactionIds": [
             "4160e60814910bcb",
             "053ad92de05fdb18",
             "fd2acb4d747f65d3"
           ],
           "expressionRefs": [
-            "EXPR.7e7783a75396c083",
-            "EXPR.64b6837476a36a9a",
-            "EXPR.24aeb39e1fad2990"
+            "EXPR.c7317da5d2e4b848",
+            "EXPR.949a3abb5d5269c6",
+            "EXPR.e3ebb5cf8afdf35f"
           ],
           "attested": true
         },
         {
-          "selector": "writer_arm__0__7b7946b54979",
-          "family": "writer_family__0__7b7946b54979",
+          "selector": "writer_arm__8__690d710d8c7c",
+          "family": "writer_family__8__690d710d8c7c",
           "groupId": "b376649e58c7b0ef",
           "attachEndpointIds": [],
-          "sessionId": "02ac60d220874ed1-ba2e4e6c",
+          "sessionId": "2ee5071a727d2203-892afcbc",
           "sessionIds": [
-            "02ac60d220874ed1-ba2e4e6c"
+            "2ee5071a727d2203-892afcbc"
           ],
-          "producerPathId": "07db8e25bf737086",
+          "producerPathId": "44569bdc3cedf2f4",
           "interactionIds": [
             "aab2ccf594edf137"
           ],
           "expressionRefs": [
-            "EXPR.02d39b88c902399a"
+            "EXPR.15db23814412456d"
           ],
           "attested": true
         }
@@ -4259,6 +4409,104 @@
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
+      "subject": "ce9679755699e5a2",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "4116349b4ec28202",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "510a6b6a60d0b9d3",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "140fa853c458c099",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "b69ff96edb47f168",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "fa8c9f80ea382e2f",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "7ef15afd5a0f575a",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "5b8a101a4c45d1f4",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "995408e215be49f5",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "52182988096726fe",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "048ef87a03a66dfb",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "d77ea9226e933b64",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ba4ad8b3d5735114",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "52b48c2d4725dba1",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
       "subject": "178ed79e02aa8d3b",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
@@ -4413,41 +4661,6 @@
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "ce9679755699e5a2",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "4116349b4ec28202",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "510a6b6a60d0b9d3",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "140fa853c458c099",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "b69ff96edb47f168",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
       "subject": "ba06c86853cc0765",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
@@ -4519,13 +4732,6 @@
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
       "subject": "ae3493f49abfeac6",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "fa8c9f80ea382e2f",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
@@ -4763,49 +4969,7 @@
       "sessionId": "composition",
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
-      "subject": "7ef15afd5a0f575a",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "5b8a101a4c45d1f4",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "995408e215be49f5",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "52182988096726fe",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "048ef87a03a66dfb",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "d77ea9226e933b64",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "ba4ad8b3d5735114",
+      "subject": "83693ffec0e2178c",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
@@ -4883,20 +5047,6 @@
       "kind": "TOPOLOGY_DIVERGENCE",
       "cls": "DIAGNOSTIC",
       "subject": "a032b94953fb029b",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "52b48c2d4725dba1",
-      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "TOPOLOGY_DIVERGENCE",
-      "cls": "DIAGNOSTIC",
-      "subject": "83693ffec0e2178c",
       "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
     },
     {
@@ -5008,182 +5158,336 @@
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@02ac60d220874ed1-ba2e4e6c",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@087f6607a7164e59-fc23a5d7",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@531ef827293af139-9ef82da8",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@3a2a524428bdaa32-60ac4e1e",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@63105d9115fd56b2-4a6f6790",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@seed-result-18a1ca76",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@seed-result-40ac73e8",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@0e53f0e62d960237-1c230998",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@087f6607a7164e59-2bd11707",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@97414be43bc39a93-ab1b1dfa",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@20131718ffcecc90-da0ff6bf",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@124d6bb7a7fa8c01-73860ad7",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@a0adbfa7d7e268c9-b7d50bbb",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@2ee5071a727d2203-892afcbc",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@40b1806e9be689ea-095ebcd2",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@343462d35d981b21-06646873",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@4ae0a8fe257e2252-67e3d2d6",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@b7308b133d34d8cf-794d5975",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@506b11c6d9fb1fe0-1c043f0d",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@f4440b2e8b1f4885-9d7061d0",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@d20ad49d4acb85e4-8056f488",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@15fa8f72147b23b8-795dd5e4",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@5b89f80013fbf5e2-26ed43f9",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@1b0fbe7decb3ee8f-22c8fbb8",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@5c529191cc9217c5-bc5e184d",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@40b1806e9be689ea-490cea5f",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@6061b4f51e31be96-db3b69d0",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@1f0817a102bf3564-fe3d70fb",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@e301a60d234ba224-87b47187",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@8784f29b024a5a70-14b9e5b0",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@f6cf4a57ea9dc836-23a88ebd",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@20131718ffcecc90-611a5ea1",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@f718f4445060560e-9dd5b0f0",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@d737974611c6faff-b2fb9004",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@fc9b23ca8b13e46a-243f8df3",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@245bd6343b5ea7cb-19e47f01",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@7242d65a9059095d-e40fceb3",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@a8d6226c54774544-5fe99c50",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@7d206ed376eed2d8-e05c5f46",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@fc9b23ca8b13e46a-ac5ee2ad",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@8784f29b024a5a70-fef0225c",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@5c529191cc9217c5-e2f1a47e",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@97414be43bc39a93-794a97dd",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@40d0fdd77a5ed308-a20c3b1d",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@a8d6226c54774544-a87da24f",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@4652bf4b6c49ac2a-548ed8c3",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@bc2482e54cd3888b-cd3ab451",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@4ae0a8fe257e2252-dbe164bc",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@f007197694291eea-8743d6e3",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@57998223f1034a71-1b65be03",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {
       "sessionId": "composition",
       "kind": "UNSTATED_VALUE",
       "cls": "DIAGNOSTIC",
-      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@799c2264dd5bc1a4-83e81476",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@5b89f80013fbf5e2-4eb39c8d",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@c2636633aec99833-870184ac",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@e301a60d234ba224-eda3f01c",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@f718f4445060560e-12cc30af",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@9138c9a678eb6a47-7ba413c4",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@46f21908bc6217e6-e9ff5209",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@506b11c6d9fb1fe0-fc9a7cf3",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@6061b4f51e31be96-d3d8e538",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@7242d65a9059095d-e9c6ddee",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@7d206ed376eed2d8-63d6365a",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@7ed2e0944899a100-e85caf28",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@f007197694291eea-e4b6e0bf",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@810f4972c8797db5-f60c2d67",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@84d1716f2caabebc-143cb688",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@b56b437ad783e3be-0c77ce8b",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@9309f193901d209d-42a3ba23",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@a4f68da51612eca4-b11a8077",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@a9689d5342473d3f-c8eec91f",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@bc2482e54cd3888b-fe7d7ddd",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@c6c1d08bdd1c6299-d6bf48ef",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@cefa0a2c108d1eff-cef6a660",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@f008a7d2f944ad1c-3a6455b0",
+      "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ASSOC_VIEW_UNORDERED:HASH_INSERT:M_L\u0027java/util/HashMap\u0027_3 (java/util/HashMap)@799c2264dd5bc1a4-356c890e",
       "detail": "a view of this map reads positions its chain does not order (UNRECORDED: its snapshot states no iteration order; HASH_INSERT: a put of another key into a hash-ordered map may rebin its table), so they are a bijection with its keys in no order (assoc_view_key)"
     },
     {

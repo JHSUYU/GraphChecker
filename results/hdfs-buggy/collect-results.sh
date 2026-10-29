@@ -22,5 +22,5 @@ while IFS=$'\t' read -r id _; do
   if [[ -s "${final}/claim.json" ]]; then
     cp "${final}/claim.json" "${here}/${id}.claim.json"; json=${id}.claim.json
   fi
-  printf '%s\t%s\t%s\t%s\t%s\n' "${id}" "buggy-detect/${run}" "${claim}" "${smt}" "${json}" >>"${here}/index.tsv"
+  printf '%s\t%s\t%s\t%s\t%s\n' "${id}" "$(basename "${out}")/${run}" "${claim}" "${smt}" "${json}" >>"${here}/index.tsv"
 done <"${cases}"

@@ -1,8 +1,8 @@
 case	run	claim	smt	claim_json
-hdfs-buggy-11741	buggy-detect/accept-B1-buggy-11741	SAT_CANDIDATE	hdfs-buggy-11741.smt2.gz	hdfs-buggy-11741.claim.json
-hdfs-buggy-17383	buggy-detect/accept-B1-buggy-17383	SAT_CANDIDATE	hdfs-buggy-17383.smt2.gz	hdfs-buggy-17383.claim.json
-hdfs-buggy-12931	buggy-detect/accept-B1-buggy-12931	SAT_CANDIDATE	hdfs-buggy-12931.smt2.gz	hdfs-buggy-12931.claim.json
-hdfs-buggy-5766	buggy-detect/accept-B1-buggy-5766	SAT_CANDIDATE	hdfs-buggy-5766.smt2.gz	hdfs-buggy-5766.claim.json
-hdfs-buggy-10609	buggy-detect/accept-B1-buggy-10609	SAT_CANDIDATE	hdfs-buggy-10609.smt2.gz	hdfs-buggy-10609.claim.json
-hdfs-buggy-14075	buggy-detect/accept-B1-buggy-14075	SAT_CANDIDATE	hdfs-buggy-14075.smt2.gz	hdfs-buggy-14075.claim.json
-hdfs-buggy-14311	buggy-detect/accept-B1-buggy-14311	UNSAT_CLOSED	hdfs-buggy-14311.smt2.gz	hdfs-buggy-14311.claim.json
+hdfs-buggy-11741	buggy-detect-exclusive/accept-E1-buggy-11741	SAT_CANDIDATE	hdfs-buggy-11741.smt2.gz	hdfs-buggy-11741.claim.json
+hdfs-buggy-17383	buggy-detect-exclusive/accept-E1-buggy-17383	SAT_CANDIDATE	hdfs-buggy-17383.smt2.gz	hdfs-buggy-17383.claim.json
+hdfs-buggy-12931	buggy-detect-exclusive/accept-E1-buggy-12931	SAT_CANDIDATE	hdfs-buggy-12931.smt2.gz	hdfs-buggy-12931.claim.json
+hdfs-buggy-5766	buggy-detect-exclusive/accept-E1-buggy-5766	SAT_CANDIDATE	hdfs-buggy-5766.smt2.gz	hdfs-buggy-5766.claim.json
+hdfs-buggy-10609	buggy-detect-exclusive/accept-E1-buggy-10609	SAT_CANDIDATE	hdfs-buggy-10609.smt2.gz	hdfs-buggy-10609.claim.json
+hdfs-buggy-14075	buggy-detect-exclusive/accept-E1-buggy-14075	SAT_CANDIDATE	hdfs-buggy-14075.smt2.gz	hdfs-buggy-14075.claim.json
+hdfs-buggy-14311	buggy-detect-exclusive/accept-E1-buggy-14311	UNSAT_CLOSED	hdfs-buggy-14311.smt2.gz	hdfs-buggy-14311.claim.json
