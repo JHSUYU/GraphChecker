@@ -19,18 +19,19 @@ defaulted.
 
 ## The branches (github.com/JHSUYU/GraphChecker)
 
-[docs/handover/HANDOVER-2026-10-28.md](docs/handover/HANDOVER-2026-10-28.md) is the map of everything on liftlab:
+[docs/handover/HANDOVER-2026-10-30.md](docs/handover/HANDOVER-2026-10-30.md) is the map of everything on liftlab:
 every GraphChecker branch and fork branch (and the archive tags), the tree sets, snapshots, images, the runs of
-record, the buggy-detect results and how to run a case. The same file is on all eight `system/*` branches.
+record, the buggy-detect and baseline results, the injected-bug work order and how to run a case. The same file is
+on all twelve `system/*` branches.
 
-Every system has two branches, both run on liftlab (the lifts below); nothing goes to `main` (the 2026-10-03 body):
+Every system has three branches, all run on liftlab (the lifts below); nothing goes to `main` (the 2026-10-03 body):
 
-| system | ad hoc checks | old bugs put back (their `docs/handover/BUGGY-DETECT.md`) |
-| --- | --- | --- |
-| HDFS | `system/hdfs-liftlab` (replaces `system/hdfs` and `system/hdfs1`, which stay on origin as history) | `system/hdfs-buggy-detect` |
-| HBase | `system/hbase` | `system/hbase-buggy-detect` |
-| ZooKeeper | `system/zookeeper` (this branch) | `system/zookeeper-buggy-detect` |
-| Solr | `system/solr` | `system/solr-buggy-detect` |
+| system | ad hoc checks | old bugs put back (their `docs/handover/BUGGY-DETECT.md`) | injected bugs (`docs/handover/INJECTED-BUGS.md`) |
+| --- | --- | --- | --- |
+| HDFS | `system/hdfs-liftlab` (replaces `system/hdfs` and `system/hdfs1`, which stay on origin as history) | `system/hdfs-buggy-detect` | `system/hdfs-injected` |
+| HBase | `system/hbase` | `system/hbase-buggy-detect` | `system/hbase-injected` |
+| ZooKeeper | `system/zookeeper` (this branch) | `system/zookeeper-buggy-detect` | `system/zookeeper-injected` |
+| Solr | `system/solr` | `system/solr-buggy-detect` | `system/solr-injected` |
 
 Each `system/<x>-buggy-detect` is `system/<x>` plus the old-bug cases (`experiments/{hadoop,hbase,zookeeper,solr}/*-buggy-<jira>/`) and
 the engine support they needed. The CloudLab record (2026-10-24..28) is the tags `archive/system/<x>-cloudlab`.
