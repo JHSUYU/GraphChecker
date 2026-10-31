@@ -1,4 +1,11 @@
-# START HERE: `system/solr-buggy-detect` -- old Solr bugs put back by hand, detected on liftlab
+# START HERE: the injected Solr bugs (`system/solr-injected`), on top of the old bugs (`system/solr-buggy-detect`)
+
+## -1. This branch (from 2026-10-30)
+
+This branch is `system/solr-buggy-detect` plus the injected-bug experiment. Read [INJECTED-BUGS.md](INJECTED-BUGS.md) first:
+it is the whole work order (the goal, the 20 cases, the branches and fork branches, the procedure and the
+acceptance). The map of all branches is [HANDOVER-2026-10-30.md](HANDOVER-2026-10-30.md). Everything below is
+`system/solr-buggy-detect`'s START-HERE (its title: "START HERE: `system/solr-buggy-detect` -- old Solr bugs put back by hand, detected on liftlab") and holds here.
 
 You are the next lead (a coding agent that may run up to 5 coding agents). This branch is `system/solr` (the 20 Solr
 ad hoc cases, finished 2026-10-26, `results/solr/`) plus the old Solr bugs that make an ad hoc check's own throw fail,
