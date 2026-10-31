@@ -1,4 +1,11 @@
-# START HERE: system/hdfs-buggy-detect -- the old HDFS bugs, on THE HDFS branch (liftlab)
+# START HERE: the injected HDFS bugs (`system/hdfs-injected`), on top of the old bugs (`system/hdfs-buggy-detect`)
+
+## -1. This branch (from 2026-10-30)
+
+This branch is `system/hdfs-buggy-detect` plus the injected-bug experiment. Read [INJECTED-BUGS.md](INJECTED-BUGS.md) first:
+it is the whole work order (the goal, the 20 cases, the branches and fork branches, the procedure and the
+acceptance). The map of all branches is [HANDOVER-2026-10-30.md](HANDOVER-2026-10-30.md). Everything below is
+`system/hdfs-buggy-detect`'s START-HERE (its title: "START HERE: system/hdfs-buggy-detect -- the old HDFS bugs, on THE HDFS branch (liftlab)") and holds here.
 
 You take over `system/hdfs-buggy-detect`: `system/hdfs-liftlab` (THE HDFS branch: every HDFS ad hoc case on HBase's final
 engine, run on liftlab with the memory-ledger scheduling of `system/hbase` and `system/solr`) plus seven old HDFS bugs
