@@ -12,6 +12,11 @@ passes. Branch, tree and path details are in [STATE.md](STATE.md); every check w
 [../checks/README.md](../checks/README.md) and its reading in [../STATUS.md](../STATUS.md); commands in
 [OPERATIONS.md](OPERATIONS.md); speed and the cluster in [../design/PERFORMANCE.md](../design/PERFORMANCE.md).
 
+## Injected bugs (`system/solr-injected`, 2026-10-30): not started
+
+The whole work order is [INJECTED-BUGS.md](INJECTED-BUGS.md): this system's five cases (§3), and the shared
+procedure, acceptance and results table.
+
 ## Buggy-detect (this branch, liftlab)
 
 1. **Round B1** (the lead, 2026-10-28): the three cases on liftlab (START-HERE §3); each verdict, time and native k/N
@@ -21,7 +26,7 @@ passes. Branch, tree and path details are in [STATE.md](STATE.md); every check w
    (`NATIVE_PLANT_UNSUPPORTED`), as before 61e881776: planted at the getter, `RecordingPlant` applied it at every call
    in the window on every node of the one-JVM cluster, wider than the VM's mint inside a matching active region
    (S6101e/S6197e). Kept disabled; a root both read from a field and returned by a getter is refused too (ad3d08028).
-3. **Three minor reporting gaps of the native field plant** (HANDOVER-2026-10-28 §5): `fieldUnwritten` is silent while
+3. **Three minor reporting gaps of the native field plant** (HANDOVER-2026-10-30 §7): `fieldUnwritten` is silent while
    the window is closed; a planned method with no GETFIELD of the field is not named; a class the plant agent fails to
    rewrite is not named.
 4. **SOLR-6763's native check** (started and stopped by the owner, nothing committed): expire the leader's session

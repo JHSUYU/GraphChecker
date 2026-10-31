@@ -149,3 +149,43 @@ post-fatal ORDER timeout (needs the owner's sign-off); the native getter-CONFIG 
 disabled); three minor native-plant report gaps (fieldUnwritten silent while the window is closed; a planned method
 with no GETFIELD; a class the agent fails to rewrite); native verification of HBASE-28533 and SOLR-6763 (started and
 stopped by the owner, nothing committed).
+
+## The two baselines on the same old bugs (2026-10-29/30)
+
+Mallory and CrashFuzz (github.com/JHSUYU/baseline, `main` 6f41e0a2, the liftlab version; its README and each baseline's
+README have the protocol, every figure and the evidence) ran on the 14 runnable old bugs:
+- on the same trees (`graphchecker/<sys>-bug-<jira>`);
+- with the same workloads (each case's test);
+- with the point's own declared throw as the oracle;
+- one run each, 4 hours.
+
+Every detection was replayed 10 times. GraphChecker's column is round E1.
+
+| bug | GraphChecker (E1) | Mallory | CrashFuzz |
+| --- | --- | --- | --- |
+| HDFS-11741 | 1123 s | 572 s, 10/10 * | 164 s, 10/10 * |
+| HDFS-17383 | 530 s | 790 s, 10/10 | not detected |
+| HDFS-12931 | 400 s | 205 s, 10/10 | not detected |
+| HDFS-5766 | 391 s | 242 s, 10/10 | not detected |
+| HDFS-10609 | 556 s | 565 s, 10/10 | not detected (stopped at 833 trials) |
+| HDFS-14075 | 490 s | 308 s, 10/10 | not detected |
+| HDFS-14311 | not detected | not detected | not detected |
+| HBASE-15039 | 850 s | 394 s, 10/10 | not detected |
+| HBASE-20642 | 1504 s | 3889 s, 10/10 | 2669 s, 2/10 (by shape 9/10) |
+| ZOOKEEPER-710 | 311 s | not detected (every fault point tried) | not detected |
+| ZOOKEEPER-2886 | 300 s | not detected (every fault point tried) | a candidate replaying 0/10: not detected |
+| SOLR-9440 | 576 s | 1497 s, 10/10 * | 1608 s, 10/10 * |
+| SOLR-6101 | 632 s | not detected | not detected |
+| SOLR-6197 | 539 s | not detected | not detected |
+| **detected** | **13** | **9** | **3** |
+
+\* The point's own throw, reached by other faults than the bug's mechanism:
+- HDFS-11741: a lost key-update heartbeat instead of the Balancer's expired cached key.
+- SOLR-9440: a lost Overseer write instead of node1's leader-election session expiry.
+
+What neither baseline makes, since both only inject faults:
+- a STATE re-pairing of a request with a session's move (ZOOKEEPER-710, -2886);
+- a cluster-wide configuration change (SOLR-6101, -6197).
+
+The workloads are mostly bug-shaped `TestCausynth*` tests. Both baselines exclude these for their own bugs, and they make
+a fault-driven bug easy to reach (Mallory's 9).
