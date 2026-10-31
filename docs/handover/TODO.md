@@ -18,6 +18,11 @@ details are in [STATE.md](STATE.md); every check with its state in [../checks/RE
 reading in [../STATUS.md](../STATUS.md); commands in [OPERATIONS.md](OPERATIONS.md); speed and the cluster in
 [../design/PERFORMANCE.md](../design/PERFORMANCE.md).
 
+## Injected bugs (`system/hdfs-injected`, 2026-10-30): not started
+
+The whole work order is [INJECTED-BUGS.md](INJECTED-BUGS.md): this system's five cases (§3), and the shared
+procedure, acceptance and results table.
+
 ## Buggy-detect (this branch, `system/hdfs-buggy-detect`)
 
 STATE §B and START-HERE §0 have where everything is; [BUGGY-DETECT.md](BUGGY-DETECT.md) the table and the owner's
