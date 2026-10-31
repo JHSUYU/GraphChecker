@@ -1,4 +1,11 @@
-# START HERE: ZooKeeper's old bugs put back, on liftlab (system/zookeeper-buggy-detect, 2026-10-28)
+# START HERE: the injected ZooKeeper bugs (`system/zookeeper-injected`), on top of the old bugs (`system/zookeeper-buggy-detect`)
+
+## -1. This branch (from 2026-10-30)
+
+This branch is `system/zookeeper-buggy-detect` plus the injected-bug experiment. Read [INJECTED-BUGS.md](INJECTED-BUGS.md) first:
+it is the whole work order (the goal, the 20 cases, the branches and fork branches, the procedure and the
+acceptance). The map of all branches is [HANDOVER-2026-10-30.md](HANDOVER-2026-10-30.md). Everything below is
+`system/zookeeper-buggy-detect`'s START-HERE (its title: "START HERE: ZooKeeper's old bugs put back, on liftlab (system/zookeeper-buggy-detect, 2026-10-28)") and holds here.
 
 You take over the ZooKeeper buggy-detect branch. This file is self-contained: what the branch holds, the result, how
 to build the trees, run a case or all of them and read the result, what is left, and the rules.
