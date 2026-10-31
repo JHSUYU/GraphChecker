@@ -1,4 +1,11 @@
-# START HERE: `system/hbase-buggy-detect` -- the old HBase bugs put back, on HBase's ad hoc engine (liftlab)
+# START HERE: the injected HBase bugs (`system/hbase-injected`), on top of the old bugs (`system/hbase-buggy-detect`)
+
+## -1. This branch (from 2026-10-30)
+
+This branch is `system/hbase-buggy-detect` plus the injected-bug experiment. Read [INJECTED-BUGS.md](INJECTED-BUGS.md) first:
+it is the whole work order (the goal, the 20 cases, the branches and fork branches, the procedure and the
+acceptance). The map of all branches is [HANDOVER-2026-10-30.md](HANDOVER-2026-10-30.md). Everything below is
+`system/hbase-buggy-detect`'s START-HERE (its title: "START HERE: `system/hbase-buggy-detect` -- the old HBase bugs put back, on HBase's ad hoc engine (liftlab)") and holds here.
 
 You are the next lead (a coding agent that may run up to 5 coding agents). This branch is `system/hbase` (HBase's ad hoc
 checks, finished 2026-10-21: §1-§5 below) plus the old HBase bugs that make an ad hoc check fail, put back by hand on
