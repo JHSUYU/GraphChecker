@@ -19,9 +19,10 @@ defaulted.
 
 ## This branch: THE HDFS branch (`system/hdfs-liftlab`)
 
-[docs/handover/HANDOVER-2026-10-28.md](docs/handover/HANDOVER-2026-10-28.md) is the map of everything on liftlab:
+[docs/handover/HANDOVER-2026-10-30.md](docs/handover/HANDOVER-2026-10-30.md) is the map of everything on liftlab:
 every GraphChecker branch and fork branch (and the archive tags), the tree sets, snapshots, images, the runs of
-record, the buggy-detect results and how to run a case. The same file is on all eight `system/*` branches.
+record, the buggy-detect and baseline results, the injected-bug work order and how to run a case. The same file is
+on all twelve `system/*` branches.
 
 `system/hdfs-liftlab` runs every HDFS case on `system/hbase`'s engine on liftlab (lift02-15, 48 cores and 30 GB each;
 lift11 the control host) and replaces `system/hdfs` and `system/hdfs1`, which stay on the remote as history (the owner,
@@ -43,12 +44,12 @@ Everything a run needs is on GitHub: GraphChecker's branch of the system (`git@g
 the system's fork, whose `graphchecker/*` branches are the trees under test. Two GraphChecker branches per system, both
 on liftlab:
 
-| system | ad hoc checks | old bugs put back | the fork's tree branches |
-| --- | --- | --- | --- |
-| HDFS | `system/hdfs-liftlab` (this branch; replaces `system/hdfs` and `system/hdfs1`, kept on the remote as history) | `system/hdfs-buggy-detect` | `JHSUYU/hadoop`: `graphchecker/hdfs-checks`, `graphchecker/hdfs-checks-adhoc21`, `graphchecker/hdfs-11741` (this branch's trees), `graphchecker/hdfs-checks-adhoc07` (`system/hdfs1`'s 07), `graphchecker/hdfs-bug-<jira>` (one old bug each) |
-| HBase | `system/hbase` | `system/hbase-buggy-detect` | `JHSUYU/hbase`: `graphchecker/hbase-checks`, `graphchecker/hbase-bug-<jira>` |
-| ZooKeeper | `system/zookeeper` | `system/zookeeper-buggy-detect` | `JHSUYU/zookeeper`: the tag `graphchecker/zookeeper-checks-liftlab` (51b213562, `system/zookeeper`'s tree), `graphchecker/zookeeper-checks`, `graphchecker/zk-bug-<jira>`, `graphchecker/zk-bug-<jira>-control` (the same workload on the fixed code) |
-| Solr | `system/solr` | `system/solr-buggy-detect` | `JHSUYU/solr`: `graphchecker/solr-checks`, `graphchecker/solr-bug-<jira>` |
+| system | ad hoc checks | old bugs put back | injected bugs (`docs/handover/INJECTED-BUGS.md`) | the fork's tree branches |
+| --- | --- | --- | --- | --- |
+| HDFS | `system/hdfs-liftlab` (this branch; replaces `system/hdfs` and `system/hdfs1`, kept on the remote as history) | `system/hdfs-buggy-detect` | `system/hdfs-injected` | `JHSUYU/hadoop`: `graphchecker/hdfs-checks`, `graphchecker/hdfs-checks-adhoc21`, `graphchecker/hdfs-11741` (this branch's trees), `graphchecker/hdfs-checks-adhoc07` (`system/hdfs1`'s 07), `graphchecker/hdfs-bug-<jira>` (one old bug each) |
+| HBase | `system/hbase` | `system/hbase-buggy-detect` | `system/hbase-injected` | `JHSUYU/hbase`: `graphchecker/hbase-checks`, `graphchecker/hbase-bug-<jira>` |
+| ZooKeeper | `system/zookeeper` | `system/zookeeper-buggy-detect` | `system/zookeeper-injected` | `JHSUYU/zookeeper`: the tag `graphchecker/zookeeper-checks-liftlab` (51b213562, `system/zookeeper`'s tree), `graphchecker/zookeeper-checks`, `graphchecker/zk-bug-<jira>`, `graphchecker/zk-bug-<jira>-control` (the same workload on the fixed code) |
+| Solr | `system/solr` | `system/solr-buggy-detect` | `system/solr-injected` | `JHSUYU/solr`: `graphchecker/solr-checks`, `graphchecker/solr-bug-<jira>` |
 
 `main` is the 2026-10-03 body (round V25). Each `system/<x>-buggy-detect` is `system/<x>` plus the old bugs that make one
 of its ad hoc checks fail, each put back by hand on today's tree (one fork branch per bug), with the engine support they
