@@ -17,21 +17,22 @@ A SAT comes with a claim naming the roots that moved (`claim.json`) and one repl
 the program agrees (`confirm.json`). What the rows do not state is named, never silently
 defaulted.
 
-## Branches: one pair per system, all run on liftlab
+## Branches: three per system, all run on liftlab
 
-[docs/handover/HANDOVER-2026-10-28.md](docs/handover/HANDOVER-2026-10-28.md) is the map of everything on liftlab:
+[docs/handover/HANDOVER-2026-10-30.md](docs/handover/HANDOVER-2026-10-30.md) is the map of everything on liftlab:
 every GraphChecker branch and fork branch (and the archive tags), the tree sets, snapshots, images, the runs of
-record, the buggy-detect results and how to run a case. The same file is on all eight `system/*` branches.
+record, the buggy-detect and baseline results, the injected-bug work order and how to run a case. The same file is
+on all twelve `system/*` branches.
 
 Everything is on GitHub: GraphChecker (`git@github.com:JHSUYU/GraphChecker.git`, private) keeps `main` (the
-2026-10-03 body) and two branches per system; each system's fork keeps the trees its cases read.
+2026-10-03 body) and three branches per system; each system's fork keeps the trees its cases read.
 
-| system | ad hoc checks | old bugs put back on today's tree |
-| --- | --- | --- |
-| HDFS | `system/hdfs-liftlab` (replaces `system/hdfs` and `system/hdfs1`, which stay on the remote as history) | `system/hdfs-buggy-detect` |
-| HBase | `system/hbase` | `system/hbase-buggy-detect` (this branch) |
-| ZooKeeper | `system/zookeeper` | `system/zookeeper-buggy-detect` |
-| Solr | `system/solr` | `system/solr-buggy-detect` |
+| system | ad hoc checks | old bugs put back on today's tree | injected bugs (`docs/handover/INJECTED-BUGS.md`) |
+| --- | --- | --- | --- |
+| HDFS | `system/hdfs-liftlab` (replaces `system/hdfs` and `system/hdfs1`, which stay on the remote as history) | `system/hdfs-buggy-detect` | `system/hdfs-injected` |
+| HBase | `system/hbase` | `system/hbase-buggy-detect` (this branch) | `system/hbase-injected` |
+| ZooKeeper | `system/zookeeper` | `system/zookeeper-buggy-detect` | `system/zookeeper-injected` |
+| Solr | `system/solr` | `system/solr-buggy-detect` | `system/solr-injected` |
 
 Each `system/<x>-buggy-detect` is `system/<x>` plus the old-bug cases (`experiments/<sys>/<sys>-buggy-<jira>/`) and the
 engine support they needed; its `docs/handover/BUGGY-DETECT.md` has the table. The CloudLab runs of 2026-10-24..28 are
