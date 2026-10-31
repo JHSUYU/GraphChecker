@@ -13,6 +13,11 @@ are in [STATE.md](STATE.md); every check with its state in [../checks/README.md]
 in [../STATUS.md](../STATUS.md); commands in [OPERATIONS.md](OPERATIONS.md); speed and the cluster in
 [../design/PERFORMANCE.md](../design/PERFORMANCE.md).
 
+## Injected bugs (`system/hbase-injected`, 2026-10-30): not started
+
+The whole work order is [INJECTED-BUGS.md](INJECTED-BUGS.md): this system's five cases (§3), and the shared
+procedure, acceptance and results table.
+
 ## Old HBase bugs (`system/hbase-buggy-detect`, liftlab; STATE §B, BUGGY-DETECT.md)
 
 1. **Series B1 on liftlab** (the lead, 2026-10-28): hbase-buggy-15039 and hbase-buggy-20642 once each from the snapshot
