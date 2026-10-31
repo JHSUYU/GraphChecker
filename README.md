@@ -17,20 +17,30 @@ A SAT comes with a claim naming the roots that moved (`claim.json`) and one repl
 the program agrees (`confirm.json`). What the rows do not state is named, never silently
 defaulted.
 
+## This branch: the injected ZooKeeper bugs (`system/zookeeper-injected`)
+
+`system/zookeeper-injected` is `system/zookeeper-buggy-detect` (the old bugs, below) plus the injected-bug experiment of 2026-10-30: five bugs
+injected by hand at ZooKeeper ad hoc check points, following the real bug patterns, four designed to be detected and one (`zk-inj-05`, a liveness bug) designed to show what
+GraphChecker cannot see. The work order (the 20 cases
+of the four systems, the branches, the fork branches, the paths, the procedure, the acceptance and the results
+table) is [docs/handover/INJECTED-BUGS.md](docs/handover/INJECTED-BUGS.md). Nothing of it is implemented yet.
+Everything below is `system/zookeeper-buggy-detect`'s and holds here.
+
 ## The branches (github.com/JHSUYU/GraphChecker)
 
-[docs/handover/HANDOVER-2026-10-28.md](docs/handover/HANDOVER-2026-10-28.md) is the map of everything on liftlab:
+[docs/handover/HANDOVER-2026-10-30.md](docs/handover/HANDOVER-2026-10-30.md) is the map of everything on liftlab:
 every GraphChecker branch and fork branch (and the archive tags), the tree sets, snapshots, images, the runs of
-record, the buggy-detect results and how to run a case. The same file is on all eight `system/*` branches.
+record, the buggy-detect and baseline results, the injected-bug work order and how to run a case. The same file is
+on all twelve `system/*` branches.
 
-Every system has two branches, both run on liftlab (the lifts below); nothing goes to `main` (the 2026-10-03 body):
+Every system has three branches, all run on liftlab (the lifts below); nothing goes to `main` (the 2026-10-03 body):
 
-| system | ad hoc checks | old bugs put back (their `docs/handover/BUGGY-DETECT.md`) |
-| --- | --- | --- |
-| HDFS | `system/hdfs-liftlab` (replaces `system/hdfs` and `system/hdfs1`, which stay on origin as history) | `system/hdfs-buggy-detect` |
-| HBase | `system/hbase` | `system/hbase-buggy-detect` |
-| ZooKeeper | `system/zookeeper` | `system/zookeeper-buggy-detect` (this branch) |
-| Solr | `system/solr` | `system/solr-buggy-detect` |
+| system | ad hoc checks | old bugs put back (their `docs/handover/BUGGY-DETECT.md`) | injected bugs (`docs/handover/INJECTED-BUGS.md`) |
+| --- | --- | --- | --- |
+| HDFS | `system/hdfs-liftlab` (replaces `system/hdfs` and `system/hdfs1`, which stay on origin as history) | `system/hdfs-buggy-detect` | `system/hdfs-injected` |
+| HBase | `system/hbase` | `system/hbase-buggy-detect` | `system/hbase-injected` |
+| ZooKeeper | `system/zookeeper` | `system/zookeeper-buggy-detect` | `system/zookeeper-injected` (this branch) |
+| Solr | `system/solr` | `system/solr-buggy-detect` | `system/solr-injected` |
 
 Each `system/<x>-buggy-detect` is `system/<x>` plus the old-bug cases (`experiments/{hadoop,hbase,zookeeper,solr}/*-buggy-<jira>/`) and
 the engine support they needed. The CloudLab record (2026-10-24..28) is the tags `archive/system/<x>-cloudlab`.
@@ -48,7 +58,7 @@ since the branch moved on to the buggy-detect trees' base), `graphchecker/<x>-bu
   `system/hbase-buggy-detect`: HBASE-15039, -20642, -28533.
 - **ZooKeeper** (finished 2026-10-22). `system/zookeeper`: the 16 ZooKeeper cases, `results/zookeeper/`, REPRODUCE §8
   (its takeover file is [docs/handover/zookeeper-START-HERE.md](docs/handover/zookeeper-START-HERE.md) here).
-  `system/zookeeper-buggy-detect` (this branch): those 16 plus ZOOKEEPER-710 and -2886 put back, REPRODUCE §9;
+  `system/zookeeper-buggy-detect`: those 16 plus ZOOKEEPER-710 and -2886 put back, REPRODUCE §9;
   [docs/handover/START-HERE.md](docs/handover/START-HERE.md) is where a new lead starts, STATE §Z what the branch holds,
   TODO "ZooKeeper: the buggy-detect line" and "ZooKeeper" what is open, LESSONS §10 what ZooKeeper taught us.
 - **Solr** (finished 2026-10-19). `system/solr`: the 20 Solr cases, REPRODUCE §6. `system/solr-buggy-detect`:

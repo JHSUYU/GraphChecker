@@ -15,6 +15,11 @@ passes. Branch, tree and path details are in [STATE.md](STATE.md); every check w
 [../checks/README.md](../checks/README.md) and its reading in [../STATUS.md](../STATUS.md); commands in
 [OPERATIONS.md](OPERATIONS.md); speed and the cluster in [../design/PERFORMANCE.md](../design/PERFORMANCE.md).
 
+## Injected bugs (`system/zookeeper-injected`, 2026-10-30): not started
+
+The whole work order is [INJECTED-BUGS.md](INJECTED-BUGS.md): this system's five cases (§3), and the shared
+procedure, acceptance and results table.
+
 ## HDFS (finished: `system/hdfs` 39 cases, `system/hdfs1` 7, both now `system/hdfs-liftlab`; trees r7, r7-21, r8, 11741-r6 = the fork's `graphchecker/*` branches; image `vm-hg5`)
 
 46 of 46 cases closed with a hand-read `.smt` (STATUS "HDFS checks"); no new bug; every case ran alone on the ten
